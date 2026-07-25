@@ -1,0 +1,5 @@
+name: capability-intelligence
+version: 1.0.0
+description: "Capability Intelligence — consume Capabilities from the Prosperfy Skills platform. Resolver, Negotiator, Policy Engine, Executor, Interpreter, and Feedback Store."
+author: "Prosperfy"
+source: "https://github.com/william-rp2/prosperfy-cognitive-extensions"
