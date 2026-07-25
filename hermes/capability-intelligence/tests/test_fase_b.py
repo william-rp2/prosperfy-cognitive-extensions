@@ -93,7 +93,7 @@ passed = 0
 failed = 0
 results = []
 
-def test(name, condition, detail=""):
+def _assert(name, condition, detail=""):
     global passed, failed
     if condition:
         passed += 1
@@ -109,17 +109,17 @@ print("=" * 70)
 # G1: Catalog vazio
 print("\n  G1: Catalog retorna matches vazio")
 r = run(make_pipeline(MockCatalog(matches=[])))
-test("G1: gap registrado", r.gap_proposal is not None, f"gap={r.gap_proposal}")
-test("G1: success=false", not r.success)
-test("G1: mensagem de erro", "Nenhuma Capability" in (r.error or ""))
+_assert("G1: gap registrado", r.gap_proposal is not None, f"gap={r.gap_proposal}")
+_assert("G1: success=false", not r.success)
+_assert("G1: mensagem de erro", "Nenhuma Capability" in (r.error or ""))
 
 # G2: Score muito baixo (0.3 < 0.50)
 print("\n  G2: Score 0.3 (abaixo do threshold)")
 r = run(make_pipeline(MockCatalog(matches=[
     CatalogMatch(capability_id="a", score=0.3, reason="baixo"),
 ])))
-test("G2: gap registrado", r.gap_proposal is not None)
-test("G2: success=false", not r.success)
+_assert("G2: gap registrado", r.gap_proposal is not None)
+_assert("G2: success=false", not r.success)
 
 # G3: Dois candidatos, ambos abaixo do threshold
 print("\n  G3: Dois candidatos, ambos < 0.50")
@@ -127,16 +127,16 @@ r = run(make_pipeline(MockCatalog(matches=[
     CatalogMatch(capability_id="a", score=0.45, reason="baixo"),
     CatalogMatch(capability_id="b", score=0.40, reason="baixo"),
 ])))
-test("G3: gap registrado", r.gap_proposal is not None)
-test("G3: candidates retornados", r.candidates is not None)
+_assert("G3: gap registrado", r.gap_proposal is not None)
+_assert("G3: candidates retornados", r.candidates is not None)
 
 # G4: Score muito baixo (0.1)
 print("\n  G4: Score 0.1 (intenção genérica)")
 r = run(make_pipeline(MockCatalog(matches=[
     CatalogMatch(capability_id="a", score=0.1, reason="muito genérico"),
 ])))
-test("G4: gap registrado", r.gap_proposal is not None)
-test("G4: mensagem", "Nenhuma Capability" in (r.error or ""))
+_assert("G4: gap registrado", r.gap_proposal is not None)
+_assert("G4: mensagem", "Nenhuma Capability" in (r.error or ""))
 
 # G5: Verificar lacunas via GapStore
 print("\n  G5: GapStore acumula lacunas")
@@ -145,8 +145,8 @@ run(make_pipeline(MockCatalog(matches=[]), gaps=store))
 run(make_pipeline(MockCatalog(matches=[
     CatalogMatch(capability_id="x", score=0.3, reason="baixo"),
 ]), gaps=store))
-test("G5: 2 gaps registrados", len(store.list_gaps()) == 2)
-test("G5: domínios corretos", all(g.domain == "infrastructure" for g in store.list_gaps()))
+_assert("G5: 2 gaps registrados", len(store.list_gaps()) == 2)
+_assert("G5: domínios corretos", all(g.domain == "infrastructure" for g in store.list_gaps()))
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -164,9 +164,9 @@ cat = MockCatalog(matches=[
     CatalogMatch(capability_id="deploy_generic", score=0.55, reason="genérica"),
 ])
 r = run(make_pipeline(catalog=cat))
-test("M1: auto-select", not r.disambiguation)
-test("M1: capability escolhida", r.capability_id == "deploy_specific")
-test("M1: success=true", r.success)
+_assert("M1: auto-select", not r.disambiguation)
+_assert("M1: capability escolhida", r.capability_id == "deploy_specific")
+_assert("M1: success=true", r.success)
 
 # M2: Gap pequeno → disambiguation
 print("\n  M2: Gap 0.05 ≤ 0.30 → disambiguation")
@@ -175,9 +175,9 @@ cat = MockCatalog(matches=[
     CatalogMatch(capability_id="b", score=0.80, reason="bom também"),
 ])
 r = run(make_pipeline(catalog=cat))
-test("M2: disambiguation", r.disambiguation)
-test("M2: candidates retornados", r.candidates is not None)
-test("M2: 2 candidates", len(r.candidates or []) == 2)
+_assert("M2: disambiguation", r.disambiguation)
+_assert("M2: candidates retornados", r.candidates is not None)
+_assert("M2: 2 candidates", len(r.candidates or []) == 2)
 
 # M3: Três candidatos próximos
 print("\n  M3: Três candidatos com scores próximos")
@@ -187,8 +187,8 @@ cat = MockCatalog(matches=[
     CatalogMatch(capability_id="c", score=0.70, reason="opção 3"),
 ])
 r = run(make_pipeline(catalog=cat))
-test("M3: disambiguation", r.disambiguation)
-test("M3: max 3 candidates", len(r.candidates or []) <= 3)
+_assert("M3: disambiguation", r.disambiguation)
+_assert("M3: max 3 candidates", len(r.candidates or []) <= 3)
 
 # M4: Gap pequeno com feedback histórico
 print("\n  M4: Gap pequeno + feedback histórico")
@@ -207,9 +207,9 @@ r = run(make_pipeline(catalog=cat, negotiator=neg))
 # disambiguation, mas o pipeline NÃO preenche capability_id quando
 # disambiguation=True — é o usuário que escolhe.
 # Comportamento correto: disambiguation=true, candidates preenchidos.
-test("M4: disambiguation (feedback ajustou)", r.disambiguation)
-test("M4: candidates disponíveis", r.candidates is not None)
-test("M4: 'a' tem score maior que 'b' (ajustado por feedback)",
+_assert("M4: disambiguation (feedback ajustou)", r.disambiguation)
+_assert("M4: candidates disponíveis", r.candidates is not None)
+_assert("M4: 'a' tem score maior que 'b' (ajustado por feedback)",
      r.candidates[0]["capability_id"] == "a" if r.candidates else True)
 
 # M5: Pipeline com sucesso completo
@@ -218,10 +218,10 @@ cat = MockCatalog(matches=[
     CatalogMatch(capability_id="deploy_api", score=0.95, reason="ótimo"),
 ])
 r = run(make_pipeline(catalog=cat))
-test("M5: success=true", r.success)
-test("M5: capability_id presente", r.capability_id == "deploy_api")
-test("M5: execution_ref presente", r.execution_ref is not None)
-test("M5: summary preenchido", len(r.summary) > 0)
+_assert("M5: success=true", r.success)
+_assert("M5: capability_id presente", r.capability_id == "deploy_api")
+_assert("M5: execution_ref presente", r.execution_ref is not None)
+_assert("M5: summary preenchido", len(r.summary) > 0)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -239,11 +239,11 @@ cat = MockCatalog(matches=[
 ])
 pipe = make_pipeline(catalog=cat)
 r = run(pipe)
-test("F1: success=true", r.success)
-test("F1: capability_id", r.capability_id == "deploy_api")
-test("F1: execution_ref", r.execution_ref is not None)
-test("F1: summary", len(r.summary) > 0)
-test("F1: sem erro", r.error is None)
+_assert("F1: success=true", r.success)
+_assert("F1: capability_id", r.capability_id == "deploy_api")
+_assert("F1: execution_ref", r.execution_ref is not None)
+_assert("F1: summary", len(r.summary) > 0)
+_assert("F1: sem erro", r.error is None)
 
 # F2: Com aprovação (será testado na Fase D)
 # F3: Disambiguation (testado em M2-M3)
@@ -256,8 +256,8 @@ cat = MockCatalog(matches=[
 ])
 cat._authorized = False
 r = run(make_pipeline(catalog=cat))
-test("F5: success=false", not r.success)
-test("F5: erro reportado", "Not authorized" in (r.error or ""))
+_assert("F5: success=false", not r.success)
+_assert("F5: erro reportado", "Not authorized" in (r.error or ""))
 
 # F5b: Erro de execução com exceção
 print("\n  F5b: Erro na execução (exceção no authorize)")
@@ -272,8 +272,8 @@ async def failing_result(ref):
     raise RuntimeError("Connection failed")
 cat.result = failing_result
 r = run(make_pipeline(catalog=cat))
-test("F5b: success=false (exceção)", not r.success)
-test("F5b: erro reportado", "Execution error" in (r.error or ""))
+_assert("F5b: success=false (exceção)", not r.success)
+_assert("F5b: erro reportado", "Execution error" in (r.error or ""))
 cat.result = orig_result  # restore
 
 

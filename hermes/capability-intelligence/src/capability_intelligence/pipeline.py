@@ -72,12 +72,18 @@ class Pipeline:
         """Executa o pipeline completo."""
 
         # 1. RESOLVER — consulta Catálogo
-        catalog_result = await self.resolver.resolve(
-            intent=intent,
-            domain=domain,
-            context=context,
-            preferences=preferences,
-        )
+        try:
+            catalog_result = await self.resolver.resolve(
+                intent=intent,
+                domain=domain,
+                context=context,
+                preferences=preferences,
+            )
+        except Exception as exc:
+            return PipelineResult(
+                success=False,
+                error=f"Catalog resolve failed: {exc}",
+            )
 
         # 2. NEGOTIATOR — seleciona melhor Capability
         best = self.negotiator.select(catalog_result)
