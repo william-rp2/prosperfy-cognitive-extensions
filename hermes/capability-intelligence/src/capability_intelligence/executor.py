@@ -13,6 +13,8 @@ Ele não conhece Cognitive Register, Feedback, entidades ou eventos.
 
 from __future__ import annotations
 
+import logging
+
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -24,6 +26,8 @@ from .models import (
     ExecutionRequest,
     StatusResult,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class AuthorizationPort(Protocol):
@@ -55,26 +59,34 @@ class Executor:
     async def run(self, capability_id: str, params: dict,
                   user: str = "", environment: str = "") -> CapabilityResult:
         """Pipeline completo: autoriza → executa → obtém resultado."""
-        # 1. Autorizar
-        auth_request = AuthorizationRequest(
-            capability_id=capability_id,
-            user=user,
-            environment=environment,
-        )
-        auth = await self.authorization.authorize(auth_request)
-        if not auth.authorized:
+        try:
+            # 1. Autorizar
+            auth_request = AuthorizationRequest(
+                capability_id=capability_id,
+                user=user,
+                environment=environment,
+            )
+            auth = await self.authorization.authorize(auth_request)
+            if not auth.authorized:
+                return CapabilityResult(
+                    success=False,
+                    error=f"Not authorized: {auth.reason or 'permission denied'}",
+                )
+
+            # 2. Executar
+            exec_request = ExecutionRequest(
+                capability_id=capability_id,
+                params=params,
+            )
+            exec_ref = await self.execution.execute(exec_request)
+
+            # 3. Obter resultado
+            result = await self.execution.result(exec_ref)
+            return result
+
+        except Exception as exc:
+            logger.exception("Executor failed for capability '%s'", capability_id)
             return CapabilityResult(
                 success=False,
-                error=f"Not authorized: {auth.reason or 'permission denied'}",
+                error=f"Execution error: {exc}",
             )
-
-        # 2. Executar
-        exec_request = ExecutionRequest(
-            capability_id=capability_id,
-            params=params,
-        )
-        exec_ref = await self.execution.execute(exec_request)
-
-        # 3. Obter resultado
-        result = await self.execution.result(exec_ref)
-        return result

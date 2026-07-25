@@ -75,7 +75,8 @@ class Negotiator:
             if not fb_list:
                 continue
 
-            success_rate = mean(1 for f in fb_list if f.success)
+            success_count = sum(1 for f in fb_list if f.success)
+            success_rate = success_count / len(fb_list) if fb_list else 0.0
             interventions = sum(1 for f in fb_list if f.user_intervention_required)
             intervention_rate = interventions / len(fb_list)
 

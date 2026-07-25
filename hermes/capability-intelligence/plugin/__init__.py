@@ -27,7 +27,7 @@ from capability_intelligence.policy_engine import (
     policy_requires_approval,
 )
 from capability_intelligence.resolver import Resolver
-from capability_intelligence.transport.protocol_adapter import ProtocolAdapter
+from capability_intelligence.transport.adapters.mcp_adapter import MCPAdapter
 from capability_intelligence.models import (
     AuthorizationRequest,
     AuthorizationResult,
@@ -42,26 +42,6 @@ from capability_intelligence.models import (
 logger = logging.getLogger(__name__)
 
 
-class MCPTransport(ProtocolAdapter):
-    def __init__(self):
-        self.api_key = os.environ.get("MCP_PROSPERFYSKILLS_API_KEY", "")
-
-    async def resolve_catalog(self, query: IntentQuery) -> CatalogResult:
-        return CatalogResult(matches=[])
-
-    async def authorize(self, req: AuthorizationRequest) -> AuthorizationResult:
-        return AuthorizationResult(authorized=True)
-
-    async def execute(self, req: ExecutionRequest) -> ExecutionReference:
-        return ExecutionReference(ref="mcp-simulated")
-
-    async def get_result(self, ref: ExecutionReference) -> CapabilityResult:
-        return CapabilityResult(success=True, data={})
-
-    async def get_status(self, ref: Optional[ExecutionReference] = None) -> StatusResult:
-        return StatusResult(healthy=True, capabilities_total=0)
-
-
 _pipeline: Optional[Pipeline] = None
 
 
@@ -69,7 +49,7 @@ def _get_pipeline() -> Pipeline:
     global _pipeline
     if _pipeline is not None:
         return _pipeline
-    transport = MCPTransport()
+    transport = MCPAdapter(api_key=os.environ.get("MCP_PROSPERFYSKILLS_API_KEY", ""))
     _pipeline = Pipeline(
         resolver=Resolver(catalog=transport),
         negotiator=Negotiator(),

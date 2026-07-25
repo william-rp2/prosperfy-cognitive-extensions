@@ -71,7 +71,7 @@ class TestModels:
         assert not r.success
         assert "Connection timeout" in r.error
 
-    def result_metadata_with_entities(self):
+    def test_result_metadata_with_entities(self):
         m = ResultMetadata(
             duration_ms=12000,
             execution_ref=ExecutionReference(ref="exec_abc"),

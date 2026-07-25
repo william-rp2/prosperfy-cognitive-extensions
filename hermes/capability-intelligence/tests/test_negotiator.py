@@ -102,3 +102,64 @@ class TestNegotiator:
         best = neg.select(result)
         assert best.capability_id == "x"
         assert abs(best.score - 0.8) < 0.01
+
+    # ─── Testes de success_rate (corrigido) ─────────────────────────
+
+    def _make_feedback(self, capability_id: str, results: list[bool]):
+        """Cria lista de feedback com resultados específicos."""
+        intent = IntentQuery(intent="test", domain="infrastructure")
+        return [
+            CapabilityFeedback(
+                capability_id=capability_id,
+                intent_query=intent,
+                execution_ref=ExecutionReference(ref=f"e{i}"),
+                success=success,
+            )
+            for i, success in enumerate(results)
+        ]
+
+    def test_success_rate_100_percent(self):
+        """100% de sucesso → score mantido."""
+        fb = self._make_feedback("a", [True, True, True])
+        neg = Negotiator(feedback_history=fb)
+        result = CatalogResult(matches=[
+            CatalogMatch(capability_id="a", score=0.9, reason="test"),
+        ])
+        best = neg.select(result)
+        assert best is not None
+        # 100% sucesso → score inalterado
+        assert abs(best.score - 0.9) < 0.01
+
+    def test_success_rate_0_percent(self):
+        """0% de sucesso → score penalizado por < 0.8."""
+        fb = self._make_feedback("a", [False, False, False])
+        neg = Negotiator(feedback_history=fb)
+        result = CatalogResult(matches=[
+            CatalogMatch(capability_id="a", score=0.9, reason="test"),
+        ])
+        best = neg.select(result)
+        assert best is not None
+        # 0% sucesso < 0.8 → score *= 0.90
+        assert abs(best.score - 0.81) < 0.01
+
+    def test_success_rate_partial(self):
+        """Sucesso parcial (60%) → score penalizado."""
+        fb = self._make_feedback("a", [True, True, False, False, False])
+        neg = Negotiator(feedback_history=fb)
+        result = CatalogResult(matches=[
+            CatalogMatch(capability_id="a", score=0.9, reason="test"),
+        ])
+        best = neg.select(result)
+        assert best is not None
+        # 2/5 = 40% sucesso → penalizado
+        assert best.score < 0.9
+
+    def test_success_rate_empty(self):
+        """Lista vazia de feedback → sem penalização."""
+        neg = Negotiator(feedback_history=[])
+        result = CatalogResult(matches=[
+            CatalogMatch(capability_id="a", score=0.9, reason="test"),
+        ])
+        best = neg.select(result)
+        assert best is not None
+        assert abs(best.score - 0.9) < 0.01
