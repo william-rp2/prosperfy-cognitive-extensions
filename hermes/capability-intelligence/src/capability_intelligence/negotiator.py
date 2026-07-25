@@ -92,9 +92,22 @@ class Negotiator:
             durations = [f.duration_ms for f in fb_list if f.duration_ms]
             if durations:
                 avg_duration = mean(durations)
-                expected = (match.metadata.avg_duration_seconds * 1000
-                            if isinstance(match.metadata, dict)
-                            and match.metadata.get("avg_duration_seconds")
-                            else 0)
+                expected = (
+                    (match.metadata.get("avg_duration_seconds", 0) * 1000)
+                    if isinstance(match.metadata, dict)
+                    else (match.metadata.avg_duration_seconds * 1000
+                          if match.metadata and match.metadata.avg_duration_seconds
+                          else 0)
+                )
                 if success_rate > 0.95 and expected > 0 and avg_duration <= expected:
                     match.score *= 1.05
+
+            # Bonifica satisfação do usuário
+            satisfactions = [f.user_satisfaction for f in fb_list
+                             if f.user_satisfaction is not None]
+            if satisfactions:
+                avg_satisfaction = mean(satisfactions)
+                if avg_satisfaction >= 4.5:
+                    match.score *= 1.05
+                elif avg_satisfaction >= 4.0:
+                    match.score *= 1.02
