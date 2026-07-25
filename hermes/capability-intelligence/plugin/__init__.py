@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 from typing import Any, Optional
 
 from capability_intelligence import __version__ as ci_version
@@ -77,7 +78,10 @@ Subcomandos:
 
 
 def _handle_slash(raw: str) -> Optional[str]:
-    argv = raw.strip().split(maxsplit=2)
+    try:
+        argv = shlex.split(raw.strip())
+    except ValueError:
+        argv = raw.strip().split(maxsplit=2)
     if not argv or argv[0] in {"help", "-h", "--help"}:
         return _HELP
     sub = argv[0]
@@ -122,10 +126,18 @@ def _handle_slash(raw: str) -> Optional[str]:
             except ValueError:
                 domain = Domain.OTHER
         if len(argv) >= 4:
+            ctx_raw = argv[3]
             try:
-                context = json.loads(argv[3])
+                context = json.loads(ctx_raw)
             except json.JSONDecodeError:
-                pass
+                # shlex strips quotes, try to restore them
+                import re
+                fixed = re.sub(r'(\w+)(:)', r'"\1"\2', ctx_raw)
+                fixed = re.sub(r':([a-zA-Z][\w]*)', r':"\1"', fixed)
+                try:
+                    context = json.loads(fixed)
+                except json.JSONDecodeError:
+                    pass
         return (
             f"🧠 Pipeline: {intent} [{domain.value}]\n"
             f"  Contexto: {json.dumps(context, ensure_ascii=False)}\n"
