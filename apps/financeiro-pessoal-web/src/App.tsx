@@ -230,16 +230,16 @@ function Sidebar({ activeScreen, collapsed, isOpen, onClose, onSelect, onToggleC
   return (
     <>
       <button aria-label="Fechar navegação" className={`fixed inset-0 z-30 bg-[#140818]/40 backdrop-blur-sm transition lg:hidden ${isOpen ? 'opacity-100' : 'pointer-events-none opacity-0'}`} onClick={onClose} type="button" />
-      <aside className={`fixed inset-y-0 left-0 z-40 flex flex-col border-r border-white/10 bg-[#341539] p-4 text-white shadow-2xl shadow-[#341539]/30 transition-all duration-300 lg:static lg:translate-x-0 ${collapsed ? 'lg:w-24' : 'lg:w-80'} ${isOpen ? 'w-80 translate-x-0' : 'w-80 -translate-x-full'}`}>
-        <div className="flex items-center justify-between gap-3">
-          <ProsperfyMark collapsed={collapsed} dark />
+      <aside className={`fixed inset-y-0 left-0 z-40 flex flex-col border-r border-white/10 bg-[#341539] p-4 text-white shadow-2xl shadow-[#341539]/30 transition-all duration-300 lg:static lg:translate-x-0 ${collapsed ? 'lg:w-20' : 'lg:w-80'} ${isOpen ? 'w-80 translate-x-0' : 'w-80 -translate-x-full'}`}>
+        <div className={`flex items-center ${collapsed ? 'justify-center' : 'justify-between gap-3'}`}>
+          {!collapsed && <ProsperfyMark collapsed dark />}
           <div className="flex items-center gap-1">
-            <Button aria-label={collapsed ? 'Expandir sidebar' : 'Recolher sidebar'} className="hidden text-white hover:bg-white/10 lg:inline-flex" onClick={onToggleCollapsed} size="icon" type="button" variant="ghost">
+            <Button aria-label={collapsed ? 'Expandir sidebar' : 'Recolher sidebar'} className="text-white hover:bg-white/10" onClick={onToggleCollapsed} size="icon" type="button" variant="ghost">
               {collapsed ? <PanelLeftOpen className="h-5 w-5" /> : <PanelLeftClose className="h-5 w-5" />}
             </Button>
-            <Button className="text-white hover:bg-white/10 lg:hidden" onClick={onClose} size="icon" type="button" variant="ghost">
+            {!collapsed && <Button className="text-white hover:bg-white/10 lg:hidden" onClick={onClose} size="icon" type="button" variant="ghost">
               <X className="h-5 w-5" />
-            </Button>
+            </Button>}
           </div>
         </div>
 
@@ -416,10 +416,10 @@ function DashboardScreen() {
 function CardStat({ label, value, helper, tone }: { label: string; value: string; helper: string; tone?: string }) {
   const cls = tone === 'green' ? 'text-emerald-700 border-emerald-100 bg-emerald-50' : tone === 'red' ? 'text-rose-700 border-rose-100 bg-rose-50' : tone === 'yellow' ? 'text-amber-700 border-amber-100 bg-amber-50' : tone === 'blue' ? 'text-sky-700 border-sky-100 bg-sky-50' : tone === 'purple' ? 'text-purple-700 border-purple-100 bg-purple-50' : 'text-[#341539] border-[#eadfec] bg-white'
   return (
-    <Card className={`p-4 ${cls}`}>
-      <p className="text-[10px] font-black uppercase tracking-[0.16em] opacity-70">{label}</p>
-      <p className="mt-1 text-2xl font-black tracking-[-0.04em]">{value}</p>
-      <p className="mt-1 text-[11px] font-medium opacity-75">{helper}</p>
+    <Card className={`p-3 shrink-0 min-w-[13rem] ${cls}`}>
+      <p className="text-[9px] font-black uppercase tracking-[0.14em] opacity-70">{label}</p>
+      <p className="mt-0.5 text-lg font-black tracking-[-0.04em]">{value}</p>
+      <p className="mt-0.5 text-[10px] font-medium opacity-75 truncate">{helper}</p>
     </Card>
   )
 }
@@ -469,22 +469,22 @@ function MonthlyScreen() {
 
   return (
     <div className="space-y-6">
-      {/* Header + month picker */}
-      <Card className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p className="text-xs font-black uppercase tracking-[0.18em] text-[#83358F]">Planejamento operacional</p>
-          <h2 className="mt-1 text-2xl font-black text-[#231529]">{currentMonthLabel}</h2>
-          <p className="text-sm text-[#76677d]">Gastos previstos, realizados e saldo projetado.</p>
+      {/* Header + month picker - mesma linha */}
+      <Card className="flex items-center justify-between gap-4 p-5">
+        <div className="flex items-center gap-3 min-w-0">
+          <p className="shrink-0 text-xs font-black uppercase tracking-[0.18em] text-[#83358F]">Planejamento operacional</p>
+          <span className="hidden sm:block h-5 w-px bg-[#eadfec]" />
+          <h2 className="text-xl font-black text-[#231529] whitespace-nowrap">{currentMonthLabel}</h2>
         </div>
-        <div className="flex items-center gap-2">
-          <Button onClick={() => setMonthOffset(offset => offset - 1)} size="sm" type="button" variant="secondary"><ChevronLeft className="h-4 w-4" /></Button>
-          <span className="min-w-[8rem] text-center text-sm font-bold text-[#4b1f52]">{currentMonthShort}</span>
-          <Button onClick={() => setMonthOffset(offset => Math.min(offset + 1, 0))} size="sm" type="button" variant="secondary"><ChevronRight className="h-4 w-4" /></Button>
+        <div className="flex items-center gap-2 shrink-0">
+          <Button onClick={() => setMonthOffset(o => o - 1)} size="sm" type="button" variant="secondary"><ChevronLeft className="h-4 w-4" /></Button>
+          <span className="min-w-[6rem] text-center text-sm font-bold text-[#4b1f52]">{currentMonthShort}</span>
+          <Button onClick={() => setMonthOffset(o => Math.min(o + 1, 0))} size="sm" type="button" variant="secondary"><ChevronRight className="h-4 w-4" /></Button>
         </div>
       </Card>
 
-      {/* Main cards — 6 strategic indicators */}
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {/* Main cards — uma linha horizontal */}
+      <div className="flex gap-3 overflow-x-auto pb-1">
         <CardStat label="Valor Líquido Recebido" value={money(liquidIncome)} helper="Total de receitas do mês" tone="green" />
         <CardStat label="Valor Líquido Atual" value={money(liquidAtual)} helper={`Saldo total (${money(seedFinanceData.totalBalance)}) - reservas (${money(seedFinanceData.totalReserves)})`} tone="blue" />
         <CardStat label="Gastos Previstos" value={money(totalPlanned)} helper="Soma de todos os gastos planejados" tone="purple" />
@@ -504,36 +504,36 @@ function MonthlyScreen() {
         </button>
         {reservesOpen && (
           <div className="border-t border-[#eadfec] p-5 space-y-6">
-            {/* Bank balances */}
+            {/* Linha 1: Instituições */}
             <div>
-              <p className="text-sm font-black uppercase tracking-[0.16em] text-[#83358F] mb-3">Saldo por instituição</p>
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <p className="text-xs font-black uppercase tracking-[0.16em] text-[#83358F] mb-3">Saldo por instituição</p>
+              <div className="flex gap-3 overflow-x-auto pb-1">
                 {institutionBalances.map(inst => {
                   const tone = inst.balance < 0 ? 'text-rose-700' : inst.type === 'dinheiro' ? 'text-emerald-700' : 'text-[#341539]'
                   const bg = inst.balance < 0 ? 'border-rose-100 bg-rose-50' : 'border-[#eadfec] bg-white'
                   return (
-                    <Card key={inst.name} className={`p-4 ${bg}`}>
-                      <p className="text-xs font-black uppercase tracking-[0.16em] text-[#76677d]">{inst.type}</p>
-                      <p className="mt-1 font-black text-[#231529]">{inst.name}</p>
-                      <p className={`mt-2 text-xl font-black ${tone}`}>{money(inst.balance)}</p>
+                    <Card key={inst.name} className={`p-3 shrink-0 min-w-[10rem] ${bg}`}>
+                      <p className="text-[10px] font-black uppercase tracking-[0.14em] text-[#76677d]">{inst.type}</p>
+                      <p className="mt-0.5 font-black text-sm text-[#231529]">{inst.name}</p>
+                      <p className={`mt-1 text-lg font-black ${tone}`}>{money(inst.balance)}</p>
                     </Card>
                   )
                 })}
               </div>
             </div>
-            {/* Reserves */}
+            {/* Linha 2: Reservas */}
             <div>
-              <p className="text-sm font-black uppercase tracking-[0.16em] text-purple-700 mb-3">Reservas do mês</p>
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <p className="text-xs font-black uppercase tracking-[0.16em] text-purple-700 mb-3">Reservas do mês</p>
+              <div className="flex gap-3 overflow-x-auto pb-1">
                 {reserves.map(reserve => {
                   const pct = Math.round((reserve.current / reserve.target) * 100)
                   return (
-                    <Card key={reserve.name} className="p-4">
-                      <p className="text-xs font-black uppercase tracking-[0.16em] text-purple-700">Prioridade {reserve.priority}</p>
-                      <p className="mt-1 font-black text-[#231529]">{reserve.name}</p>
-                      <p className="mt-2 text-xl font-black text-purple-800">{money(reserve.current)}</p>
-                      <p className="text-xs text-[#76677d]">Meta {money(reserve.target)} • {pct}%</p>
-                      <div className="mt-2 h-2 overflow-hidden rounded-full bg-purple-100"><div className="h-full rounded-full bg-purple-600" style={{ width: `${pct}%` }} /></div>
+                    <Card key={reserve.name} className="p-3 shrink-0 min-w-[13rem]">
+                      <p className="text-[10px] font-black uppercase tracking-[0.14em] text-purple-700">Prioridade {reserve.priority}</p>
+                      <p className="mt-0.5 font-black text-sm text-[#231529]">{reserve.name}</p>
+                      <p className="mt-1 text-lg font-black text-purple-800">{money(reserve.current)}</p>
+                      <p className="text-[10px] text-[#76677d]">Meta {money(reserve.target)} • {pct}%</p>
+                      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-purple-100"><div className="h-full rounded-full bg-purple-600" style={{ width: `${pct}%` }} /></div>
                     </Card>
                   )
                 })}
@@ -610,10 +610,14 @@ function MonthlyScreen() {
             item.status === 'Pendente' ? 'bg-sky-100 text-sky-800' :
             'bg-purple-100 text-purple-800'
           }`}>{item.status}</span>,
-          <div key={`act-${item.id}`} className="flex flex-wrap gap-1">
-            <Button size="sm" type="button" variant="secondary" className="text-[11px] h-7 px-2">Atualizar</Button>
+          <div key={`act-${item.id}`} className="flex gap-1">
+            <Button size="icon" type="button" variant="secondary" className="h-7 w-7" title="Atualizar — adicionar/remover saldo previsto, gasto débito/crédito, alterar status">
+              <RefreshCw className="h-3.5 w-3.5" />
+            </Button>
             {item.history && item.history.length > 0 && (
-              <Button size="sm" type="button" variant="secondary" className="text-[11px] h-7 px-2" title={item.history.map(h => `${h.month}: Previsto ${money(h.planned)}, Débito ${money(h.debitSpent)}, Crédito ${money(h.creditSpent)}`).join('\n')}>Histórico</Button>
+              <Button size="icon" type="button" variant="secondary" className="h-7 w-7" title={item.history.map(h => `${h.month}: Previsto ${money(h.planned)}, Débito ${money(h.debitSpent)}, Crédito ${money(h.creditSpent)}`).join('\\n')}>
+                <CalendarDays className="h-3.5 w-3.5" />
+              </Button>
             )}
           </div>,
         ] as any[])}
@@ -809,21 +813,23 @@ function SettingsScreen() {
 function DataTable({ columns, rows, emptyMessage = 'Nenhum registro para exibir.' }: { columns: string[]; rows: React.ReactNode[][]; emptyMessage?: string }) {
   return (
     <Card className="overflow-hidden p-0">
-      <div className="hidden overflow-x-auto md:block">
-        <table className="w-full border-collapse text-left text-sm">
-          <thead className="bg-[#fff8f2] text-xs uppercase tracking-[0.14em] text-[#83358F]">
-            <tr>{columns.map(column => <th key={column} className="px-5 py-4 font-black">{column}</th>)}</tr>
+      <div className="hidden md:block">
+        <div className="overflow-auto max-h-[480px]">
+          <table className="w-full border-collapse text-left text-sm">
+          <thead className="bg-[#fff8f2] text-xs uppercase tracking-[0.14em] text-[#83358F] sticky top-0 z-10">
+            <tr>{columns.map(column => <th key={column} className="px-4 py-3 font-black whitespace-nowrap">{column}</th>)}</tr>
           </thead>
           <tbody>
             {rows.length ? rows.map((row, index) => (
               <tr key={index} className="border-t border-[#eadfec] align-top">
-                {row.map((cell, cellIndex) => <td key={`${index}-${cellIndex}`} className="min-w-32 px-5 py-4 font-semibold text-[#4b1f52]">{cell}</td>)}
+                {row.map((cell, cellIndex) => <td key={`${index}-${cellIndex}`} className="min-w-24 px-4 py-3 font-semibold text-[#4b1f52] text-xs whitespace-nowrap">{cell}</td>)}
               </tr>
             )) : (
               <tr className="border-t border-[#eadfec]"><td className="px-5 py-8 text-center font-semibold text-[#76677d]" colSpan={columns.length}>{emptyMessage}</td></tr>
             )}
           </tbody>
         </table>
+        </div>
       </div>
       <div className="space-y-3 p-4 md:hidden">
         {rows.length ? rows.map((row, index) => (
