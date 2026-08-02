@@ -16,6 +16,14 @@ htmlcov/
 .coverage.*
 *.coverage
 
+# Node / frontend
+node_modules/
+apps/*/dist/
+apps/*/data/
+*.tsbuildinfo
+apps/*/vite.config.js
+apps/*/vite.config.d.ts
+
 # Environments
 .env
 .venv
