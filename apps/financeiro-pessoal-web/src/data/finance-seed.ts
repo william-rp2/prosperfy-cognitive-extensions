@@ -37,10 +37,16 @@ export interface MonthlyItem {
   destination: string
   institution: string
   planned: number
+  debitSpent: number
+  creditSpent: number
+  creditCharged: number
+  remaining: number
+  remainingToPay: number
   realized: number
-  status: 'Planejado' | 'Pago' | 'Pendente' | 'Acima do planejado' | 'Sem destino' | 'A revisar'
-  origin: 'Manual demo' | 'Automática' | 'Hermes' | 'WhatsApp' | 'OCR'
+  status: string
+  origin: string
   action: string
+  history?: { month: string; planned: number; debitSpent: number; creditSpent: number }[]
 }
 
 export interface Decision {
@@ -71,10 +77,25 @@ export interface Transaction {
   link: string
 }
 
+export interface InstitutionBalance {
+  name: string
+  balance: number
+  type: 'conta-corrente' | 'poupanca' | 'dinheiro' | 'cartao'
+}
+
+export interface DebtPayable {
+  creditor: string
+  total: number
+  paid: number
+  remaining: number
+  nextDue: string
+  category: string
+}
+
 export const financeSeedMetadata = {
-  version: 'seed-prototype-v0.2',
+  version: 'seed-prototype-v0.3',
   source: 'mock',
-  purpose: 'Protótipo navegável e base para transformar dados em linguagem natural no seed inicial reaproveitável.',
+  purpose: 'Protótipo navegável — Visão Mensal como Planejamento Operacional com tabela de gastos previstos, cards estratégicos e colapse de reservas.',
   canonicalUrl: 'https://minhasfinancas.prosperfy.com.br/',
   lastUpdated: '2026-08-02',
 } as const
@@ -112,13 +133,84 @@ export const financialDestinations: FinancialDestination[] = [
 ]
 
 export const monthlyItems: MonthlyItem[] = [
-  { id: 'item-aluguel', month: '2026-08', date: '05/08', description: 'Aluguel', person: 'William', categoryId: 'moradia', category: 'Moradia', destination: 'Aluguel Agosto', institution: 'Nubank', planned: 2200, realized: 2200, status: 'Pago', origin: 'Manual demo', action: 'Ver comprovante' },
-  { id: 'item-pague-menos', month: '2026-08', date: '02/08', description: 'Pague Menos', person: 'Erika', categoryId: 'saude', category: 'Saúde', destination: 'Mercado de agosto', institution: 'Nubank', planned: 470, realized: 580, status: 'Acima do planejado', origin: 'OCR', action: 'Abrir decisão' },
-  { id: 'item-supermercado', month: '2026-08', date: '02/08', description: 'Supermercado Vitória', person: 'Erika', categoryId: 'mercado', category: 'Mercado', destination: 'Mercado de agosto', institution: 'C6', planned: 345, realized: 345, status: 'Pago', origin: 'Automática', action: 'Classificado' },
-  { id: 'item-gasolina', month: '2026-08', date: '03/08', description: 'Posto Shell', person: 'William', categoryId: 'transporte', category: 'Transporte', destination: 'Gasolina de agosto', institution: 'Nubank', planned: 250, realized: 250, status: 'Pago', origin: 'Automática', action: 'Classificado' },
-  { id: 'item-escola', month: '2026-08', date: '07/08', description: 'Material escolar', person: 'Erika', categoryId: 'criancas', category: 'Crianças', destination: 'Crianças de agosto', institution: 'C6', planned: 300, realized: 330, status: 'Acima do planejado', origin: 'Manual demo', action: 'Revisar destino' },
-  { id: 'item-sem-destino', month: '2026-08', date: '08/08', description: 'Compra não prevista', person: 'William', categoryId: 'sem-categoria', category: 'Sem categoria', destination: 'Sem destino planejado', institution: 'Nubank', planned: 0, realized: 600, status: 'Sem destino', origin: 'Automática', action: 'Enviar para decisão' },
-  { id: 'item-tv', month: '2026-08', date: '10/08', description: 'Parcela TV sala', person: 'William', categoryId: 'reservas', category: 'Reservas e Metas', destination: 'Reserva TV', institution: 'Nubank Cartão', planned: 180, realized: 180, status: 'Planejado', origin: 'Automática', action: 'Vinculado' },
+  {
+    id: 'item-aluguel', month: '2026-08', date: '05/08', description: 'Aluguel', person: 'William',
+    categoryId: 'moradia', category: 'Moradia', destination: 'Aluguel Agosto', institution: 'Nubank',
+    planned: 2200, debitSpent: 2200, creditSpent: 0, creditCharged: 0, remaining: 0, remainingToPay: 0, realized: 2200,
+    status: 'Pago', origin: 'Manual demo', action: 'Ver comprovante',
+    history: [
+      { month: 'Jul/2026', planned: 2200, debitSpent: 2200, creditSpent: 0 },
+      { month: 'Jun/2026', planned: 2200, debitSpent: 2200, creditSpent: 0 },
+    ],
+  },
+  {
+    id: 'item-pague-menos', month: '2026-08', date: '02/08', description: 'Pague Menos', person: 'Erika',
+    categoryId: 'saude', category: 'Saúde', destination: 'Mercado de agosto', institution: 'Nubank',
+    planned: 470, debitSpent: 470, creditSpent: 110, creditCharged: 110, remaining: 0, remainingToPay: 0, realized: 580,
+    status: 'Pago', origin: 'OCR', action: 'Abrir decisão',
+    history: [
+      { month: 'Jul/2026', planned: 420, debitSpent: 390, creditSpent: 0 },
+    ],
+  },
+  {
+    id: 'item-supermercado', month: '2026-08', date: '02/08', description: 'Supermercado Vitória', person: 'Erika',
+    categoryId: 'mercado', category: 'Mercado', destination: 'Mercado de agosto', institution: 'C6',
+    planned: 345, debitSpent: 345, creditSpent: 0, creditCharged: 0, remaining: 0, remainingToPay: 0, realized: 345,
+    status: 'Pago', origin: 'Automática', action: 'Classificado',
+    history: [
+      { month: 'Jul/2026', planned: 400, debitSpent: 380, creditSpent: 0 },
+    ],
+  },
+  {
+    id: 'item-gasolina', month: '2026-08', date: '03/08', description: 'Posto Shell', person: 'William',
+    categoryId: 'transporte', category: 'Transporte', destination: 'Gasolina de agosto', institution: 'Nubank',
+    planned: 250, debitSpent: 250, creditSpent: 0, creditCharged: 0, remaining: 0, remainingToPay: 0, realized: 250,
+    status: 'Pago', origin: 'Automática', action: 'Classificado',
+  },
+  {
+    id: 'item-escola', month: '2026-08', date: '07/08', description: 'Material escolar', person: 'Erika',
+    categoryId: 'criancas', category: 'Crianças', destination: 'Crianças de agosto', institution: 'C6',
+    planned: 300, debitSpent: 330, creditSpent: 0, creditCharged: 0, remaining: -30, remainingToPay: 0, realized: 330,
+    status: 'Acima do planejado', origin: 'Manual demo', action: 'Revisar destino',
+  },
+  {
+    id: 'item-sem-destino', month: '2026-08', date: '08/08', description: 'Compra não prevista', person: 'William',
+    categoryId: 'sem-categoria', category: 'Sem categoria', destination: 'Sem destino planejado', institution: 'Nubank',
+    planned: 0, debitSpent: 0, creditSpent: 600, creditCharged: 0, remaining: 0, remainingToPay: 600, realized: 600,
+    status: 'Sem destino', origin: 'Automática', action: 'Enviar para decisão',
+  },
+  {
+    id: 'item-tv', month: '2026-08', date: '10/08', description: 'Parcela TV sala', person: 'William',
+    categoryId: 'reservas', category: 'Reservas e Metas', destination: 'Reserva TV', institution: 'Nubank Cartão',
+    planned: 180, debitSpent: 0, creditSpent: 180, creditCharged: 180, remaining: 0, remainingToPay: 0, realized: 180,
+    status: 'Planejado', origin: 'Automática', action: 'Vinculado',
+    history: [
+      { month: 'Jul/2026', planned: 180, debitSpent: 0, creditSpent: 180 },
+      { month: 'Jun/2026', planned: 180, debitSpent: 0, creditSpent: 180 },
+    ],
+  },
+  {
+    id: 'item-internet', month: '2026-08', date: '15/08', description: 'Internet fibra', person: 'William',
+    categoryId: 'moradia', category: 'Moradia', destination: 'Aluguel Agosto', institution: 'C6',
+    planned: 120, debitSpent: 0, creditSpent: 120, creditCharged: 0, remaining: 120, remainingToPay: 120, realized: 0,
+    status: 'Pendente', origin: 'Automática', action: 'Aguardando vencimento',
+    history: [
+      { month: 'Jul/2026', planned: 120, debitSpent: 0, creditSpent: 120 },
+      { month: 'Jun/2026', planned: 120, debitSpent: 0, creditSpent: 120 },
+    ],
+  },
+  {
+    id: 'item-farmacia', month: '2026-08', date: '20/08', description: 'Farmácia recorrente', person: 'Erika',
+    categoryId: 'saude', category: 'Saúde', destination: 'Mercado de agosto', institution: 'Nubank',
+    planned: 200, debitSpent: 0, creditSpent: 0, creditCharged: 0, remaining: 200, remainingToPay: 0, realized: 0,
+    status: 'Pendente', origin: 'Manual demo', action: 'Sem movimento',
+  },
+  {
+    id: 'item-uber', month: '2026-08', date: '12/08', description: 'Uber semanal', person: 'William',
+    categoryId: 'transporte', category: 'Transporte', destination: 'Gasolina de agosto', institution: 'Nubank Cartão',
+    planned: 80, debitSpent: 0, creditSpent: 80, creditCharged: 0, remaining: 80, remainingToPay: 80, realized: 0,
+    status: 'Pendente', origin: 'Automática', action: 'Aguardando confirmação',
+  },
 ]
 
 export const decisions: Decision[] = [
@@ -152,11 +244,21 @@ export const reserves: Reserve[] = [
   { name: 'Material escolar', current: 400, target: 1200, location: 'Nubank R$ 400', priority: 'Alta' },
 ]
 
+export const institutionBalances: InstitutionBalance[] = [
+  { name: 'Nubank', balance: 4520, type: 'conta-corrente' },
+  { name: 'C6', balance: 2400, type: 'conta-corrente' },
+  { name: 'Nubank Cartão', balance: -2180, type: 'cartao' },
+  { name: 'Dinheiro físico', balance: 1500, type: 'dinheiro' },
+  { name: 'Bradesco', balance: 0, type: 'conta-corrente' },
+]
+
 export const transactions: Transaction[] = [
   { date: '02/08', description: 'Pague Menos', category: 'Saúde', destination: 'Mercado de agosto', institution: 'Nubank', type: 'Saída', value: 'R$ 580', origin: 'Automática/OCR', link: 'Nota vinculada' },
   { date: '02/08', description: 'Supermercado Vitória', category: 'Mercado', destination: 'Mercado de agosto', institution: 'C6', type: 'Saída', value: 'R$ 345', origin: 'Automática', link: 'Sem comprovante' },
   { date: '01/08', description: 'Salário fictício', category: 'Receita', destination: 'Saldo livre projetado', institution: 'Bradesco', type: 'Entrada', value: 'R$ 7.000', origin: 'Manual demo', link: 'Previsto' },
   { date: '31/07', description: 'Compra cartão — TV', category: 'Reservas e Metas', destination: 'Reserva TV', institution: 'Nubank Cartão', type: 'Cartão', value: 'R$ 180', origin: 'Automática', link: 'Parcela 3/10' },
+  { date: '05/08', description: 'Aluguel', category: 'Moradia', destination: 'Aluguel Agosto', institution: 'Nubank', type: 'Saída', value: 'R$ 2.200', origin: 'Automática', link: 'Comprovante' },
+  { date: '03/08', description: 'Posto Shell', category: 'Transporte', destination: 'Gasolina de agosto', institution: 'Nubank', type: 'Saída', value: 'R$ 250', origin: 'Automática', link: 'Classificado' },
 ]
 
 export const receivables = [
@@ -167,6 +269,12 @@ export const receivables = [
 
 export const loans = [
   { creditor: 'Empréstimo familiar fictício', received: 'R$ 8.000', total: 'R$ 8.800', paid: 'R$ 2.400', remaining: 'R$ 6.400', installment: 'R$ 800', next: '10/08/2026' },
+]
+
+export const debtsPayable: DebtPayable[] = [
+  { creditor: 'Fatura Nubank', total: 1420, paid: 0, remaining: 1420, nextDue: '15/08/2026', category: 'Cartão' },
+  { creditor: 'Fatura C6', total: 760, paid: 0, remaining: 760, nextDue: '20/08/2026', category: 'Cartão' },
+  { creditor: 'Empréstimo familiar', total: 800, paid: 0, remaining: 800, nextDue: '10/08/2026', category: 'Empréstimo' },
 ]
 
 export const cardBills = [
@@ -191,3 +299,9 @@ export const integrations = [
   { name: 'C6', kind: 'Banco', status: 'Pendente futuro', sync: '—', next: 'Não conectar agora' },
   { name: 'WhatsApp', kind: 'Canal', status: 'Representado', sync: 'Simulado', next: 'Integração futura' },
 ]
+
+export const seedFinanceData = {
+  currentMonthIncome: 7000,
+  totalBalance: 8420,
+  totalReserves: 4800,
+}

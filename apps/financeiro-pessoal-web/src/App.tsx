@@ -33,7 +33,8 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react'
-import { FormEvent, useMemo, useState } from 'react'
+import React, { FormEvent, useMemo, useState } from 'react'
+import { ChevronDown, ChevronUp } from 'lucide-react'
 
 import { Button } from './components/ui/button'
 import { Card } from './components/ui/card'
@@ -47,12 +48,15 @@ import {
   documents,
   financeSeedMetadata,
   financialDestinations,
+  institutionBalances,
   integrations,
   loans,
   metrics,
   monthlyItems,
   receivables,
   reserves,
+  debtsPayable,
+  seedFinanceData,
   transactions,
   type Metric,
 } from './data/finance-seed'
@@ -81,8 +85,8 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
-  { id: 'dashboard', label: 'Dashboard Geral', icon: LayoutDashboard, subtitle: 'Resumo executivo' },
   { id: 'monthly', label: 'Visão Mensal', icon: CalendarDays, subtitle: 'Planejamento operacional' },
+  { id: 'dashboard', label: 'Dashboard Geral', icon: LayoutDashboard, subtitle: 'Resumo executivo' },
   { id: 'decisions', label: 'Central de Decisões', icon: ClipboardList, subtitle: 'Autorizações pendentes' },
   { id: 'reserves', label: 'Reservas e Metas', icon: Goal, subtitle: 'Finalidade do dinheiro' },
   { id: 'transactions', label: 'Movimentações', icon: ArrowLeftRight, subtitle: 'Lista neutra' },
@@ -409,15 +413,38 @@ function DashboardScreen() {
   )
 }
 
+function CardStat({ label, value, helper, tone }: { label: string; value: string; helper: string; tone?: string }) {
+  const cls = tone === 'green' ? 'text-emerald-700 border-emerald-100 bg-emerald-50' : tone === 'red' ? 'text-rose-700 border-rose-100 bg-rose-50' : tone === 'yellow' ? 'text-amber-700 border-amber-100 bg-amber-50' : tone === 'blue' ? 'text-sky-700 border-sky-100 bg-sky-50' : tone === 'purple' ? 'text-purple-700 border-purple-100 bg-purple-50' : 'text-[#341539] border-[#eadfec] bg-white'
+  return (
+    <Card className={`p-4 ${cls}`}>
+      <p className="text-[10px] font-black uppercase tracking-[0.16em] opacity-70">{label}</p>
+      <p className="mt-1 text-2xl font-black tracking-[-0.04em]">{value}</p>
+      <p className="mt-1 text-[11px] font-medium opacity-75">{helper}</p>
+    </Card>
+  )
+}
+
 function MonthlyScreen() {
   const [categoryFilter, setCategoryFilter] = useState('Todas')
   const [statusFilter, setStatusFilter] = useState('Todos')
   const [personFilter, setPersonFilter] = useState('Todos')
   const [query, setQuery] = useState('')
+  const [reservesOpen, setReservesOpen] = useState(false)
+  const [monthOffset, setMonthOffset] = useState(0)
 
-  const statuses = ['Todos', ...Array.from(new Set(monthlyItems.map(item => item.status)))]
-  const people = ['Todos', ...Array.from(new Set(monthlyItems.map(item => item.person)))]
-  const filteredItems = monthlyItems.filter(item => {
+  const monthNames = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
+  const now = new Date(2026, 7 + monthOffset, 1)
+  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  const currentMonthLabel = `${monthNames[now.getMonth()]}/${now.getFullYear()}`
+  const currentMonthShort = `${monthNames[now.getMonth()].slice(0, 3)}/${now.getFullYear()}`
+
+  const monthItems = monthlyItems.filter(item => item.month === currentMonth)
+
+  const categorySet = ['Todas', ...Array.from(new Set(monthItems.map(item => item.category)))]
+  const statusSet = ['Todos', ...Array.from(new Set(monthItems.map(item => item.status)))]
+  const peopleSet = ['Todos', ...Array.from(new Set(monthItems.map(item => item.person)))]
+
+  const filteredItems = monthItems.filter(item => {
     const matchesCategory = categoryFilter === 'Todas' || item.category === categoryFilter
     const matchesStatus = statusFilter === 'Todos' || item.status === statusFilter
     const matchesPerson = personFilter === 'Todos' || item.person === personFilter
@@ -426,83 +453,206 @@ function MonthlyScreen() {
     return matchesCategory && matchesStatus && matchesPerson && matchesQuery
   })
 
+  const totalPlanned = monthItems.reduce((acc, item) => acc + item.planned, 0)
+  const totalDebitSpent = monthItems.reduce((acc, item) => acc + item.debitSpent, 0)
+  const totalCreditCharged = monthItems.reduce((acc, item) => acc + item.creditCharged, 0)
+  const totalRealSpent = totalDebitSpent + totalCreditCharged
+  const totalCreditSpent = monthItems.reduce((acc, item) => acc + item.creditSpent, 0)
+  const totalRemaining = monthItems.reduce((acc, item) => acc + item.remaining, 0)
+  const totalRemainingToPay = monthItems.reduce((acc, item) => acc + item.remainingToPay, 0)
+
+  const liquidIncome = seedFinanceData.currentMonthIncome
+  const liquidAtual = seedFinanceData.totalBalance - seedFinanceData.totalReserves
+  const previstoSaldo = liquidAtual - totalPlanned
+  const atualSaldo = liquidAtual - totalRealSpent
+  const resultadoFinanceiro = liquidIncome - totalRealSpent
+
   return (
     <div className="space-y-6">
-      <Card className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
+      {/* Header + month picker */}
+      <Card className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <p className="text-xs font-black uppercase tracking-[0.18em] text-[#83358F]">Mês operacional</p>
-          <h2 className="mt-1 text-2xl font-black text-[#231529]">Agosto/2026</h2>
-          <p className="text-sm text-[#76677d]">Use as setas para consultar Julho/2026 ou planejar Setembro/2026.</p>
+          <p className="text-xs font-black uppercase tracking-[0.18em] text-[#83358F]">Planejamento operacional</p>
+          <h2 className="mt-1 text-2xl font-black text-[#231529]">{currentMonthLabel}</h2>
+          <p className="text-sm text-[#76677d]">Gastos previstos, realizados e saldo projetado.</p>
         </div>
-        <div className="flex gap-2">
-          <Button type="button" variant="secondary"><ChevronLeft className="h-4 w-4" /> Julho</Button>
-          <Button type="button" variant="secondary">Setembro <ChevronRight className="h-4 w-4" /></Button>
+        <div className="flex items-center gap-2">
+          <Button onClick={() => setMonthOffset(offset => offset - 1)} size="sm" type="button" variant="secondary"><ChevronLeft className="h-4 w-4" /></Button>
+          <span className="min-w-[8rem] text-center text-sm font-bold text-[#4b1f52]">{currentMonthShort}</span>
+          <Button onClick={() => setMonthOffset(offset => Math.min(offset + 1, 0))} size="sm" type="button" variant="secondary"><ChevronRight className="h-4 w-4" /></Button>
         </div>
       </Card>
-      <div className="grid gap-4 lg:grid-cols-3 xl:grid-cols-6">
-        {financialDestinations.map(dest => {
-          const balance = dest.planned - dest.spent
-          return (
-            <Card key={dest.name} className="p-5">
-              <p className="text-xs font-black uppercase tracking-[0.16em] text-[#83358F]">{dest.category}</p>
-              <p className="mt-2 font-black text-[#231529]">{dest.name}</p>
-              <p className="mt-3 text-sm text-[#76677d]">Planejado {money(dest.planned)}</p>
-              <p className="text-sm text-[#76677d]">Realizado {money(dest.spent)}</p>
-              <p className={`mt-4 text-xl font-black ${balance < 0 ? 'text-rose-700' : 'text-emerald-700'}`}>{money(balance)}</p>
-              <p className="mt-1 text-xs font-bold uppercase tracking-[0.16em] text-[#83358F]">{dest.status}</p>
-            </Card>
-          )
-        })}
+
+      {/* Main cards — 6 strategic indicators */}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <CardStat label="Valor Líquido Recebido" value={money(liquidIncome)} helper="Total de receitas do mês" tone="green" />
+        <CardStat label="Valor Líquido Atual" value={money(liquidAtual)} helper={`Saldo total (${money(seedFinanceData.totalBalance)}) - reservas (${money(seedFinanceData.totalReserves)})`} tone="blue" />
+        <CardStat label="Gastos Previstos" value={money(totalPlanned)} helper="Soma de todos os gastos planejados" tone="purple" />
+        <CardStat label="Saldo Previsto do Mês" value={money(previstoSaldo)} helper={previstoSaldo < 0 ? 'Atenção: gastos previstos superam saldo líquido' : 'Saldo se todos os gastos forem realizados'} tone={previstoSaldo < 0 ? 'red' : 'green'} />
+        <CardStat label="Saldo Atual do Mês" value={money(atualSaldo)} helper={`Realizado: débito ${money(totalDebitSpent)} + crédito debitado ${money(totalCreditCharged)}`} tone={atualSaldo < 0 ? 'red' : 'green'} />
+        <CardStat label="Resultado Financeiro" value={money(resultadoFinanceiro)} helper={`Recebido ${money(liquidIncome)} - gastos reais ${money(totalRealSpent)}`} tone={resultadoFinanceiro < 0 ? 'red' : 'green'} />
       </div>
+
+      {/* Collapsible Reservas */}
+      <Card className="overflow-hidden p-0">
+        <button className="flex w-full items-center justify-between p-5 text-left transition hover:bg-white/50" onClick={() => setReservesOpen(open => !open)} type="button">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.18em] text-purple-700">Reservas e informações extras</p>
+            <h3 className="mt-1 text-lg font-black text-[#231529]">Saldo por banco, reservas e contas {reservesOpen ? '' : '(clique para expandir)'}</h3>
+          </div>
+          {reservesOpen ? <ChevronUp className="h-5 w-5 shrink-0 text-[#76677d]" /> : <ChevronDown className="h-5 w-5 shrink-0 text-[#76677d]" />}
+        </button>
+        {reservesOpen && (
+          <div className="border-t border-[#eadfec] p-5 space-y-6">
+            {/* Bank balances */}
+            <div>
+              <p className="text-sm font-black uppercase tracking-[0.16em] text-[#83358F] mb-3">Saldo por instituição</p>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {institutionBalances.map(inst => {
+                  const tone = inst.balance < 0 ? 'text-rose-700' : inst.type === 'dinheiro' ? 'text-emerald-700' : 'text-[#341539]'
+                  const bg = inst.balance < 0 ? 'border-rose-100 bg-rose-50' : 'border-[#eadfec] bg-white'
+                  return (
+                    <Card key={inst.name} className={`p-4 ${bg}`}>
+                      <p className="text-xs font-black uppercase tracking-[0.16em] text-[#76677d]">{inst.type}</p>
+                      <p className="mt-1 font-black text-[#231529]">{inst.name}</p>
+                      <p className={`mt-2 text-xl font-black ${tone}`}>{money(inst.balance)}</p>
+                    </Card>
+                  )
+                })}
+              </div>
+            </div>
+            {/* Reserves */}
+            <div>
+              <p className="text-sm font-black uppercase tracking-[0.16em] text-purple-700 mb-3">Reservas do mês</p>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                {reserves.map(reserve => {
+                  const pct = Math.round((reserve.current / reserve.target) * 100)
+                  return (
+                    <Card key={reserve.name} className="p-4">
+                      <p className="text-xs font-black uppercase tracking-[0.16em] text-purple-700">Prioridade {reserve.priority}</p>
+                      <p className="mt-1 font-black text-[#231529]">{reserve.name}</p>
+                      <p className="mt-2 text-xl font-black text-purple-800">{money(reserve.current)}</p>
+                      <p className="text-xs text-[#76677d]">Meta {money(reserve.target)} • {pct}%</p>
+                      <div className="mt-2 h-2 overflow-hidden rounded-full bg-purple-100"><div className="h-full rounded-full bg-purple-600" style={{ width: `${pct}%` }} /></div>
+                    </Card>
+                  )
+                })}
+              </div>
+            </div>
+            {/* Receivables - Debts */}
+            <div className="grid gap-4 md:grid-cols-2">
+              <Card className="p-4 border-sky-100 bg-sky-50/80">
+                <p className="text-xs font-black uppercase tracking-[0.16em] text-sky-700">Saldo a receber</p>
+                <p className="mt-1 text-2xl font-black text-sky-800">{receivables.reduce((acc, r) => acc + parseInt(r.remaining.replace(/[^0-9]/g, ''), 10), 0).toLocaleString('pt-BR', { currency: 'BRL', style: 'currency' })}</p>
+                {receivables.map(r => (
+                  <div key={r.person} className="mt-2 flex items-center justify-between text-sm">
+                    <span className="font-semibold text-[#4b1f52]">{r.person}</span>
+                    <span className="text-sky-700">{r.remaining}</span>
+                  </div>
+                ))}
+                <p className="mt-3 text-[11px] font-medium text-sky-700/70">Recebimentos projetados, não disponíveis imediatamente.</p>
+              </Card>
+              <Card className="p-4 border-rose-100 bg-rose-50/80">
+                <p className="text-xs font-black uppercase tracking-[0.16em] text-rose-700">Dívidas a pagar</p>
+                <p className="mt-1 text-2xl font-black text-rose-800">{debtsPayable.reduce((acc, d) => acc + d.remaining, 0).toLocaleString('pt-BR', { currency: 'BRL', style: 'currency' })}</p>
+                {debtsPayable.map(d => (
+                  <div key={d.creditor} className="mt-2 flex items-center justify-between text-sm">
+                    <span className="font-semibold text-[#4b1f52]">{d.creditor}</span>
+                    <span className="text-rose-700">{money(d.remaining)}</span>
+                  </div>
+                ))}
+                <p className="mt-3 text-[11px] font-medium text-rose-700/70">Compromissos com vencimento neste mês.</p>
+              </Card>
+            </div>
+          </div>
+        )}
+      </Card>
+
+      {/* Filters */}
       <Card className="p-5">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div>
-            <p className="text-xs font-black uppercase tracking-[0.18em] text-[#009688]">Tabela operacional</p>
-            <h3 className="mt-2 text-xl font-black text-[#231529]">Itens do mês com categoria, destino e status</h3>
-            <p className="mt-1 text-sm text-[#76677d]">Use filtros antes de revisar muitos itens. Cards acima são apenas resumo.</p>
+            <p className="text-xs font-black uppercase tracking-[0.18em] text-[#009688]">Tabela de planejamento</p>
+            <h3 className="mt-2 text-xl font-black text-[#231529]">Gastos previstos, realizados e saldo</h3>
+            <p className="mt-1 text-sm text-[#76677d]">Use filtros para localizar itens rapidamente.</p>
           </div>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <Input aria-label="Buscar item mensal" onChange={event => setQuery(event.target.value)} placeholder="Buscar descrição, destino..." value={query} />
+            <Input aria-label="Buscar na tabela" onChange={event => setQuery(event.target.value)} placeholder="Buscar descrição, categoria..." value={query} />
             <select aria-label="Filtrar categoria" className="h-11 rounded-2xl border border-[#eadfec] bg-white px-3 text-sm font-semibold text-[#341539]" onChange={event => setCategoryFilter(event.target.value)} value={categoryFilter}>
-              <option>Todas</option>
-              {categories.map(category => <option key={category.id}>{category.name}</option>)}
+              {categorySet.map(cat => <option key={cat}>{cat}</option>)}
             </select>
             <select aria-label="Filtrar status" className="h-11 rounded-2xl border border-[#eadfec] bg-white px-3 text-sm font-semibold text-[#341539]" onChange={event => setStatusFilter(event.target.value)} value={statusFilter}>
-              {statuses.map(status => <option key={status}>{status}</option>)}
+              {statusSet.map(st => <option key={st}>{st}</option>)}
             </select>
-            <select aria-label="Filtrar pessoa/autoria" className="h-11 rounded-2xl border border-[#eadfec] bg-white px-3 text-sm font-semibold text-[#341539]" onChange={event => setPersonFilter(event.target.value)} value={personFilter}>
-              {people.map(person => <option key={person}>{person}</option>)}
+            <select aria-label="Filtrar pessoa" className="h-11 rounded-2xl border border-[#eadfec] bg-white px-3 text-sm font-semibold text-[#341539]" onChange={event => setPersonFilter(event.target.value)} value={personFilter}>
+              {peopleSet.map(p => <option key={p}>{p}</option>)}
             </select>
           </div>
         </div>
       </Card>
+
+      {/* Planning table */}
       <DataTable
-        columns={['Data', 'Descrição', 'Pessoa', 'Categoria', 'Destino financeiro', 'Instituição', 'Previsto', 'Realizado', 'Diferença', 'Status', 'Origem', 'Ação']}
+        columns={['Categoria', 'Descrição', 'Valor Previsto', 'Valor Gasto (Débito)', 'Valor Gasto (Crédito)', 'Crédito debitado', 'Valor restante', 'Valor restante p/ quitar', 'Status', 'Ações']}
         rows={filteredItems.map(item => [
-          item.date,
-          item.description,
-          item.person,
-          item.category,
-          item.destination,
-          item.institution,
+          <span key={`cat-${item.id}`} className="whitespace-nowrap"><span className="font-medium text-[#83358F]">{item.category}</span></span>,
+          <span key={`desc-${item.id}`} className="font-medium">{item.description}</span>,
           money(item.planned),
-          money(item.realized),
-          money(item.planned - item.realized),
-          item.status,
-          item.origin,
-          item.action,
-        ])}
-        emptyMessage="Nenhum item encontrado para os filtros selecionados."
+          item.debitSpent > 0 ? money(item.debitSpent) : '—',
+          item.creditSpent > 0 ? money(item.creditSpent) : '—',
+          item.creditCharged > 0 ? money(item.creditCharged) : '—',
+          <span key={`rem-${item.id}`} className={item.remaining < 0 ? 'text-rose-700 font-bold' : 'text-emerald-700'}>{item.remaining >= 0 ? money(item.remaining) : `-${money(Math.abs(item.remaining))}`}</span>,
+          item.remainingToPay > 0 ? money(item.remainingToPay) : '—',
+          <span key={`st-${item.id}`} className={`inline-block rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+            item.status === 'Pago' || item.status === 'Classificado' ? 'bg-emerald-100 text-emerald-800' :
+            item.status === 'Acima do planejado' ? 'bg-amber-100 text-amber-800' :
+            item.status === 'Sem destino' ? 'bg-rose-100 text-rose-800' :
+            item.status === 'Pendente' ? 'bg-sky-100 text-sky-800' :
+            'bg-purple-100 text-purple-800'
+          }`}>{item.status}</span>,
+          <div key={`act-${item.id}`} className="flex flex-wrap gap-1">
+            <Button size="sm" type="button" variant="secondary" className="text-[11px] h-7 px-2">Atualizar</Button>
+            {item.history && item.history.length > 0 && (
+              <Button size="sm" type="button" variant="secondary" className="text-[11px] h-7 px-2" title={item.history.map(h => `${h.month}: Previsto ${money(h.planned)}, Débito ${money(h.debitSpent)}, Crédito ${money(h.creditSpent)}`).join('\n')}>Histórico</Button>
+            )}
+          </div>,
+        ] as any[])}
+        emptyMessage="Nenhum gasto previsto para este mês com os filtros selecionados."
       />
-      <div className="grid gap-6 xl:grid-cols-[1fr_0.8fr]">
-        <HermesPanel title="Sugestão de remanejamento" />
-        <Card>
-          <p className="font-black text-[#231529]">Histórico de remanejamentos</p>
-          <div className="mt-4 rounded-2xl border border-[#eadfec] bg-white/70 p-4 text-sm leading-6 text-[#76677d]">
-            Origem: Extras • Destino: Crianças de agosto • Categoria: Crianças • Valor: R$ 30 • Justificativa: ajuste simulado para item acima do planejado • Ação exige autorização.
+
+      {/* Summary row */}
+      <Card className="p-4 border-t-2 border-t-[#341539]">
+        <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6 text-sm">
+          <div><span className="text-[10px] font-black uppercase tracking-[0.14em] text-[#76677d]">Total previsto</span><p className="font-black text-[#231529]">{money(totalPlanned)}</p></div>
+          <div><span className="text-[10px] font-black uppercase tracking-[0.14em] text-[#76677d]">Total débito</span><p className="font-black text-emerald-700">{money(totalDebitSpent)}</p></div>
+          <div><span className="text-[10px] font-black uppercase tracking-[0.14em] text-[#76677d]">Total crédito</span><p className="font-black text-amber-700">{money(totalCreditSpent)}</p></div>
+          <div><span className="text-[10px] font-black uppercase tracking-[0.14em] text-[#76677d]">Crédito debitado</span><p className="font-black text-amber-700">{money(totalCreditCharged)}</p></div>
+          <div><span className="text-[10px] font-black uppercase tracking-[0.14em] text-[#76677d]">Valor restante</span><p className={`font-black ${totalRemaining < 0 ? 'text-rose-700' : 'text-emerald-700'}`}>{money(totalRemaining)}</p></div>
+          <div><span className="text-[10px] font-black uppercase tracking-[0.14em] text-[#76677d]">Restante p/ quitar</span><p className="font-black text-rose-700">{totalRemainingToPay > 0 ? money(totalRemainingToPay) : '—'}</p></div>
+        </div>
+      </Card>
+
+      {/* Sugestão de remanejamento */}
+      <Card className="border-sky-100 bg-sky-50/80 p-5">
+        <div className="flex items-start gap-3">
+          <div className="rounded-2xl bg-sky-100 p-3 text-sky-700">
+            <Sparkles className="h-5 w-5" />
           </div>
-        </Card>
-      </div>
+          <div className="min-w-0">
+            <p className="font-black text-sky-900">Sugestão de remanejamento</p>
+            <p className="mt-2 text-sm leading-6 text-sky-800/82">
+              {totalRemaining < 0
+                ? `William, há ${money(Math.abs(totalRemaining))} em gastos acima do planejado este mês. Posso sugerir cobertura usando saldo de categorias com folga ou reservas — somente se você autorizar.`
+                : `William, no momento todos os gastos previstos estão dentro do planejamento. Há ${money(totalRemaining)} de folga para remanejamentos se necessário.`
+              }
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Button size="sm" type="button">Autorizar simulação</Button>
+              <Button size="sm" type="button" variant="secondary">Personalizar</Button>
+            </div>
+          </div>
+        </div>
+      </Card>
     </div>
   )
 }
@@ -656,7 +806,7 @@ function SettingsScreen() {
   )
 }
 
-function DataTable({ columns, rows, emptyMessage = 'Nenhum registro para exibir.' }: { columns: string[]; rows: string[][]; emptyMessage?: string }) {
+function DataTable({ columns, rows, emptyMessage = 'Nenhum registro para exibir.' }: { columns: string[]; rows: React.ReactNode[][]; emptyMessage?: string }) {
   return (
     <Card className="overflow-hidden p-0">
       <div className="hidden overflow-x-auto md:block">
@@ -704,7 +854,7 @@ function ScreenContent({ activeScreen }: { activeScreen: ScreenId }) {
 function AdminDashboard({ session, onLogout }: { session: AuthSession; onLogout: () => void }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [activeScreen, setActiveScreen] = useState<ScreenId>('dashboard')
+  const [activeScreen, setActiveScreen] = useState<ScreenId>('monthly')
   const [mode, setMode] = useState<UiMode>('normal')
   const displayName = useMemo(() => session.username.split('@')[0] || session.username, [session.username])
   const isPluggyPoc = window.location.pathname === '/poc/pluggy'
