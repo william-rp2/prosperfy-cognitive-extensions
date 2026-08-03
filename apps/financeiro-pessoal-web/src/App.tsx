@@ -97,6 +97,8 @@ const navItems: NavItem[] = [
   { id: 'settings', label: 'Configurações do Sistema', icon: Settings, subtitle: 'Regras e segurança' },
 ]
 
+const monthNames = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
+
 function money(value: number) {
   return value.toLocaleString('pt-BR', { currency: 'BRL', style: 'currency' })
 }
@@ -424,19 +426,16 @@ function CardStat({ label, value, helper, tone }: { label: string; value: string
   )
 }
 
-function MonthlyScreen() {
+function MonthlyScreen({ monthOffset, setMonthOffset }: { monthOffset: number; setMonthOffset: (n: number) => void }) {
   const [categoryFilter, setCategoryFilter] = useState('Todas')
   const [statusFilter, setStatusFilter] = useState('Todos')
   const [personFilter, setPersonFilter] = useState('Todos')
   const [query, setQuery] = useState('')
   const [reservesOpen, setReservesOpen] = useState(false)
-  const [monthOffset, setMonthOffset] = useState(0)
 
-  const monthNames = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
   const now = new Date(2026, 7 + monthOffset, 1)
   const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
   const currentMonthLabel = `${monthNames[now.getMonth()]}/${now.getFullYear()}`
-  const currentMonthShort = `${monthNames[now.getMonth()].slice(0, 3)}/${now.getFullYear()}`
 
   const monthItems = monthlyItems.filter(item => item.month === currentMonth)
 
@@ -469,19 +468,6 @@ function MonthlyScreen() {
 
   return (
     <div className="space-y-6">
-      {/* Header + month picker - mesma linha */}
-      <Card className="flex items-center justify-between gap-4 p-5">
-        <div className="flex items-center gap-3 min-w-0">
-          <p className="shrink-0 text-xs font-black uppercase tracking-[0.18em] text-[#83358F]">Planejamento operacional</p>
-          <span className="hidden sm:block h-5 w-px bg-[#eadfec]" />
-          <h2 className="text-xl font-black text-[#231529] whitespace-nowrap">{currentMonthLabel}</h2>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <Button onClick={() => setMonthOffset(o => o - 1)} size="sm" type="button" variant="secondary"><ChevronLeft className="h-4 w-4" /></Button>
-          <span className="min-w-[6rem] text-center text-sm font-bold text-[#4b1f52]">{currentMonthShort}</span>
-          <Button onClick={() => setMonthOffset(o => Math.min(o + 1, 0))} size="sm" type="button" variant="secondary"><ChevronRight className="h-4 w-4" /></Button>
-        </div>
-      </Card>
 
       {/* Main cards — uma linha horizontal */}
       <div className="flex gap-3 overflow-x-auto pb-1">
@@ -568,26 +554,21 @@ function MonthlyScreen() {
         )}
       </Card>
 
-      {/* Filters */}
+      {/* Filters inline */}
       <Card className="p-5">
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-          <div>
-            <p className="text-xs font-black uppercase tracking-[0.18em] text-[#009688]">Tabela de planejamento</p>
-            <h3 className="mt-2 text-xl font-black text-[#231529]">Gastos previstos, realizados e saldo</h3>
-            <p className="mt-1 text-sm text-[#76677d]">Use filtros para localizar itens rapidamente.</p>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <Input aria-label="Buscar na tabela" onChange={event => setQuery(event.target.value)} placeholder="Buscar descrição, categoria..." value={query} />
-            <select aria-label="Filtrar categoria" className="h-11 rounded-2xl border border-[#eadfec] bg-white px-3 text-sm font-semibold text-[#341539]" onChange={event => setCategoryFilter(event.target.value)} value={categoryFilter}>
-              {categorySet.map(cat => <option key={cat}>{cat}</option>)}
-            </select>
-            <select aria-label="Filtrar status" className="h-11 rounded-2xl border border-[#eadfec] bg-white px-3 text-sm font-semibold text-[#341539]" onChange={event => setStatusFilter(event.target.value)} value={statusFilter}>
-              {statusSet.map(st => <option key={st}>{st}</option>)}
-            </select>
-            <select aria-label="Filtrar pessoa" className="h-11 rounded-2xl border border-[#eadfec] bg-white px-3 text-sm font-semibold text-[#341539]" onChange={event => setPersonFilter(event.target.value)} value={personFilter}>
-              {peopleSet.map(p => <option key={p}>{p}</option>)}
-            </select>
-          </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <p className="shrink-0 text-xs font-black uppercase tracking-[0.18em] text-[#009688]">Filtros</p>
+          <span className="h-5 w-px bg-[#eadfec]" />
+          <Input aria-label="Buscar na tabela" onChange={event => setQuery(event.target.value)} placeholder="Buscar descrição, categoria..." value={query} className="w-48" />
+          <select aria-label="Filtrar categoria" className="h-11 rounded-2xl border border-[#eadfec] bg-white px-3 text-sm font-semibold text-[#341539]" onChange={event => setCategoryFilter(event.target.value)} value={categoryFilter}>
+            {categorySet.map(cat => <option key={cat}>{cat}</option>)}
+          </select>
+          <select aria-label="Filtrar status" className="h-11 rounded-2xl border border-[#eadfec] bg-white px-3 text-sm font-semibold text-[#341539]" onChange={event => setStatusFilter(event.target.value)} value={statusFilter}>
+            {statusSet.map(st => <option key={st}>{st}</option>)}
+          </select>
+          <select aria-label="Filtrar pessoa" className="h-11 rounded-2xl border border-[#eadfec] bg-white px-3 text-sm font-semibold text-[#341539]" onChange={event => setPersonFilter(event.target.value)} value={personFilter}>
+            {peopleSet.map(p => <option key={p}>{p}</option>)}
+          </select>
         </div>
       </Card>
 
@@ -844,9 +825,9 @@ function DataTable({ columns, rows, emptyMessage = 'Nenhum registro para exibir.
   )
 }
 
-function ScreenContent({ activeScreen }: { activeScreen: ScreenId }) {
+function ScreenContent({ activeScreen, monthOffset, setMonthOffset }: { activeScreen: ScreenId; monthOffset: number; setMonthOffset: (n: number) => void }) {
   if (activeScreen === 'dashboard') return <DashboardScreen />
-  if (activeScreen === 'monthly') return <MonthlyScreen />
+  if (activeScreen === 'monthly') return <MonthlyScreen monthOffset={monthOffset} setMonthOffset={setMonthOffset} />
   if (activeScreen === 'decisions') return <DecisionsScreen />
   if (activeScreen === 'reserves') return <ReservesScreen />
   if (activeScreen === 'transactions') return <TransactionsScreen />
@@ -862,11 +843,14 @@ function AdminDashboard({ session, onLogout }: { session: AuthSession; onLogout:
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [activeScreen, setActiveScreen] = useState<ScreenId>('monthly')
   const [mode, setMode] = useState<UiMode>('normal')
+  const [monthOffset, setMonthOffset] = useState(0)
   const displayName = useMemo(() => session.username.split('@')[0] || session.username, [session.username])
   const isPluggyPoc = window.location.pathname === '/poc/pluggy'
   const activeItem = navItems.find(item => item.id === activeScreen) ?? navItems[0]
 
   if (isPluggyPoc) return <PluggyPocPage />
+
+  const now = new Date(2026, 7 + monthOffset, 1)
 
   return (
     <div className={`min-h-screen lg:grid ${sidebarCollapsed ? 'lg:grid-cols-[6rem_1fr]' : 'lg:grid-cols-[20rem_1fr]'}`}>
@@ -877,20 +861,51 @@ function AdminDashboard({ session, onLogout }: { session: AuthSession; onLogout:
         <main className="px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
           <section className="mb-6 rounded-[2rem] border border-[#eadfec] bg-white/72 p-5 shadow-xl shadow-[#341539]/7 backdrop-blur sm:p-6">
             <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-              <div>
-                <p className="text-sm font-bold uppercase tracking-[0.22em] text-[#009688]">Agosto/2026 • cenário fictício</p>
-                <h2 className="mt-2 text-3xl font-black tracking-[-0.04em] text-[#231529]">{activeItem.subtitle}</h2>
-                <p className="mt-2 max-w-3xl text-sm leading-6 text-[#76677d]">Protótipo navegável para validar experiência, regras e jornada. Não usa dados financeiros reais, banco definitivo, backend financeiro definitivo ou integrações reais.</p>
+              <div className="flex flex-col gap-2 min-w-0">
+                <div className="flex flex-wrap items-center gap-3">
+                  <p className="shrink-0 text-sm font-bold uppercase tracking-[0.22em] text-[#009688]">{activeScreen === 'monthly' ? `${monthNames[now.getMonth()]}/${now.getFullYear()} • cenário fictício` : 'Agosto/2026 • cenário fictício'}</p>
+                  <span className="h-5 w-px bg-[#eadfec]" />
+                  <h2 className="text-xl font-black tracking-[-0.03em] text-[#231529]">{activeItem.subtitle}</h2>
+                  {activeScreen === 'monthly' && (
+                    <div className="flex items-center gap-2">
+                      <select
+                        aria-label="Selecionar mês"
+                        className="h-9 rounded-xl border border-[#eadfec] bg-white px-3 text-sm font-bold text-[#4b1f52]"
+                        value={now.getMonth()}
+                        onChange={e => {
+                          const m = parseInt(e.target.value)
+                          const y = now.getFullYear()
+                          setMonthOffset((y - 2026) * 12 + (m - 7))
+                        }}
+                      >
+                        {monthNames.map((name, idx) => <option key={idx} value={idx}>{name}</option>)}
+                      </select>
+                      <select
+                        aria-label="Selecionar ano"
+                        className="h-9 rounded-xl border border-[#eadfec] bg-white px-3 text-sm font-bold text-[#4b1f52]"
+                        value={now.getFullYear()}
+                        onChange={e => {
+                          const y = parseInt(e.target.value)
+                          const m = now.getMonth()
+                          setMonthOffset((y - 2026) * 12 + (m - 7))
+                        }}
+                      >
+                        {[2024, 2025, 2026, 2027, 2028].map(y => <option key={y} value={y}>{y}</option>)}
+                      </select>
+                    </div>
+                  )}
+                </div>
+                <p className="max-w-3xl text-sm leading-6 text-[#76677d]">{activeScreen === 'monthly' ? 'Gastos previstos, realizados e saldo projetado.' : 'Protótipo navegável para validar experiência, regras e jornada. Não usa dados financeiros reais, banco definitivo, backend financeiro definitivo ou integrações reais.'}</p>
               </div>
-              <div className="flex flex-wrap gap-2">
-                <span className="rounded-full border border-emerald-100 bg-emerald-50 px-4 py-2 text-xs font-black uppercase tracking-[0.14em] text-emerald-700">William</span>
-                <span className="rounded-full border border-purple-100 bg-purple-50 px-4 py-2 text-xs font-black uppercase tracking-[0.14em] text-purple-700">Erika</span>
-                <span className="rounded-full border border-sky-100 bg-sky-50 px-4 py-2 text-xs font-black uppercase tracking-[0.14em] text-sky-700">Hermes autorizado</span>
+              <div className="flex flex-wrap gap-2 shrink-0">
+                <span className="rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.14em] text-emerald-700">William</span>
+                <span className="rounded-full border border-purple-100 bg-purple-50 px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.14em] text-purple-700">Erika</span>
+                <span className="rounded-full border border-sky-100 bg-sky-50 px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.14em] text-sky-700">Hermes autorizado</span>
               </div>
             </div>
           </section>
           <StateBanner mode={mode} />
-          <ScreenContent activeScreen={activeScreen} />
+          <ScreenContent activeScreen={activeScreen} monthOffset={monthOffset} setMonthOffset={setMonthOffset} />
         </main>
       </div>
     </div>
