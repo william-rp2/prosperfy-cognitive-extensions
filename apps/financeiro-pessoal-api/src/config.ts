@@ -22,6 +22,15 @@ const envSchema = z.object({
   PLUGGY_ENV: z.enum(['sandbox', 'production']).default('sandbox'),
   PLUGGY_STORE_PATH: z.string().default('./data/pluggy-poc-store.json'),
   PUBLIC_BASE_URL: z.string().optional(),
+
+  // Sync architecture (Conector 200 / Meu Pluggy — sem webhooks, sem plano PRO).
+  FINANCE_DB_PATH: z.string().default('./data/financeiro-pessoal.sqlite3'),
+  FINANCE_API_TOKEN: z.string().optional(),
+  PLUGGY_SYNC_ENABLED: booleanFromEnv.default(false),
+  PLUGGY_SYNC_INTERVAL_HOURS: z.coerce.number().positive().default(6),
+  PLUGGY_SYNC_SAFETY_WINDOW_HOURS: z.coerce.number().nonnegative().default(24),
+  PLUGGY_SYNC_MAX_CONCURRENT_ITEMS: z.coerce.number().int().positive().default(3),
+  PLUGGY_SYNC_STALE_LOCK_MINUTES: z.coerce.number().positive().default(30),
 })
 
 export type AppConfig = z.infer<typeof envSchema>

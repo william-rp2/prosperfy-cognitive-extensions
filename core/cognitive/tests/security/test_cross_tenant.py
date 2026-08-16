@@ -1,37 +1,28 @@
 """
-tests/security/test_cross_tenant.py — Testes de segurança cross-tenant.
+tests/security/test_cross_tenant.py — Testes de segurança cross-tenant (Sprint 0.2).
 
-GATE:
-  test_cross_tenant_audit_isolation
-  test_cross_tenant_capability_grant_denied
+Usa fixtures do conftest.py com IdentityResolver in-memory.
 """
 
 from __future__ import annotations
 
+import asyncio
 import pytest
 from fastapi.testclient import TestClient
 
+from cognitive.contracts.audit import AuditOutcome
 from cognitive.contracts.tenancy import CapabilityGrant
-from cognitive.tenancy.context import _STATIC_CREDENTIALS, register_static_credential
 
 
-@pytest.fixture(autouse=True)
-def clear_creds():
-    _STATIC_CREDENTIALS.clear()
-    yield
-    _STATIC_CREDENTIALS.clear()
-
-
-def test_cross_tenant_audit_isolation(app_and_services):
+def test_cross_tenant_audit_isolation(app_and_services, tenant_a_headers):
     """
     GATE: tenant-b não deve conseguir acessar audits do tenant-a.
 
-    Verifica isolamento de dados em nível de aplicação (Sprint 0.1).
+    Verifica isolamento de dados em nível de aplicação (in-memory Sprint 0.1)
+    e confirma que será reforçado por RLS no Sprint 0.2 (testes em tests/db/).
     """
     app, registry, audit_writer, _ = app_and_services
 
-    # Setup: tenant-a executa infra.inspect
-    register_static_credential("secret-a", "tenant-a", "actor-a", "owner-core")
     registry.register_grant(CapabilityGrant(
         tenant_id="tenant-a",
         profile="owner-core",
@@ -42,33 +33,37 @@ def test_cross_tenant_audit_isolation(app_and_services):
         r = client.post(
             "/v1/capabilities/infra.inspect/execute",
             json={"params": {"resource": "prosperfy-main"}},
-            headers={
-                "Authorization": "Bearer secret-a",
-                "X-Tenant-Id": "tenant-a",
-                "X-Actor-Id": "actor-a",
-            },
+            headers=tenant_a_headers,
         )
 
     assert r.json()["status"] == "completed"
     audit_id = r.json()["audit_id"]
 
-    # tenant-b tenta acessar o audit_id do tenant-a diretamente (app-layer)
-    import asyncio
-    result = asyncio.get_event_loop().run_until_complete(
-        audit_writer.get(audit_id, tenant_id="tenant-b")
-    )
-    # DEVE ser None — cross-tenant isolation
+    # tenant-b tenta acessar o audit_id do tenant-a
+    loop = asyncio.new_event_loop()
+    try:
+        result = loop.run_until_complete(
+            audit_writer.get(audit_id, tenant_id="tenant-b")
+        )
+    finally:
+        loop.close()
+
     assert result is None, "Cross-tenant audit access deve ser bloqueado"
 
     # tenant-a pode acessar o próprio audit
-    own = asyncio.get_event_loop().run_until_complete(
-        audit_writer.get(audit_id, tenant_id="tenant-a")
-    )
+    loop2 = asyncio.new_event_loop()
+    try:
+        own = loop2.run_until_complete(
+            audit_writer.get(audit_id, tenant_id="tenant-a")
+        )
+    finally:
+        loop2.close()
+
     assert own is not None
     assert own.tenant_id == "tenant-a"
 
 
-def test_cross_tenant_capability_grant_denied(app_and_services):
+def test_cross_tenant_capability_grant_denied(app_and_services, tenant_b_headers):
     """
     GATE: tenant-b não deve executar capability usando grant de tenant-a.
 
@@ -76,9 +71,7 @@ def test_cross_tenant_capability_grant_denied(app_and_services):
     """
     app, registry, audit_writer, _ = app_and_services
 
-    # Somente tenant-a tem grant
-    register_static_credential("secret-a", "tenant-a", "actor-a", "owner-core")
-    register_static_credential("secret-b", "tenant-b", "actor-b", "owner-core")
+    # Somente tenant-a tem grant — tenant-b não tem
     registry.register_grant(CapabilityGrant(
         tenant_id="tenant-a",
         profile="owner-core",
@@ -89,23 +82,17 @@ def test_cross_tenant_capability_grant_denied(app_and_services):
         r = client.post(
             "/v1/capabilities/infra.inspect/execute",
             json={"params": {"resource": "prosperfy-main"}},
-            headers={
-                "Authorization": "Bearer secret-b",
-                "X-Tenant-Id": "tenant-b",
-                "X-Actor-Id": "actor-b",
-            },
+            headers=tenant_b_headers,
         )
 
     data = r.json()
-    # tenant-b deve ser DENIED — sem grant próprio
     assert data["status"] == "failed"
 
     events_b = audit_writer.get_all_for_tenant("tenant-b")
     assert len(events_b) == 1
-    from cognitive.contracts.audit import AuditOutcome
     assert events_b[0].outcome == AuditOutcome.DENIED
 
-    # tenant-a não deve ter nenhum audit registrado (não executou)
+    # tenant-a não deve ter nenhum audit registrado
     events_a = audit_writer.get_all_for_tenant("tenant-a")
     assert len(events_a) == 0
 
@@ -114,10 +101,9 @@ def test_wrong_tenant_header_rejected(app_and_services):
     """
     Credential de tenant-a não deve funcionar com X-Tenant-Id de tenant-b.
 
-    Verificação de binding credential↔tenant nos headers.
+    Verificação de binding credential↔tenant no IdentityResolver.
     """
     app, *_ = app_and_services
-    register_static_credential("secret-a", "tenant-a", "actor-a", "owner-core")
 
     with TestClient(app) as client:
         r = client.post(

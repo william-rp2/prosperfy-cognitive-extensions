@@ -3,7 +3,16 @@ import Fastify, { FastifyRequest } from 'fastify'
 import { z } from 'zod'
 
 import { AppConfig, getConfigStatus, loadConfig } from './config.js'
-import { MissingPluggySecretsError, PluggyPort, SdkPluggyPort } from './pluggy.js'
+import { AccountsRepository } from './finance/accountsRepository.js'
+import { openFinanceDb, type FinanceDb } from './finance/db.js'
+import { ItemsRepository } from './finance/itemsRepository.js'
+import { PluggySyncService } from './finance/pluggySyncService.js'
+import { ProductsRepository } from './finance/productsRepository.js'
+import { PluggySyncScheduler } from './finance/scheduler.js'
+import { SyncRunsRepository } from './finance/syncRunsRepository.js'
+import { TransactionsRepository } from './finance/transactionsRepository.js'
+import { MissingPluggySecretsError, PluggyPort, PluggySyncClient, SdkPluggyPort } from './pluggy.js'
+import { registerFinanceRoutes } from './routes/finance.js'
 import { maskSensitive, parseDate, safeCompare } from './safe.js'
 import { JsonPocStore } from './store.js'
 
@@ -59,11 +68,31 @@ export interface CreateAppOptions {
   config?: AppConfig
   store?: JsonPocStore
   pluggy?: PluggyPort
+  /** Granular Pluggy surface used by the sync service. Defaults to the same centralized SdkPluggyPort instance as `pluggy`. */
+  pluggySync?: PluggySyncClient
+  /** Injectable SQLite connection for tests (e.g. openFinanceDb(':memory:')). Defaults to config.FINANCE_DB_PATH. */
+  financeDb?: FinanceDb
+  /** Skip starting the in-process cron timer (tests never want a background timer running). */
+  disableScheduler?: boolean
 }
 
 export function createApp(options: CreateAppOptions = {}) {
   const config = options.config || loadConfig()
   const store = options.store || new JsonPocStore(config.PLUGGY_STORE_PATH)
+
+  // Single centralized Pluggy client instance, shared by every route and by the sync service —
+  // construction never throws (secrets are only required on first actual call).
+  const sdkPluggyPort = new SdkPluggyPort(config)
+  const pluggy = options.pluggy || sdkPluggyPort
+  const pluggySync = options.pluggySync || sdkPluggyPort
+
+  const financeDb = options.financeDb || openFinanceDb(config.FINANCE_DB_PATH)
+  const itemsRepository = new ItemsRepository(financeDb)
+  const accountsRepository = new AccountsRepository(financeDb)
+  const transactionsRepository = new TransactionsRepository(financeDb)
+  const productsRepository = new ProductsRepository(financeDb)
+  const syncRunsRepository = new SyncRunsRepository(financeDb)
+
   const app = Fastify({
     logger: {
       redact: ['req.headers.authorization', `req.headers.${config.PLUGGY_WEBHOOK_HEADER}`, '*.accessToken', '*.clientSecret'],
@@ -71,7 +100,43 @@ export function createApp(options: CreateAppOptions = {}) {
     bodyLimit: 512 * 1024,
   })
 
+  syncRunsRepository.releaseStaleLocks(config.PLUGGY_SYNC_STALE_LOCK_MINUTES * 60 * 1000)
+
+  const syncService = new PluggySyncService({
+    pluggy: pluggySync,
+    items: itemsRepository,
+    accounts: accountsRepository,
+    transactions: transactionsRepository,
+    products: productsRepository,
+    syncRuns: syncRunsRepository,
+    safetyWindowHours: config.PLUGGY_SYNC_SAFETY_WINDOW_HOURS,
+    maxConcurrentItems: config.PLUGGY_SYNC_MAX_CONCURRENT_ITEMS,
+    logger: app.log,
+  })
+
+  const scheduler = new PluggySyncScheduler({
+    enabled: config.PLUGGY_SYNC_ENABLED,
+    intervalHours: config.PLUGGY_SYNC_INTERVAL_HOURS,
+    syncService,
+    logger: app.log,
+  })
+  if (!options.disableScheduler) scheduler.start()
+  app.addHook('onClose', async () => {
+    scheduler.stop()
+    if (!options.financeDb) financeDb.close()
+  })
+
   void app.register(cors, { origin: config.CORS_ORIGIN, strictPreflight: false })
+
+  registerFinanceRoutes(app, {
+    config,
+    items: itemsRepository,
+    accounts: accountsRepository,
+    transactions: transactionsRepository,
+    syncRuns: syncRunsRepository,
+    syncService,
+    scheduler,
+  })
 
   app.get('/health', async () => ({ ok: true, app: 'financeiro-pessoal-api' }))
 
@@ -86,7 +151,6 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.post('/api/connect-token', async (_request, reply) => {
     try {
-      const pluggy = options.pluggy || new SdkPluggyPort(config)
       const token = await pluggy.createConnectToken()
       return reply.send({ accessToken: token.accessToken })
     } catch (error) {
@@ -98,10 +162,31 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   })
 
+  // Item discovery: Pluggy has no "list items" endpoint (by design, for security), so
+  // this Connect-Widget callback is the only place a new itemId is ever learned.
   app.post('/api/pluggy/items', async (request, reply) => {
     const parsed = itemSchema.safeParse(request.body)
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_item_payload' })
-    const item = await store.upsertItem(parsed.data.itemId, config.PLUGGY_CLIENT_USER_ID)
+    const { itemId } = parsed.data
+
+    const item = await store.upsertItem(itemId, config.PLUGGY_CLIENT_USER_ID)
+
+    try {
+      const pluggyItem = await pluggySync.fetchItem(itemId)
+      itemsRepository.upsertItem({
+        pluggyItemId: itemId,
+        connectorId: pluggyItem.connector?.id ?? null,
+        connectorName: pluggyItem.connector?.name ?? null,
+        status: pluggyItem.status,
+        executionStatus: pluggyItem.executionStatus,
+        lastSuccessfulUpdate: pluggyItem.lastUpdatedAt ? new Date(pluggyItem.lastUpdatedAt).toISOString() : null,
+        rawMetadata: { connector: pluggyItem.connector, statusDetail: pluggyItem.statusDetail },
+      })
+    } catch (error) {
+      app.log.warn({ err: error, itemId }, 'pluggy: não foi possível enriquecer item com dados do connector no registro; persistindo com dados mínimos')
+      itemsRepository.upsertItem({ pluggyItemId: itemId, status: 'CREATED' })
+    }
+
     return reply.send({ item })
   })
 
@@ -111,7 +196,6 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!itemId) return reply.code(400).send({ error: 'missing_item_id' })
 
     try {
-      const pluggy = options.pluggy || new SdkPluggyPort(config)
       const snapshot = await pluggy.fetchSnapshot(itemId, {
         dateFrom: parseDate(query.dateFrom),
         dateTo: parseDate(query.dateTo),

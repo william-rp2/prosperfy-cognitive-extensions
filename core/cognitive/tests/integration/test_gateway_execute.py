@@ -1,14 +1,7 @@
 """
-tests/integration/test_gateway_execute.py — Testes de integração do Gateway end-to-end.
+tests/integration/test_gateway_execute.py — Testes de integração do Gateway end-to-end (Sprint 0.2).
 
-GATE:
-  test_capability_execute_without_tenant_returns_401
-  test_capability_execute_without_actor_returns_401
-  test_policy_deny_blocks_adapter_call
-  test_policy_confirm_does_not_call_adapter
-  test_infra_inspect_allow_writes_audit_and_telemetry
-  test_idempotency_key_prevents_duplicate_execution
-  test_prosperfy_skills_adapter_mocked_no_real_vps_in_ci
+Usa fixtures do conftest.py que já injetam IdentityResolver in-memory.
 """
 
 from __future__ import annotations
@@ -18,39 +11,24 @@ from fastapi.testclient import TestClient
 
 from cognitive.contracts.audit import AuditOutcome
 from cognitive.contracts.tenancy import CapabilityGrant
-from cognitive.tenancy.context import _STATIC_CREDENTIALS, register_static_credential
-
-
-@pytest.fixture(autouse=True)
-def clear_creds():
-    _STATIC_CREDENTIALS.clear()
-    yield
-    _STATIC_CREDENTIALS.clear()
 
 
 @pytest.fixture
-def full_client(app_and_services):
+def full_client(app_and_services, tenant_a_headers):
     """Client com tenant-a com grant ALLOW para infra.inspect."""
     app, registry, audit_writer, telemetry_recorder = app_and_services
-
-    register_static_credential("secret-a", "tenant-a", "actor-a", "owner-core")
     registry.register_grant(CapabilityGrant(
         tenant_id="tenant-a",
         profile="owner-core",
         capability_id="infra.inspect",
     ))
-
     with TestClient(app, raise_server_exceptions=True) as client:
         yield client, audit_writer, telemetry_recorder
 
 
 @pytest.fixture
-def headers_a():
-    return {
-        "Authorization": "Bearer secret-a",
-        "X-Tenant-Id": "tenant-a",
-        "X-Actor-Id": "actor-a",
-    }
+def headers_a(tenant_a_headers):
+    return tenant_a_headers
 
 
 # ─── GATE TESTS ─────────────────────────────────────────────────────────
@@ -88,41 +66,29 @@ def test_capability_execute_without_authorization_returns_401(full_client):
     assert r.status_code == 401
 
 
-def test_policy_deny_blocks_adapter_call(app_and_services):
+def test_policy_deny_blocks_adapter_call(app_and_services, tenant_b_headers):
     """GATE: Tenant sem grant deve receber DENY; adapter não deve ser chamado."""
     app, registry, audit_writer, _ = app_and_services
-
-    register_static_credential("secret-b", "tenant-b", "actor-b", "owner-core")
     # tenant-b NÃO tem grant para infra.inspect
 
     with TestClient(app, raise_server_exceptions=True) as client:
         r = client.post(
             "/v1/capabilities/infra.inspect/execute",
             json={"params": {"resource": "some-resource"}},
-            headers={
-                "Authorization": "Bearer secret-b",
-                "X-Tenant-Id": "tenant-b",
-                "X-Actor-Id": "actor-b",
-            },
+            headers=tenant_b_headers,
         )
 
-    # Deve falhar (DENY → status failed no response, HTTP pode ser 200 com status=failed
-    # ou 403 dependendo do design; verificar audit)
     data = r.json()
     assert data["status"] == "failed"
 
-    # Verificar que o audit registrou DENIED e não chamou MCP
     events = audit_writer.get_all_for_tenant("tenant-b")
     assert len(events) == 1
     assert events[0].outcome == AuditOutcome.DENIED
 
 
-def test_policy_confirm_does_not_call_adapter(app_and_services):
+def test_policy_confirm_does_not_call_adapter(app_and_services, tenant_a_headers):
     """GATE: Capability com policy CONFIRM deve retornar pending_confirmation sem chamar adapter."""
     app, registry, audit_writer, _ = app_and_services
-
-    register_static_credential("secret-a", "tenant-a", "actor-a", "owner-core")
-    # Grant com override CONFIRM
     registry.register_grant(CapabilityGrant(
         tenant_id="tenant-a",
         profile="owner-core",
@@ -134,17 +100,12 @@ def test_policy_confirm_does_not_call_adapter(app_and_services):
         r = client.post(
             "/v1/capabilities/infra.inspect/execute",
             json={"params": {"resource": "prosperfy-main"}},
-            headers={
-                "Authorization": "Bearer secret-a",
-                "X-Tenant-Id": "tenant-a",
-                "X-Actor-Id": "actor-a",
-            },
+            headers=tenant_a_headers,
         )
 
     data = r.json()
     assert data["status"] == "pending_confirmation"
 
-    # Verificar audit: pending, sem tool calls
     events = audit_writer.get_all_for_tenant("tenant-a")
     assert len(events) == 1
     assert events[0].outcome == AuditOutcome.PENDING_CONFIRMATION
@@ -166,13 +127,11 @@ def test_infra_inspect_allow_writes_audit_and_telemetry(full_client, headers_a):
     assert data["execution_id"]
     assert data["audit_id"]
 
-    # Audit deve existir
     events = audit_writer.get_all_for_tenant("tenant-a")
     assert len(events) == 1
     assert events[0].outcome == AuditOutcome.COMPLETED
     assert events[0].policy_decision == "allow"
 
-    # Telemetry deve existir
     telem = telemetry_recorder.get_all_for_tenant("tenant-a")
     assert len(telem) == 1
     assert telem[0].tool_calls > 0
@@ -220,7 +179,6 @@ def test_prosperfy_skills_adapter_mocked_no_real_vps_in_ci(full_client, headers_
 
     data = r.json()
     assert data["status"] == "completed"
-    # Mock retorna dados determinísticos do panorama
     assert "prosperfy_vps_panorama" in str(data["data"])
 
 

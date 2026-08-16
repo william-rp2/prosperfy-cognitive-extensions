@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "financeiro-pessoal-api",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["start", "--prefix", "apps/financeiro-pessoal-api"],
+      "port": 8787
+    },
+    {
+      "name": "financeiro-pessoal-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "apps/financeiro-pessoal-web"],
+      "port": 5175
+    }
+  ]
+}

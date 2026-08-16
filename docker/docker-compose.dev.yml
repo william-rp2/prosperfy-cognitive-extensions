@@ -1,0 +1,29 @@
+# OPCIONAL — Conveniência local apenas.
+# Desenvolvimento integrado usa ambiente DEV/HOMOLOG remoto.
+# CI usa testcontainers efêmeros — sem dependência desta máquina.
+# Nunca usar como referência de topologia de produção.
+#
+# Uso opcional: docker compose -f docker/docker-compose.dev.yml up -d
+services:
+  cognitive-postgres:
+    image: postgres:16-alpine
+    container_name: cognitive-postgres-dev
+    environment:
+      POSTGRES_DB: cognitive_dev
+      POSTGRES_USER: cognitive_admin
+      POSTGRES_PASSWORD: dev-postgres-secret
+    ports:
+      - "5440:5432"   # porta 5440 não conflita com Supabase CLI (5432/54321)
+    volumes:
+      - cognitive_pg_data:/var/lib/postgresql/data
+      - ../core/migrations:/migrations:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cognitive_admin -d cognitive_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  cognitive_pg_data:
+    driver: local
