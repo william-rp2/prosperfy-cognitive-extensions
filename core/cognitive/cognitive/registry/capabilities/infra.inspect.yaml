@@ -1,0 +1,67 @@
+# Capability: infra.inspect
+# Vertical slice de validação — Sprint 0.1
+#
+# ADR-V2-005: definição em YAML versionado; banco NÃO é source of truth.
+# ADR-V2-002: params.resource é lógico ("prosperfy-main") — nunca IP/host.
+# ADR-V2-004: default_policy = allow (read-only, não destrutivo).
+
+id: "infra.inspect"
+version: "1.0.0"
+domain: "infrastructure"
+description: >
+  Inspeciona o estado de infraestrutura de um resource lógico tenant-scoped.
+  Composta de múltiplas tools VPS em sequência determinística (sem LLM escolhendo).
+adapter: "prosperfy_skills"
+default_policy: "allow"
+
+required_scopes:
+  - "infra:read"
+
+input_schema:
+  type: object
+  required:
+    - resource
+  properties:
+    resource:
+      type: string
+      description: "Resource lógico tenant-scoped (ex: 'prosperfy-main'). Nunca IP/host."
+      example: "prosperfy-main"
+
+output_schema:
+  type: object
+  properties:
+    panorama:
+      type: object
+    containers:
+      type: array
+    services:
+      type: object
+    ports:
+      type: object
+
+# Sequência de tools MCP executadas deterministicamente
+tools:
+  - name: "prosperfy_vps_panorama"
+    args_from_resource: true
+    required: true
+  - name: "prosperfy_vps_listar_containers"
+    args_from_resource: true
+    required: true
+  - name: "prosperfy_vps_verificar_portas"
+    args_from_resource: true
+    required: false
+
+idempotency_behavior: "return_cached"
+timeout_seconds: 45
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+# Campos a redigir nos inputs antes de armazenar no audit
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"
