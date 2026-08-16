@@ -52,6 +52,19 @@ workflows.
 -   `09-OBSERVABILIDADE-CUSTOS-E-LLM.md`
 -   `10-GATES-E-CRITERIOS-DE-ACEITE.md`
 -   `11-PLANO-DE-INICIO.md`
+-   `12-FASE-0-PLANO-TECNICO.md`
+-   `13-SPRINT-0-ADR-REVIEW.md`
+-   `16-FASE-0-FOUNDATION-SPEC.md`
+-   `41-MASTER-IMPLEMENTATION-PLAN.md`
+-   `42-MASTER-ACCEPTANCE-GATES.md`
+-   `43-MASTER-DEV-PROMPT.md`
+-   `44-DECISION-GATES.md`
+-   `45-REQUIREMENTS-TRACEABILITY.md`
+-   `46-SESSION-HANDOFF-PROTOCOL.md`
+-   `47-EXECUTION-PROTOCOL-REVIEW.md`
+-   `SESSION-HANDOFF.md` — estado operacional mutável (handoff entre sessões)
+
+ADRs V2: `docs/adr/ADR-V2-001` … `ADR-V2-008`
 
 ## Estado atual resumido
 
