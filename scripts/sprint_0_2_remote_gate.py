@@ -5,12 +5,16 @@ Sprint 0.2 — Remote Supabase Homolog Gate Runner.
 Executar NO SERVIDOR PROSPERFY onde COGNITIVE_DB_ADMIN_URL está configurado.
 Nunca imprime secrets ou connection strings completas.
 
-Usage:
-  python scripts/sprint_0_2_remote_gate.py verify-target
-  python scripts/sprint_0_2_remote_gate.py migrate
-  python scripts/sprint_0_2_remote_gate.py validate-schema
-  python scripts/sprint_0_2_remote_gate.py test-db
-  python scripts/sprint_0_2_remote_gate.py full-gate
+Flow:
+  verify-target → migrate → validate-schema → bootstrap-credentials
+  → authenticate-real-roles → test-db → full-gate
+
+Required env (minimum):
+  COGNITIVE_DB_ADMIN_URL
+  COGNITIVE_APP_PASSWORD
+  COGNITIVE_WORKER_PASSWORD
+
+COGNITIVE_DB_URL / COGNITIVE_DB_WORKER_URL are built after bootstrap (not required upfront).
 """
 
 from __future__ import annotations
@@ -28,12 +32,12 @@ MIGRATIONS_RUNNER = REPO_ROOT / "core" / "migrations" / "runner.py"
 
 sys.path.insert(0, str(COGNITIVE_DIR))
 
-from cognitive.config.db_target import (  # noqa: E402
-    HOMOLOG_PROJECT_REF,
-    FORBIDDEN_PROJECT_REF,
-    project_ref_from_dsn,
-    verify_homolog_admin_dsn,
-)
+from cognitive.config.db_target import project_ref_from_dsn  # noqa: E402
+from cognitive.gate.auth_check import verify_role_connection  # noqa: E402
+from cognitive.gate.credential_bootstrap import bootstrap_role_passwords  # noqa: E402
+from cognitive.gate.dsn_builder import build_supabase_role_dsn  # noqa: E402
+from cognitive.gate.redaction import safe_connection_target, sanitize_exception  # noqa: E402
+from cognitive.gate.verify_target import print_verify_target_report, verify_target  # noqa: E402
 
 EXPECTED_TABLES = {
     "tenants",
@@ -54,59 +58,51 @@ def _admin_url() -> str:
     return os.getenv("COGNITIVE_DB_ADMIN_URL", "")
 
 
-def _ensure_app_worker_urls() -> None:
-    """Define COGNITIVE_DB_URL/WORKER a partir de secrets remotos se ausentes."""
-    admin = _admin_url()
-    ref = project_ref_from_dsn(admin)
+def _require_passwords() -> tuple[str, str]:
+    app_password = os.getenv("COGNITIVE_APP_PASSWORD", "")
+    worker_password = os.getenv("COGNITIVE_WORKER_PASSWORD", "")
+    if not app_password or not worker_password:
+        raise SystemExit(
+            "COGNITIVE_APP_PASSWORD and COGNITIVE_WORKER_PASSWORD are required"
+        )
+    return app_password, worker_password
+
+
+def _project_ref_or_exit() -> str:
+    report = verify_target(_admin_url())
+    if not report.verified:
+        raise SystemExit(f"Target verification failed: {report.reason}")
+    ref = project_ref_from_dsn(_admin_url())
     if not ref:
         raise SystemExit("Cannot derive project ref from admin DSN")
+    return ref
 
-    if not os.getenv("COGNITIVE_DB_URL"):
-        app_password = os.getenv("COGNITIVE_APP_PASSWORD")
-        if not app_password:
-            raise SystemExit(
-                "COGNITIVE_DB_URL missing — set remotely or provide COGNITIVE_APP_PASSWORD"
-            )
-        os.environ["COGNITIVE_DB_URL"] = (
-            f"postgresql://cognitive_app:{app_password}@db.{ref}.supabase.co:5432/postgres"
-        )
 
-    if not os.getenv("COGNITIVE_DB_WORKER_URL"):
-        worker_password = os.getenv("COGNITIVE_WORKER_PASSWORD")
-        if not worker_password:
-            raise SystemExit(
-                "COGNITIVE_DB_WORKER_URL missing — set remotely or provide COGNITIVE_WORKER_PASSWORD"
-            )
-        os.environ["COGNITIVE_DB_WORKER_URL"] = (
-            f"postgresql://cognitive_worker:{worker_password}@db.{ref}.supabase.co:5432/postgres"
-        )
-
+def _configure_role_dsns(app_password: str, worker_password: str, project_ref: str) -> None:
+    os.environ["COGNITIVE_DB_URL"] = build_supabase_role_dsn(
+        project_ref=project_ref,
+        role="cognitive_app",
+        password=app_password,
+    )
+    os.environ["COGNITIVE_DB_WORKER_URL"] = build_supabase_role_dsn(
+        project_ref=project_ref,
+        role="cognitive_worker",
+        password=worker_password,
+    )
     os.environ.setdefault("COGNITIVE_MODE", "database")
 
 
 def cmd_verify_target() -> int:
-    admin = _admin_url()
-    if not admin:
-        print("COGNITIVE_DB_ADMIN_URL=NOT_AVAILABLE")
-        return 1
-    ok, reason = verify_homolog_admin_dsn(admin)
-    ref = project_ref_from_dsn(admin) or "unknown"
-    user = __import__("urllib.parse").urlparse(admin).username or "unknown"
-    print(f"COGNITIVE_DB_ADMIN_URL=AVAILABLE")
-    print(f"project_ref={ref}")
-    print(f"expected_homolog={HOMOLOG_PROJECT_REF}")
-    print(f"forbidden_production={FORBIDDEN_PROJECT_REF}")
-    print(f"forbidden_match={ref == FORBIDDEN_PROJECT_REF}")
-    print(f"homolog_match={ref == HOMOLOG_PROJECT_REF}")
-    print(f"connect_user={user}")
-    print(f"verified={'YES' if ok else 'NO'}")
-    print(f"reason={reason}")
-    return 0 if ok else 1
+    report = verify_target(_admin_url())
+    print_verify_target_report(report)
+    return report.exit_code()
 
 
 def cmd_migrate() -> int:
     if cmd_verify_target() != 0:
         return 1
+    target = safe_connection_target(_admin_url())
+    print(f"migrate_target={target}")
     proc = subprocess.run(
         [sys.executable, str(MIGRATIONS_RUNNER), "--up"],
         cwd=str(REPO_ROOT),
@@ -120,7 +116,11 @@ async def _validate_schema_async() -> int:
 
     if cmd_verify_target() != 0:
         return 1
-    conn = await asyncpg.connect(_admin_url())
+    try:
+        conn = await asyncpg.connect(_admin_url())
+    except Exception as exc:
+        print(f"schema_connect_failed={sanitize_exception(exc)}")
+        return 1
     try:
         tables = {
             r["tablename"]
@@ -136,15 +136,16 @@ async def _validate_schema_async() -> int:
 
         roles = await conn.fetch(
             """
-            SELECT rolname, rolbypassrls, rolsuper
+            SELECT rolname, rolcanlogin, rolbypassrls, rolsuper
             FROM pg_roles
-            WHERE rolname IN ('cognitive_admin', 'cognitive_app', 'cognitive_worker', current_user)
+            WHERE rolname IN ('cognitive_admin', 'cognitive_app', 'cognitive_worker')
             ORDER BY rolname
             """
         )
         for row in roles:
             print(
-                f"role={row['rolname']} bypassrls={row['rolbypassrls']} super={row['rolsuper']}"
+                f"role={row['rolname']} login={row['rolcanlogin']} "
+                f"bypassrls={row['rolbypassrls']} super={row['rolsuper']}"
             )
 
         rls = await conn.fetch(
@@ -178,10 +179,84 @@ def cmd_validate_schema() -> int:
     return asyncio.run(_validate_schema_async())
 
 
+async def _bootstrap_credentials_async() -> int:
+    import asyncpg
+
+    if cmd_verify_target() != 0:
+        return 1
+    app_password, worker_password = _require_passwords()
+    try:
+        conn = await asyncpg.connect(_admin_url())
+    except Exception as exc:
+        print(f"bootstrap_connect_failed={sanitize_exception(exc)}")
+        return 1
+    try:
+        await bootstrap_role_passwords(conn, app_password, worker_password)
+        print("bootstrap_credentials=APPLIED")
+        print("bootstrap_idempotent=YES")
+    except Exception as exc:
+        print(f"bootstrap_failed={sanitize_exception(exc)}")
+        return 1
+    finally:
+        await conn.close()
+
+    project_ref = _project_ref_or_exit()
+    _configure_role_dsns(app_password, worker_password, project_ref)
+    print("COGNITIVE_DB_URL=CONFIGURED")
+    print("COGNITIVE_DB_WORKER_URL=CONFIGURED")
+    return 0
+
+
+def cmd_bootstrap_credentials() -> int:
+    return asyncio.run(_bootstrap_credentials_async())
+
+
+async def _authenticate_real_roles_async() -> int:
+    if cmd_verify_target() != 0:
+        return 1
+    app_password, worker_password = _require_passwords()
+    project_ref = _project_ref_or_exit()
+    _configure_role_dsns(app_password, worker_password, project_ref)
+
+    app_dsn = os.environ["COGNITIVE_DB_URL"]
+    worker_dsn = os.environ["COGNITIVE_DB_WORKER_URL"]
+
+    app_result = await verify_role_connection(app_dsn, "cognitive_app")
+    print(f"app_current_user={app_result.current_user or 'none'}")
+    print(f"app_authenticated={'YES' if app_result.ok else 'NO'}")
+    print(f"app_reason={app_result.reason}")
+    if not app_result.ok:
+        return 1
+
+    worker_result = await verify_role_connection(worker_dsn, "cognitive_worker")
+    print(f"worker_current_user={worker_result.current_user or 'none'}")
+    print(f"worker_authenticated={'YES' if worker_result.ok else 'NO'}")
+    print(f"worker_reason={worker_result.reason}")
+    if not worker_result.ok:
+        return 1
+
+    if not app_result.privilege_escape_blocked or not worker_result.privilege_escape_blocked:
+        print("privilege_escape_check=FAILED")
+        return 1
+    print("privilege_escape_check=PASS")
+    return 0
+
+
+def cmd_authenticate_real_roles() -> int:
+    return asyncio.run(_authenticate_real_roles_async())
+
+
 def cmd_test_db() -> int:
     if cmd_verify_target() != 0:
         return 1
-    _ensure_app_worker_urls()
+    if not os.getenv("COGNITIVE_DB_URL") or not os.getenv("COGNITIVE_DB_WORKER_URL"):
+        rc = cmd_bootstrap_credentials()
+        if rc != 0:
+            return rc
+        rc = cmd_authenticate_real_roles()
+        if rc != 0:
+            return rc
+
     env = os.environ.copy()
     env["COGNITIVE_MODE"] = "database"
     proc = subprocess.run(
@@ -197,6 +272,8 @@ def cmd_full_gate() -> int:
         ("verify-target", cmd_verify_target),
         ("migrate", cmd_migrate),
         ("validate-schema", cmd_validate_schema),
+        ("bootstrap-credentials", cmd_bootstrap_credentials),
+        ("authenticate-real-roles", cmd_authenticate_real_roles),
         ("test-db", cmd_test_db),
     ]
     for name, fn in steps:
@@ -213,16 +290,27 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Sprint 0.2 remote homolog gate")
     parser.add_argument(
         "command",
-        choices=["verify-target", "migrate", "validate-schema", "test-db", "full-gate"],
+        choices=[
+            "verify-target",
+            "migrate",
+            "validate-schema",
+            "bootstrap-credentials",
+            "authenticate-real-roles",
+            "test-db",
+            "full-gate",
+        ],
     )
     args = parser.parse_args()
-    return {
+    handlers = {
         "verify-target": cmd_verify_target,
         "migrate": cmd_migrate,
         "validate-schema": cmd_validate_schema,
+        "bootstrap-credentials": cmd_bootstrap_credentials,
+        "authenticate-real-roles": cmd_authenticate_real_roles,
         "test-db": cmd_test_db,
         "full-gate": cmd_full_gate,
-    }[args.command]()
+    }
+    return handlers[args.command]()
 
 
 if __name__ == "__main__":

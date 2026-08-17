@@ -13,15 +13,15 @@ DO $$ BEGIN
     CREATE ROLE cognitive_admin BYPASSRLS;
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cognitive_app') THEN
-    CREATE ROLE cognitive_app LOGIN PASSWORD 'app-dev-secret';
+    CREATE ROLE cognitive_app LOGIN;
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cognitive_worker') THEN
-    CREATE ROLE cognitive_worker LOGIN PASSWORD 'worker-dev-secret';
+    CREATE ROLE cognitive_worker LOGIN;
   END IF;
 END $$;
 
--- cognitive_admin herda superuser do user de conexão (dev only)
--- cognitive_app e cognitive_worker: acesso restrito via grants abaixo
+-- cognitive_app / cognitive_worker: LOGIN without password here.
+-- Runtime credentials assigned by secure bootstrap (see cognitive/gate/credential_bootstrap.py).
 
 -- ─── Extensions ────────────────────────────────────────────────────────────
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";  -- gen_random_uuid()

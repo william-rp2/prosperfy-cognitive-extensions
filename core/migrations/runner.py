@@ -25,6 +25,14 @@ from datetime import datetime, timezone
 
 import asyncpg
 
+# Redaction for safe logging (host only)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "cognitive"))
+try:
+    from cognitive.gate.redaction import safe_connection_target
+except ImportError:
+    def safe_connection_target(dsn: str) -> str:
+        return dsn.split("@")[-1] if "@" in dsn else "unknown"
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger("migrations")
 
@@ -138,7 +146,7 @@ async def main() -> None:
     db_url = os.getenv("COGNITIVE_DB_ADMIN_URL",
                        "postgresql://cognitive_admin:dev-postgres-secret@localhost:5440/cognitive_dev")
 
-    logger.info("Conectando ao banco: %s", db_url.split("@")[-1])
+    logger.info("Conectando ao banco: %s", safe_connection_target(db_url))
     conn = await asyncpg.connect(db_url)
 
     try:

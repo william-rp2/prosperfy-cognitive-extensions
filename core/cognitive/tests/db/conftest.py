@@ -11,9 +11,10 @@ Gate Sprint 0.2: remote homolog Supabase (esvjfkknrzzziafovwrv).
 
 from __future__ import annotations
 
+import asyncio
 import os
+import secrets
 from pathlib import Path
-from urllib.parse import urlparse
 
 import asyncpg
 import pytest
@@ -25,6 +26,8 @@ from cognitive.config.db_target import (
     project_ref_from_dsn,
     verify_homolog_admin_dsn,
 )
+from cognitive.gate.credential_bootstrap import bootstrap_role_passwords
+from cognitive.gate.dsn_builder import build_postgres_dsn, host_from_admin_dsn
 
 try:
     try:
@@ -124,20 +127,56 @@ def admin_dsn(db_mode: str, postgres_container) -> str:
 
 
 @pytest.fixture(scope="session")
-def app_dsn(db_mode: str, admin_dsn: str) -> str:
-    if db_mode == "remote":
-        return os.environ["COGNITIVE_DB_URL"]
-    user = urlparse(admin_dsn).username or "postgres"
-    host_part = admin_dsn.split("@", 1)[1]
-    return f"postgresql://cognitive_app:app-dev-secret@{host_part}"
+def app_dsn(db_mode: str, role_dsns: dict[str, str]) -> str:
+    return role_dsns["app"]
 
 
 @pytest.fixture(scope="session")
-def worker_dsn(db_mode: str, admin_dsn: str) -> str:
+def worker_dsn(db_mode: str, role_dsns: dict[str, str]) -> str:
+    return role_dsns["worker"]
+
+
+@pytest.fixture(scope="session")
+def role_dsns(admin_dsn: str, db_mode: str) -> dict[str, str]:
     if db_mode == "remote":
-        return os.environ["COGNITIVE_DB_WORKER_URL"]
-    host_part = admin_dsn.split("@", 1)[1]
-    return f"postgresql://cognitive_worker:worker-dev-secret@{host_part}"
+        return {
+            "admin": admin_dsn,
+            "app": os.environ["COGNITIVE_DB_URL"],
+            "worker": os.environ["COGNITIVE_DB_WORKER_URL"],
+        }
+    return asyncio.run(_bootstrap_testcontainer_dsns(admin_dsn))
+
+
+async def _bootstrap_testcontainer_dsns(admin_dsn: str) -> dict[str, str]:
+    conn = await asyncpg.connect(admin_dsn)
+    try:
+        await _apply_migrations(conn)
+        app_password = secrets.token_urlsafe(24)
+        worker_password = secrets.token_urlsafe(24)
+        await bootstrap_role_passwords(conn, app_password, worker_password)
+    finally:
+        await conn.close()
+
+    host, port, database = host_from_admin_dsn(admin_dsn)
+    return {
+        "admin": admin_dsn,
+        "app": build_postgres_dsn(
+            user="cognitive_app",
+            password=app_password,
+            host=host,
+            port=port,
+            database=database,
+            sslmode="disable",
+        ),
+        "worker": build_postgres_dsn(
+            user="cognitive_worker",
+            password=worker_password,
+            host=host,
+            port=port,
+            database=database,
+            sslmode="disable",
+        ),
+    }
 
 
 async def _apply_migrations(conn: asyncpg.Connection) -> None:
@@ -163,23 +202,22 @@ async def _apply_migrations(conn: asyncpg.Connection) -> None:
         )
 
 
-@pytest_asyncio.fixture(scope="session")
-async def migrated_db(admin_dsn: str, db_mode: str) -> dict[str, str]:
+@pytest.fixture(scope="session")
+def migrated_db(admin_dsn: str, db_mode: str, role_dsns: dict[str, str]) -> dict[str, str]:
+    if db_mode == "remote":
+        if not asyncio.run(_schema_exists(admin_dsn)):
+            pytest.fail("Homolog DB missing schema — run migrations before gate tests")
+    return {"admin": admin_dsn, "mode": db_mode}
+
+
+async def _schema_exists(admin_dsn: str) -> bool:
     conn = await asyncpg.connect(admin_dsn)
     try:
-        if db_mode == "testcontainers":
-            await _apply_migrations(conn)
-        else:
-            row = await conn.fetchval(
-                "SELECT to_regclass('public.tenants') IS NOT NULL"
-            )
-            if not row:
-                pytest.fail(
-                    "Homolog DB missing schema — run migrations before gate tests"
-                )
+        return bool(
+            await conn.fetchval("SELECT to_regclass('public.tenants') IS NOT NULL")
+        )
     finally:
         await conn.close()
-    return {"admin": admin_dsn, "mode": db_mode}
 
 
 @pytest_asyncio.fixture
