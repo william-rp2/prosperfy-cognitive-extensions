@@ -1,18 +1,16 @@
 """
-db/repositories/resource_repo.py — Repositório de Tenant Resources e Credential Refs.
-
-tenant_resources: resolve resource_key lógico → parâmetros concretos (host, port, etc.)
-credential_refs: referências a secrets — lê apenas secret_ref (nunca valor em claro)
+db/repositories/resource_repo.py — Repositórios de Tenant Resources e Credential Refs.
 """
 
 from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from ..connection import admin_connection, tenant_transaction
+from ..jsonb_codec import deserialize_jsonb_object, serialize_jsonb
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +30,18 @@ class CredentialRefRow:
     id: str
     tenant_id: str
     provider: str
-    secret_ref: str       # ponteiro para env var ou vault key — nunca o valor
+    secret_ref: str
+
+
+def _row_to_tenant_resource(row) -> TenantResourceRow:
+    return TenantResourceRow(
+        id=str(row["id"]),
+        tenant_id=str(row["tenant_id"]),
+        resource_key=row["resource_key"],
+        resource_type=row["resource_type"],
+        resolved_params=deserialize_jsonb_object(row["resolved_params"]),
+        active=row["active"],
+    )
 
 
 class TenantResourceRepository:
@@ -43,12 +52,6 @@ class TenantResourceRepository:
         tenant_id: str,
         resource_key: str,
     ) -> TenantResourceRow | None:
-        """
-        Resolve um resource_key para o tenant atual.
-
-        RLS garante que tenant_id na query corresponde ao tenant_id no banco.
-        Cross-tenant blocked a nível de DB.
-        """
         async with tenant_transaction(tenant_id) as conn:
             row = await conn.fetchrow(
                 """
@@ -60,14 +63,7 @@ class TenantResourceRepository:
             )
         if not row:
             return None
-        return TenantResourceRow(
-            id=str(row["id"]),
-            tenant_id=str(row["tenant_id"]),
-            resource_key=row["resource_key"],
-            resource_type=row["resource_type"],
-            resolved_params=dict(row["resolved_params"]),
-            active=row["active"],
-        )
+        return _row_to_tenant_resource(row)
 
     async def upsert(
         self,
@@ -80,27 +76,23 @@ class TenantResourceRepository:
             row = await conn.fetchrow(
                 """
                 INSERT INTO tenant_resources(tenant_id, resource_key, resource_type, resolved_params)
-                VALUES($1, $2, $3, $4)
+                VALUES($1, $2, $3, $4::jsonb)
                 ON CONFLICT (tenant_id, resource_key)
                 DO UPDATE SET resource_type = EXCLUDED.resource_type,
                               resolved_params = EXCLUDED.resolved_params,
                               active = true
                 RETURNING id, tenant_id, resource_key, resource_type, resolved_params, active
                 """,
-                uuid.UUID(tenant_id), resource_key, resource_type, resolved_params,
+                uuid.UUID(tenant_id),
+                resource_key,
+                resource_type,
+                serialize_jsonb(resolved_params),
             )
-        return TenantResourceRow(
-            id=str(row["id"]),
-            tenant_id=str(row["tenant_id"]),
-            resource_key=row["resource_key"],
-            resource_type=row["resource_type"],
-            resolved_params=dict(row["resolved_params"]),
-            active=row["active"],
-        )
+        return _row_to_tenant_resource(row)
 
 
 class CredentialRefRepository:
-    """Acesso a credential_refs — retorna apenas o ponteiro (secret_ref), nunca o valor."""
+    """Acesso a credential_refs — retorna apenas secret_ref, nunca o valor."""
 
     async def get_by_provider(
         self, tenant_id: str, provider: str

@@ -74,12 +74,15 @@ class TestPostgresAuditWriter:
         event.inputs_redacted["api_key"] = "***REDACTED***"
         audit_id = await writer.record(event)
 
+        from cognitive.db.jsonb_codec import deserialize_jsonb_object
+
         row = await admin_conn.fetchrow(
             "SELECT inputs_redacted FROM audit_events WHERE audit_id = $1",
             uuid.UUID(audit_id),
         )
         assert row is not None
-        assert dict(row["inputs_redacted"]).get("api_key") == "***REDACTED***"
+        inputs = deserialize_jsonb_object(row["inputs_redacted"])
+        assert inputs.get("api_key") == "***REDACTED***"
 
         await admin_conn.execute(
             "DELETE FROM audit_events WHERE audit_id = $1", uuid.UUID(audit_id)

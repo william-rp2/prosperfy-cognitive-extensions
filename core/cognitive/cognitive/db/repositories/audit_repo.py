@@ -12,9 +12,28 @@ import logging
 import uuid
 
 from ...contracts.audit import AuditEvent, AuditOutcome
-from ..connection import admin_connection, tenant_transaction
+from ..connection import tenant_transaction
+from ..jsonb_codec import deserialize_jsonb_object, serialize_jsonb
 
 logger = logging.getLogger(__name__)
+
+
+def _row_to_audit_event(row) -> AuditEvent:
+    return AuditEvent(
+        audit_id=str(row["audit_id"]),
+        execution_id=str(row["execution_id"]),
+        tenant_id=str(row["tenant_id"]),
+        actor_id=row["actor_id"],
+        capability_id=row["capability_id"],
+        correlation_id=row["correlation_id"],
+        policy_decision=row["policy_decision"],
+        outcome=AuditOutcome(row["outcome"]),
+        inputs_redacted=deserialize_jsonb_object(row["inputs_redacted"]),
+        result_summary=deserialize_jsonb_object(row["result_summary"]),
+        duration_ms=row["duration_ms"],
+        cost_estimate=float(row["cost_estimate"]),
+        created_at=row["created_at"],
+    )
 
 
 class PostgresAuditWriter:
@@ -34,7 +53,7 @@ class PostgresAuditWriter:
                     audit_id, execution_id, tenant_id, actor_id,
                     capability_id, correlation_id, policy_decision, outcome,
                     inputs_redacted, result_summary, duration_ms, cost_estimate
-                ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11, $12)
                 """,
                 uuid.UUID(event.audit_id),
                 uuid.UUID(event.execution_id),
@@ -44,8 +63,8 @@ class PostgresAuditWriter:
                 event.correlation_id,
                 event.policy_decision,
                 event.outcome.value,
-                event.inputs_redacted,
-                event.result_summary,
+                serialize_jsonb(event.inputs_redacted),
+                serialize_jsonb(event.result_summary),
                 event.duration_ms,
                 event.cost_estimate,
             )
@@ -79,21 +98,7 @@ class PostgresAuditWriter:
         if not row:
             return None
 
-        return AuditEvent(
-            audit_id=str(row["audit_id"]),
-            execution_id=str(row["execution_id"]),
-            tenant_id=str(row["tenant_id"]),
-            actor_id=row["actor_id"],
-            capability_id=row["capability_id"],
-            correlation_id=row["correlation_id"],
-            policy_decision=row["policy_decision"],
-            outcome=AuditOutcome(row["outcome"]),
-            inputs_redacted=dict(row["inputs_redacted"]),
-            result_summary=dict(row["result_summary"]),
-            duration_ms=row["duration_ms"],
-            cost_estimate=float(row["cost_estimate"]),
-            created_at=row["created_at"],
-        )
+        return _row_to_audit_event(row)
 
     async def list_for_tenant(
         self, tenant_id: str, limit: int = 50
@@ -112,21 +117,4 @@ class PostgresAuditWriter:
                 limit,
             )
 
-        return [
-            AuditEvent(
-                audit_id=str(r["audit_id"]),
-                execution_id=str(r["execution_id"]),
-                tenant_id=str(r["tenant_id"]),
-                actor_id=r["actor_id"],
-                capability_id=r["capability_id"],
-                correlation_id=r["correlation_id"],
-                policy_decision=r["policy_decision"],
-                outcome=AuditOutcome(r["outcome"]),
-                inputs_redacted=dict(r["inputs_redacted"]),
-                result_summary=dict(r["result_summary"]),
-                duration_ms=r["duration_ms"],
-                cost_estimate=float(r["cost_estimate"]),
-                created_at=r["created_at"],
-            )
-            for r in rows
-        ]
+        return [_row_to_audit_event(r) for r in rows]
