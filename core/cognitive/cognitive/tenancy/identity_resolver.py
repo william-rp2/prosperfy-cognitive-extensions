@@ -14,6 +14,7 @@ import hashlib
 import logging
 import uuid
 
+from ..config.runtime import is_database_mode
 from ..contracts.tenancy import ActorContext
 
 logger = logging.getLogger(__name__)
@@ -27,11 +28,13 @@ class IdentityResolver:
     Fallback: static credentials in-memory se DB não disponível.
     """
 
-    def __init__(self, identity_repo=None) -> None:
+    def __init__(self, identity_repo=None, *, database_mode: bool | None = None) -> None:
         """
         identity_repo: ServiceIdentityRepository ou None (fallback in-memory).
+        database_mode: quando True, falhas de DB não fazem fallback permissivo.
         """
         self._repo = identity_repo
+        self._database_mode = is_database_mode() if database_mode is None else database_mode
         self._static: dict[str, tuple[str, str, str]] = {}  # credential → (tenant, actor, profile)
 
     def register_static(
@@ -69,18 +72,25 @@ class IdentityResolver:
             raise ValueError("Authorization deve ser 'Bearer <credential>'")
         credential = parts[1].strip()
 
-        # Tentar DB lookup
         if self._repo is not None:
             try:
                 identity = await self._repo.lookup(credential)
+            except Exception as exc:
+                logger.error("DB identity lookup falhou: %s", exc)
+                if self._database_mode:
+                    raise ValueError("Identidade indisponível — falha de persistência") from exc
+                identity = None
+            else:
                 if identity:
                     return self._build_context_from_db(
                         identity, x_tenant_id, x_actor_id, x_correlation_id, credential
                     )
-            except Exception as exc:
-                logger.warning("DB identity lookup falhou, tentando fallback: %s", exc)
+                if self._database_mode:
+                    raise ValueError("Credencial inválida ou não autorizada")
 
-        # Fallback: static credentials
+        if self._database_mode:
+            raise ValueError("Credencial inválida ou não autorizada")
+
         return self._build_context_from_static(
             credential, x_tenant_id, x_actor_id, x_correlation_id
         )

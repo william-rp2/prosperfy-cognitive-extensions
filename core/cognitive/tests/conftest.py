@@ -40,8 +40,11 @@ def _make_identity_resolver() -> IdentityResolver:
 @pytest.fixture
 def app_and_services():
     """Monta app com todos os serviços in-memory para testes."""
-    # Garantir que DB não seja usado nos testes in-memory
+    # Garantir modo in-memory explícito nos testes Sprint 0.1
+    os.environ["COGNITIVE_MODE"] = "in_memory"
     os.environ.pop("COGNITIVE_DB_URL", None)
+    os.environ.pop("COGNITIVE_DB_ADMIN_URL", None)
+    os.environ.pop("COGNITIVE_DB_WORKER_URL", None)
     os.environ["COGNITIVE_GATEWAY_CREDENTIAL"] = "__disabled_in_test__"
 
     registry = InMemoryCapabilityRegistry()
