@@ -13,6 +13,37 @@ from fastapi import Depends, Header, HTTPException, Request, status
 
 from ..contracts.tenancy import ActorContext
 
+AUTH_HEADER_DOCS = [
+    {
+        "name": "Authorization",
+        "in": "header",
+        "required": True,
+        "schema": {"type": "string"},
+        "description": "Bearer credential for service identity (never include in body).",
+    },
+    {
+        "name": "X-Tenant-Id",
+        "in": "header",
+        "required": True,
+        "schema": {"type": "string"},
+        "description": "Tenant scope for the request (ADR-V2-002).",
+    },
+    {
+        "name": "X-Actor-Id",
+        "in": "header",
+        "required": True,
+        "schema": {"type": "string"},
+        "description": "Actor/principal within the tenant (ADR-V2-002).",
+    },
+    {
+        "name": "X-Correlation-Id",
+        "in": "header",
+        "required": False,
+        "schema": {"type": "string"},
+        "description": "Optional correlation id for tracing.",
+    },
+]
+
 
 async def get_actor_context(
     request: Request,

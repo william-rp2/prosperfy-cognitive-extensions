@@ -11,6 +11,7 @@ import logging
 import os
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from ..adapters.prosperfy_skills.client import ProsperfySkillsAdapter
@@ -25,6 +26,7 @@ from ..registry.registry import InMemoryCapabilityRegistry
 from ..telemetry.recorder import InMemoryTelemetryRecorder
 from ..tenancy.identity_resolver import IdentityResolver
 from .routes import capabilities, health, status
+from .metadata import api_version, deployment_environment
 
 logger = logging.getLogger(__name__)
 
@@ -125,14 +127,39 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     """Cria e configura a FastAPI application do Cognitive Gateway."""
+    env = deployment_environment()
     app = FastAPI(
-        title="Prosperfy Cognitive Gateway",
-        description="Cognitive Core V2 — independente do Hermes (ADR-V2-005)",
-        version="0.2.0",
+        title="Prosperfy Cognitive API",
+        description=(
+            "Prosperfy Cognitive Core V2 — Gateway independente do Hermes (ADR-V2-005). "
+            f"Environment: {env}."
+        ),
+        version=api_version(),
         docs_url="/docs",
         redoc_url="/redoc",
+        openapi_url="/openapi.json",
         lifespan=lifespan,
     )
+
+    cors_origins = [
+        o.strip()
+        for o in os.getenv("COGNITIVE_CORS_ORIGINS", "").split(",")
+        if o.strip()
+    ]
+    if cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "OPTIONS"],
+            allow_headers=[
+                "Authorization",
+                "Content-Type",
+                "X-Tenant-Id",
+                "X-Actor-Id",
+                "X-Correlation-Id",
+            ],
+        )
 
     _build_services(app)
 
@@ -141,7 +168,9 @@ def create_app() -> FastAPI:
     app.include_router(capabilities.router)
 
     logger.info(
-        "Cognitive Gateway v0.2.0 — capabilities=%d mode=%s",
+        "Prosperfy Cognitive API v%s env=%s capabilities=%d mode=%s",
+        api_version(),
+        deployment_environment(),
         len(app.state.registry.list_all()),
         "database" if app.state.use_db else "in_memory",
     )

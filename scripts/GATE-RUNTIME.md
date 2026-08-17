@@ -53,6 +53,8 @@ Não reutilizar venv/site-packages do Hermes.
 | `COGNITIVE_DB_URL` | Não (gerado pós-bootstrap) |
 | `COGNITIVE_DB_WORKER_URL` | Não (gerado pós-bootstrap) |
 
+Bootstrap v2 usa `quote_literal($1)` — **não** `ALTER ROLE PASSWORD $1`.
+
 ## Comando
 
 ```bash

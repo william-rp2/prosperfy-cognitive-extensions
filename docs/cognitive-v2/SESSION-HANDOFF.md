@@ -1,6 +1,6 @@
 # SESSION HANDOFF
 
-> Evidência real (Git, testes, DB) prevalece sobre este arquivo.
+> Sprint 0.2 — GATE PENDING until VPS re-runs bootstrap + test-db.
 
 ---
 
@@ -8,56 +8,37 @@
 
 | Campo | Valor |
 |-------|-------|
-| **Updated At** | 2026-08-16T21:40 BRT |
-| **Execution Mode** | `PHASE_SCOPED` |
-| **Requested Scope** | Sprint 0.2 — Remote Gate Fix (RETURN TO DEV) |
+| **Updated At** | 2026-08-17 |
+| **Scope** | Sprint 0.2 hotfix + validation UI |
 
 ---
 
-## Current Position
+## Status
 
-| Phase | 0 — Foundation |
-| Subphase | 0.2 — Persistence + Tenancy |
-| **Status** | `GATE PENDING` / **READY FOR VPS RETRY** |
+**GATE PENDING** / **READY FOR VPS GATE**
 
----
-
-## Last Safe Checkpoint
-
-Ver commit desta sessão (pós-correções urlparse + bootstrap).
-
-Starting reference: `a69ac8e` (gate harness original)
+Homolog migrations 000/001 already applied at VPS (3422f9c run).
+Next VPS steps: `bootstrap-credentials` → `authenticate-real-roles` → `test-db` → `full-gate`
 
 ---
 
-## Completed
+## Hotfix
 
-- Primeiro gate remoto executado → RETURN TO DEV (sem migration)
-- Bug urlparse corrigido + teste CLI
-- Passwords fixas removidas de migration 000
-- Credential bootstrap v1 implementado
-- Gate flow: bootstrap-credentials + authenticate-real-roles
-- 64 testes non-DB PASS local
+- Bootstrap: `quote_literal($1)` replaces invalid `ALTER ROLE PASSWORD $1`
+- No migration checksum drift (000/001 unchanged on disk vs Homolog)
 
 ---
 
-## Blocked (resolved in DEV)
+## Added
 
-- ~~urlparse AttributeError~~
-- ~~fixed passwords in migrations~~
-
----
-
-## Pending (VPS)
-
-1. Checkout limpo com novo checkpoint
-2. `python scripts/sprint_0_2_remote_gate.py full-gate`
-3. Declarar PASS somente após evidência real
+- Prosperfy Cognitive API OpenAPI surfaces
+- `apps/cognitive-console` (React/Vite MVP)
+- `docs/cognitive-v2/COGNITIVE-DEPLOY-READINESS.md`
 
 ---
 
 ## Exact Next Action
 
-VPS: clone/checkout novo hash → full-gate com secrets remotos.
+VPS checkout new checkpoint → `python scripts/sprint_0_2_remote_gate.py bootstrap-credentials`
 
-**Não iniciar Sprint 0.3.**
+**Sprint 0.3 NOT STARTED**

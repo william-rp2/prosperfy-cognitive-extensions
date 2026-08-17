@@ -17,15 +17,43 @@ from ...contracts.gateway import (
     CapabilityExecuteRequest,
     CapabilityExecuteResponse,
 )
-from ..deps import ActorContextDep
+from ..deps import AUTH_HEADER_DOCS, ActorContextDep
 
 router = APIRouter()
+
+
+@router.get(
+    "/v1/capabilities",
+    response_model=list[CapabilityDescribeResponse],
+    tags=["capabilities"],
+    summary="List registered capabilities",
+    openapi_extra={"parameters": AUTH_HEADER_DOCS},
+)
+async def list_capabilities(
+    ctx: ActorContextDep,
+    request: Request,
+) -> list[CapabilityDescribeResponse]:
+    """Lista capabilities conhecidas pelo registry YAML."""
+    registry = request.app.state.registry
+    return [
+        CapabilityDescribeResponse(
+            id=cap.id,
+            version=cap.version,
+            domain=str(cap.domain),
+            description=cap.description,
+            default_policy=cap.default_policy,
+            required_scopes=cap.required_scopes,
+            input_schema=cap.input_schema,
+        )
+        for cap in registry.list_all()
+    ]
 
 
 @router.post(
     "/v1/capabilities/{capability_id}/execute",
     response_model=CapabilityExecuteResponse,
     tags=["capabilities"],
+    openapi_extra={"parameters": AUTH_HEADER_DOCS},
 )
 async def execute_capability(
     capability_id: str,
@@ -54,6 +82,7 @@ async def execute_capability(
     "/v1/capabilities/{capability_id}",
     response_model=CapabilityDescribeResponse,
     tags=["capabilities"],
+    openapi_extra={"parameters": AUTH_HEADER_DOCS},
 )
 async def describe_capability(
     capability_id: str,

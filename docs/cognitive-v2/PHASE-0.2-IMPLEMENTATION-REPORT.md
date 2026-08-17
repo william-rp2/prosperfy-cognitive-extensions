@@ -21,7 +21,18 @@ Primeiro gate remoto (checkpoint `a69ac8e`) retornou **RETURN TO DEV** antes de 
 
 ---
 
-## Correções DEV (pós `a69ac8e`)
+## Hotfix (pós VPS 3422f9c)
+
+VPS já aplicou migrations 000/001 no Homolog. Gate parou em `bootstrap-credentials`:
+
+| Bug | Fix |
+|-----|-----|
+| `ALTER ROLE PASSWORD $1` inválido no PostgreSQL | Bootstrap v2 usa `quote_literal($1::text)` server-side |
+| Passwords fixas | Removidas em 3422f9c; Homolog intacto |
+
+**Migration compatibility:** 000/001 **não alterados** neste hotfix — checksum Homolog preservado.
+
+---
 
 | Correção | Status |
 |----------|--------|

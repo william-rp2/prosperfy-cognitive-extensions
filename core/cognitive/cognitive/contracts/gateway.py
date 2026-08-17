@@ -46,6 +46,11 @@ class StatusResponse:
     """Response de GET /v1/status."""
     healthy: bool
     version: str
+    environment: str
+    runtime_mode: str
+    db_configured: bool
+    registry_loaded: bool
+    capabilities_count: int
     tenant_id: str
     actor_id: str
     correlation_id: str

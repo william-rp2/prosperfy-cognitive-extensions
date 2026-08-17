@@ -135,12 +135,12 @@ class TestMigrationSecretScan:
 
 
 class TestCredentialBootstrapModule:
-    @pytest.mark.asyncio
-    async def test_bootstrap_uses_parameterized_password(self):
-        """Ensure bootstrap module exists and uses $1 placeholders (static check)."""
+    def test_bootstrap_uses_quote_literal(self):
         from cognitive.gate import credential_bootstrap as cb
 
         source = Path(cb.__file__).read_text(encoding="utf-8")
-        assert "PASSWORD $1" in source
+        assert "quote_literal($1" in source
+        assert "PASSWORD $1" not in source
         assert "app-dev-secret" not in source
         assert "worker-dev-secret" not in source
+        assert cb.BOOTSTRAP_VERSION == "2"
