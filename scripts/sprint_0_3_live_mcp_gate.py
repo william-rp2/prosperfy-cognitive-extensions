@@ -303,10 +303,18 @@ def _common_gate(args: argparse.Namespace) -> tuple[CredentialFile, str] | None:
     """Shared fail-closed gate for every capability-calling subcommand.
 
     Checks --environment homolog + COGNITIVE_LIVE_MCP=1 + credential file +
-    api_base_url resolution. Does NOT re-run the homolog-shaped URL heuristic
-    (that lives in verify-preconditions / run_preconditions only, per the
-    documented split of responsibilities). Prints a clear reason and returns
-    None on any failure — never raises past this point.
+    api_base_url resolution + the homolog-shaped URL heuristic. Adversarial
+    review (Sprint 0.3 E2E closure hotfix) found that this heuristic
+    previously ran ONLY inside verify-preconditions/run_preconditions —
+    run-positive/run-negative/run-idempotency/run-performance, each a
+    documented valid standalone invocation, had no cross-check between
+    --environment homolog (a bare string) and --api-base-url (an arbitrary
+    URL). A copy-paste of the real Production URL with `--environment
+    homolog` would have gone straight through on any of those subcommands.
+    Same heuristic, same non-security-boundary caveat (see
+    looks_homolog_shaped's docstring) — now applied uniformly. Prints a
+    clear reason and returns None on any failure — never raises past this
+    point.
     """
     try:
         check_environment_flag(args.environment)
@@ -325,6 +333,15 @@ def _common_gate(args: argparse.Namespace) -> tuple[CredentialFile, str] | None:
     if api_base_url is None:
         print(
             "GATE_REFUSED: --api-base-url or COGNITIVE_HOMOLOG_API_URL is required"
+        )
+        return None
+
+    if not looks_homolog_shaped(api_base_url):
+        print(
+            f"GATE_REFUSED: --api-base-url {api_base_url!r} does not look "
+            "Homolog-shaped (expected 'homolog' in the URL) — this is only "
+            "a heuristic sanity check, refusing anyway to avoid an "
+            "accidental Production-looking target"
         )
         return None
 

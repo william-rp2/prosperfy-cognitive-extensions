@@ -12,12 +12,39 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import uuid
 
 from ..config.runtime import is_database_mode
 from ..contracts.tenancy import ActorContext
 
 logger = logging.getLogger(__name__)
+
+# X-Correlation-Id é opcional e client-supplied — usado tal qual em
+# ActorContext.correlation_id, que por sua vez é persistido em CLARO em
+# audit_events.correlation_id e cost_telemetry.correlation_id (colunas
+# TEXT, nunca passam por redact()) e ecoado de volta em
+# CapabilityExecuteResponse.correlation_id. Nada validava o formato antes
+# deste hotfix: um valor arbitrário — incluindo uma credential/Bearer
+# token colado por engano num client de tracing — seria persistido e
+# ecoado verbatim, furando a garantia de redaction (R14) por um caminho
+# lateral. Correlation IDs legítimos são curtos e alfanuméricos (UUID,
+# trace-id de sistemas de observabilidade); um valor que não bate nesse
+# formato é substituído por um gerado no servidor, nunca rejeitado com
+# erro (correlation_id é conveniência de rastreamento, não é um controle
+# de segurança — falhar a requisição por isso seria desproporcional).
+_CORRELATION_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+
+
+def _sanitize_correlation_id(value: str | None) -> str:
+    if value and _CORRELATION_ID_RE.match(value):
+        return value
+    if value:
+        logger.warning(
+            "X-Correlation-Id descartado (formato não reconhecido, "
+            "possivelmente secret-shaped) — gerando um novo"
+        )
+    return str(uuid.uuid4())
 
 
 class IdentityResolver:
@@ -110,7 +137,7 @@ class IdentityResolver:
         if not identity.active:
             raise ValueError("Credencial revogada")
 
-        correlation_id = x_correlation_id or str(uuid.uuid4())
+        correlation_id = _sanitize_correlation_id(x_correlation_id)
         credential_ref = hashlib.sha256(credential.encode()).hexdigest()[:16]
 
         return ActorContext(
@@ -138,7 +165,7 @@ class IdentityResolver:
         if reg_actor != x_actor_id:
             raise ValueError("X-Actor-Id não corresponde à credencial")
 
-        correlation_id = x_correlation_id or str(uuid.uuid4())
+        correlation_id = _sanitize_correlation_id(x_correlation_id)
         credential_ref = hashlib.sha256(credential.encode()).hexdigest()[:16]
 
         return ActorContext(

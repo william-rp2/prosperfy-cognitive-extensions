@@ -11,10 +11,8 @@ via `admin_conn` (bypassing HTTP entirely) that:
   1. An `audit_events` row exists for that (tenant_id, correlation_id) with
      the right actor_id/capability_id/outcome, and `inputs_redacted` carries
      no secret-shaped value.
-  2. A `cost_telemetry` row *would* exist with the right shape — see the
-     KNOWN GAP note below; as of Sprint 0.3 this assertion is conditional,
-     not a hard requirement, because the wiring to make it true does not
-     exist yet.
+  2. A `cost_telemetry` row exists with the right shape (hard requirement —
+     see note below on the gap this closed).
 
 Same skip conventions as the rest of tests/db/ (`db_integration_available()` /
 `skip_reason()` from conftest.py) — in this sandbox (no DB, no network) this
@@ -35,19 +33,14 @@ How to populate the two required inputs before running this file for real:
     COGNITIVE_DB_ADMIN_URL=... COGNITIVE_DB_TEST_MODE=remote_homolog \\
         python -m pytest tests/db/test_live_mcp_e2e_audit_telemetry.py -v
 
-KNOWN GAP (found while building this runner, NOT fixed here — gateway/app.py
-is on the do-not-modify list for this workstream): `gateway/app.py`'s
-`_build_services()` wires `telemetry_recorder = InMemoryTelemetryRecorder()`
-UNCONDITIONALLY (line is outside the `if use_db:` branch) — even in
-`COGNITIVE_MODE=database`, telemetry is never persisted to the `cost_telemetry`
-table (migration 001 creates the table; nothing in the app ever writes to it,
-there is no PostgresTelemetryRecorder/telemetry repo anywhere in
-`cognitive/db/repositories/`). `audit_events` IS persisted for real
-(`PostgresAuditWriter`, wired only when `use_db` is True). So today, a real
-`run-positive` call against Homolog WILL produce a queryable `audit_events`
-row, but will NOT produce any `cost_telemetry` row — that assertion is written
-below as conditional/informational, not a hard failure, until that gap is
-closed by whichever workstream owns `gateway/app.py`.
+GAP FOUND AND CLOSED (Lead Dev integration, same commit as this merge):
+`gateway/app.py`'s `_build_services()` originally wired
+`telemetry_recorder = InMemoryTelemetryRecorder()` UNCONDITIONALLY — even in
+`COGNITIVE_MODE=database`, telemetry was never persisted to `cost_telemetry`.
+Fixed: new `cognitive/db/repositories/telemetry_repo.py::PostgresTelemetryRecorder`
+wired in the `if use_db:` branch, mirroring `PostgresAuditWriter`. A real
+`run-positive` call against Homolog now produces both an `audit_events` row
+AND a `cost_telemetry` row.
 """
 
 from __future__ import annotations
@@ -181,19 +174,13 @@ class TestAuditEventForE2ERun:
 
 
 class TestCostTelemetryForE2ERun:
-    """Result -> Telemetry — CONDITIONAL, see KNOWN GAP note at module top.
+    """Result -> Telemetry — hard requirement (gap closed, see module
+    docstring): gateway/app.py now wires PostgresTelemetryRecorder in
+    database mode, so a real run-positive call against Homolog must
+    produce a cost_telemetry row for the same correlation_id/tenant_id
+    as the audit_events row."""
 
-    gateway/app.py wires telemetry_recorder = InMemoryTelemetryRecorder()
-    unconditionally (never PostgresTelemetryRecorder, which does not exist
-    anywhere in cognitive/db/repositories/), so a real run-positive call does
-    NOT currently produce a cost_telemetry row. This test does not assert
-    the row must exist (that would be a guaranteed false failure against
-    today's code) — it reports what it finds and only enforces field shape
-    when a row is actually present, so it stays a truthful signal both today
-    (gap open) and after whichever workstream closes it.
-    """
-
-    async def test_cost_telemetry_row_if_present_has_expected_shape(
+    async def test_cost_telemetry_row_exists_with_expected_shape(
         self, db_pools, admin_conn, e2e_correlation_id, e2e_tenant_id,
     ):
         row = await admin_conn.fetchrow(
@@ -208,15 +195,11 @@ class TestCostTelemetryForE2ERun:
             e2e_correlation_id,
             uuid.UUID(e2e_tenant_id),
         )
-        if row is None:
-            pytest.skip(
-                "KNOWN GAP (Sprint 0.3): no cost_telemetry row for "
-                f"correlation_id={e2e_correlation_id!r} — gateway/app.py wires "
-                "InMemoryTelemetryRecorder unconditionally, telemetry is never "
-                "persisted to Postgres yet. See module docstring. Not a bug in "
-                "this test — the wiring to make this assertion meaningful does "
-                "not exist as of this commit."
-            )
+        assert row is not None, (
+            f"no cost_telemetry row for correlation_id={e2e_correlation_id!r} — "
+            "expected one after the PostgresTelemetryRecorder wiring fix; if this "
+            "fails for real against Homolog, the wiring regressed."
+        )
         assert row["actor_id"] == EXPECTED_ACTOR_ID
         assert row["capability_id"] == EXPECTED_CAPABILITY_ID
         assert row["latency_ms"] >= 0

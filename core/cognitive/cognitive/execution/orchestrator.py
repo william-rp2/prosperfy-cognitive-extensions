@@ -376,11 +376,27 @@ class ExecutionOrchestrator:
         duration_ms: int,
         tool_calls: int,
     ) -> None:
-        await self._telemetry.record(TelemetryRecord(
-            tenant_id=ctx.tenant_id,
-            actor_id=ctx.actor_id,
-            capability_id=capability_id,
-            correlation_id=ctx.correlation_id,
-            latency_ms=duration_ms,
-            tool_calls=tool_calls,
-        ))
+        """
+        Best-effort — nunca deixa uma falha de telemetry (ex.: blip de rede
+        no PostgresTelemetryRecorder) derrubar uma resposta que já foi
+        auditada (audit_events já commitado antes de cada chamada a este
+        método) ou, no caminho de sucesso, pular o cache de idempotência
+        (que só é populado DEPOIS deste método retornar). Telemetry é
+        observabilidade (não é o requisito de auditoria R13) — uma falha
+        aqui nunca deve virar 500 pro caller nem reexecutar a capability
+        num retry por causa de uma linha de métrica perdida.
+        """
+        try:
+            await self._telemetry.record(TelemetryRecord(
+                tenant_id=ctx.tenant_id,
+                actor_id=ctx.actor_id,
+                capability_id=capability_id,
+                correlation_id=ctx.correlation_id,
+                latency_ms=duration_ms,
+                tool_calls=tool_calls,
+            ))
+        except Exception:
+            logger.exception(
+                "Telemetry record falhou (non-fatal) tenant=%s cap=%s",
+                ctx.tenant_id, capability_id,
+            )
