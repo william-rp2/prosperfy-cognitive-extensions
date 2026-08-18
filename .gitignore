@@ -43,3 +43,6 @@ Thumbs.db
 *.pid
 *.log
 *.sqlite3
+
+# Agent worktrees (subagent isolation via Claude Code Agent tool)
+.claude/worktrees/

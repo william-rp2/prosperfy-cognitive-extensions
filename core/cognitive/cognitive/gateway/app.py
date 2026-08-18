@@ -20,7 +20,7 @@ from ..audit.writer import InMemoryAuditWriter
 from ..config.runtime import is_database_mode, is_in_memory_mode, require_database_config
 from ..contracts.tenancy import CapabilityGrant
 from ..execution.orchestrator import ExecutionOrchestrator
-from ..execution.resource_resolver import InMemoryResourceResolver
+from ..execution.resource_resolver import InMemoryResourceResolver, ResourceResolver
 from ..policy.engine import PolicyEngine
 from ..registry.registry import InMemoryCapabilityRegistry
 from ..telemetry.recorder import InMemoryTelemetryRecorder
@@ -58,8 +58,11 @@ def _build_services(app: FastAPI) -> None:
             identity_repo=ServiceIdentityRepository(),
             database_mode=True,
         )
-        resource_resolver = None
         resource_repo = TenantResourceRepository()
+        # SEC/ADR-V2-002 §3 (Sprint 0.3): resolve params.resource -> concretos
+        # antes do adapter. Sem isso, ExecutionOrchestrator recebia
+        # resource_resolver=None e "resource" lógico ia cru pro adapter.
+        resource_resolver = ResourceResolver(resource_repo)
         logger.info("Runtime: database mode (Postgres)")
     else:
         audit_writer = InMemoryAuditWriter()
@@ -84,6 +87,7 @@ def _build_services(app: FastAPI) -> None:
         skills_adapter=skills_adapter,
         audit_writer=audit_writer,
         telemetry_recorder=telemetry_recorder,
+        resource_resolver=resource_resolver,
     )
 
     if is_in_memory_mode():

@@ -28,6 +28,7 @@ from cognitive.audit.writer import InMemoryAuditWriter
 from cognitive.contracts.audit import AuditOutcome
 from cognitive.contracts.tenancy import ActorContext, CapabilityGrant
 from cognitive.execution.orchestrator import ExecutionOrchestrator
+from cognitive.execution.resource_resolver import InMemoryResourceResolver
 from cognitive.policy.engine import PolicyEngine
 from cognitive.registry.registry import InMemoryCapabilityRegistry
 from cognitive.telemetry.recorder import InMemoryTelemetryRecorder
@@ -56,6 +57,8 @@ class SpyAdapter:
 def _build_orchestrator(adapter):
     registry = InMemoryCapabilityRegistry()
     registry.load_from_yaml()
+    resource_resolver = InMemoryResourceResolver()
+    resource_resolver.register("tenant-x", "prosperfy-main", {"host": "mock-vps.test", "type": "vps"})
     return (
         ExecutionOrchestrator(
             registry=registry,
@@ -63,6 +66,7 @@ def _build_orchestrator(adapter):
             skills_adapter=adapter,
             audit_writer=InMemoryAuditWriter(),
             telemetry_recorder=InMemoryTelemetryRecorder(),
+            resource_resolver=resource_resolver,
         ),
         registry,
     )

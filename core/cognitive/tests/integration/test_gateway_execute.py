@@ -74,7 +74,12 @@ def test_policy_deny_blocks_adapter_call(app_and_services, tenant_b_headers):
     with TestClient(app, raise_server_exceptions=True) as client:
         r = client.post(
             "/v1/capabilities/infra.inspect/execute",
-            json={"params": {"resource": "some-resource"}},
+            # "prosperfy-main" IS registered for tenant-b (conftest.py) so this
+            # request reaches Policy (Sprint 0.3: Resource Resolver now runs
+            # BEFORE Policy per ADR-V2-004 — an unregistered resource would
+            # fail resolution first and never reach the grant/policy check
+            # this test is actually about).
+            json={"params": {"resource": "prosperfy-main"}},
             headers=tenant_b_headers,
         )
 

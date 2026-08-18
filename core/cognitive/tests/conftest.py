@@ -68,6 +68,7 @@ def app_and_services():
         skills_adapter=skills_adapter,
         audit_writer=audit_writer,
         telemetry_recorder=telemetry_recorder,
+        resource_resolver=resource_resolver,
     )
 
     app = create_app()
