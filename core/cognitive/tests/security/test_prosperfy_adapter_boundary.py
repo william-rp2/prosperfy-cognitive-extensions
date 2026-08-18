@@ -241,6 +241,10 @@ def test_live_mcp_one_still_blocked_without_grant(monkeypatch):
     monkeypatch.setenv("COGNITIVE_MODE", "in_memory")
     monkeypatch.delenv("COGNITIVE_DB_URL", raising=False)
     monkeypatch.setenv("COGNITIVE_LIVE_MCP", "1")
+    # gateway/app.py fail-closed guard (Sprint 0.3 hardening): COGNITIVE_LIVE_MCP=1
+    # agora exige MCP_PROSPERFYSKILLS_API_KEY presente ANTES de construir o
+    # adapter — ver core/cognitive/tests/unit/test_mcp_secret_contract.py.
+    monkeypatch.setenv("MCP_PROSPERFYSKILLS_API_KEY", "fake-key-for-grant-boundary-test-only")
 
     async def _explode(self, *a, **kw):
         raise AssertionError("Adapter real chamado sem grant!")

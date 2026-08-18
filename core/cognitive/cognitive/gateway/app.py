@@ -31,6 +31,29 @@ from .metadata import api_version, deployment_environment
 logger = logging.getLogger(__name__)
 
 
+def _require_live_mcp_secret() -> None:
+    """
+    Fail-closed eager check: COGNITIVE_LIVE_MCP=1 exige MCP_PROSPERFYSKILLS_API_KEY.
+
+    Executa ANTES de construir o ProsperfySkillsAdapter — recusa a inicialização
+    do gateway inteiro (nunca um warning silencioso). Defense in depth: o check
+    tardio em ProsperfySkillsAdapter.invoke_tool() (client.py) permanece intacto
+    para o caso de a env var ser removida após o startup sem restart do processo.
+
+    Nunca interpola os.environ nem qualquer valor parcial/malformado na mensagem
+    — não há valor a vazar (a variável está ausente/vazia), mas a mensagem também
+    não deve revelar se algo foi tentado.
+    """
+    if os.getenv("MCP_PROSPERFYSKILLS_API_KEY", "").strip():
+        return
+    raise RuntimeError(
+        "COGNITIVE_LIVE_MCP=1 exige MCP_PROSPERFYSKILLS_API_KEY configurada "
+        "(env var ausente, vazia ou somente espaços). Configure o secret via "
+        "EnvironmentFile do systemd (0600, service user) antes de iniciar o "
+        "gateway — ver docs/cognitive-v2/COGNITIVE-DEPLOY-READINESS.md."
+    )
+
+
 def _build_services(app: FastAPI) -> None:
     """Constrói e injeta todos os serviços no app.state."""
     require_database_config()
@@ -42,6 +65,7 @@ def _build_services(app: FastAPI) -> None:
 
     live_mcp = os.getenv("COGNITIVE_LIVE_MCP", "0") == "1"
     if live_mcp:
+        _require_live_mcp_secret()
         logger.info("COGNITIVE_LIVE_MCP=1 — usando ProsperfySkillsAdapter real")
         skills_adapter = ProsperfySkillsAdapter()
     else:

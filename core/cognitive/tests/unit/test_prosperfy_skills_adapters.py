@@ -234,6 +234,10 @@ class TestLiveMcpAdapterSelection:
     def test_explicit_one_uses_real_adapter_no_network_at_construction(self, monkeypatch):
         """LIVE_MCP=1 instancia o adapter real — sem qualquer chamada de rede na construção."""
         monkeypatch.setattr(httpx, "AsyncClient", _ExplodingAsyncClient)
+        # gateway/app.py fail-closed guard (Sprint 0.3 hardening): COGNITIVE_LIVE_MCP=1
+        # agora exige MCP_PROSPERFYSKILLS_API_KEY presente ANTES de construir o
+        # adapter — ver test_mcp_secret_contract.py para a cobertura da guard em si.
+        monkeypatch.setenv("MCP_PROSPERFYSKILLS_API_KEY", "fake-key-for-adapter-selection-test-only")
         app = self._build_app_in_memory(monkeypatch, live_mcp="1")
         assert isinstance(app.state.orchestrator._adapter, ProsperfySkillsAdapter)
 
