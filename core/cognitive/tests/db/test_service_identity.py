@@ -387,6 +387,7 @@ class TestResolveFunctionHardening:
     relação a um nome específico — portável entre Supabase (owner real:
     `postgres`) e docker-compose local (owner real: `cognitive_admin`)."""
 
+    @pytest.mark.safe_remote
     async def test_function_owner_is_not_app_or_worker(self, db_pools, admin_conn):
         row = await admin_conn.fetchrow(
             """
@@ -398,8 +399,19 @@ class TestResolveFunctionHardening:
         assert row is not None
         assert row["owner"] not in ("cognitive_app", "cognitive_worker")
 
+    @pytest.mark.ephemeral_only
     async def test_create_or_replace_preserves_owner_and_grants(self, db_pools, admin_conn):
-        """SEC-003 depende de uma garantia do próprio Postgres — CREATE OR
+        """NOTE (harness-security-tests hotfix): unlike its siblings in this
+        class, this test unconditionally executes CREATE OR REPLACE
+        FUNCTION against the real, shared production function object via
+        admin_conn on every run, not only on some anomalous/failing path.
+        That is a genuine mutation of shared schema (even though the
+        replacement body is semantically identical to migration 002's), so
+        it is marked `ephemeral_only` instead of `safe_remote` — it should
+        not run against a shared remote target like Homolog outside of an
+        isolated/ephemeral DB.
+
+        SEC-003 depende de uma garantia do próprio Postgres — CREATE OR
         REPLACE FUNCTION num objeto já existente preserva owner e ACLs
         (só troca corpo/assinatura). Isso é o que torna seguro reaplicar
         002 sem reintroduzir um passo de ALTER OWNER: mesmo rodando via
@@ -444,6 +456,7 @@ class TestResolveFunctionHardening:
         assert after["app_can"] == before["app_can"] is True
         assert after["public_can"] == before["public_can"] is False
 
+    @pytest.mark.safe_remote
     async def test_app_and_worker_are_not_members_of_function_owner(self, db_pools, admin_conn):
         """Mesmo que o owner tenha nome diferente por ambiente, app/worker
         nunca podem ter membership nele — é essa relação, não o nome, que
@@ -461,6 +474,7 @@ class TestResolveFunctionHardening:
         assert row["app_is_member"] is False
         assert row["worker_is_member"] is False
 
+    @pytest.mark.safe_remote
     async def test_function_search_path_is_hardened(self, db_pools, admin_conn):
         row = await admin_conn.fetchrow(
             """
@@ -473,6 +487,7 @@ class TestResolveFunctionHardening:
         assert row["proconfig"] is not None
         assert any("search_path" in cfg for cfg in row["proconfig"])
 
+    @pytest.mark.safe_remote
     async def test_public_has_no_execute(self, db_pools, admin_conn):
         row = await admin_conn.fetchrow(
             "SELECT has_function_privilege('public', "
@@ -480,6 +495,7 @@ class TestResolveFunctionHardening:
         )
         assert row["can_execute"] is False
 
+    @pytest.mark.safe_remote
     async def test_app_and_worker_have_execute(self, db_pools, admin_conn):
         row = await admin_conn.fetchrow(
             "SELECT "
@@ -491,6 +507,7 @@ class TestResolveFunctionHardening:
         assert row["app_can"] is True
         assert row["worker_can"] is True
 
+    @pytest.mark.safe_remote
     async def test_admin_connection_is_not_app_or_worker_role(self, db_pools, admin_conn):
         """SEC-003: a migration 002 aborta (RAISE EXCEPTION) se rodar como
         cognitive_app/cognitive_worker — esta é a precondição que o guard
@@ -504,6 +521,12 @@ class TestFunctionOwnershipRestrictions:
     """SEC-002 hotfix (retry pós-Gate): app/worker só têm EXECUTE — nunca
     conseguem alterar, substituir, remover ou mudar grants da função, nem
     adquirir a role owner via SET ROLE."""
+
+    pytestmark = pytest.mark.safe_remote
+    # Every test below either reads catalog state or attempts a DDL/DCL
+    # change that is expected to be denied by privilege — on the passing
+    # path none of them leave shared schema mutated, same category as
+    # seeded_tenants' safe test-scoped insert/delete pattern.
 
     async def test_app_role_cannot_alter_function_owner(
         self, db_pools, seeded_tenants, app_conn
@@ -567,28 +590,87 @@ class TestFunctionOwnershipRestrictions:
             )
 
     async def test_app_role_cannot_change_grants_on_function(
-        self, db_pools, seeded_tenants, app_conn
+        self, db_pools, seeded_tenants, app_conn, admin_conn
     ):
+        """SEC-002 hotfix (post-Homolog): Postgres/Supabase may not raise a
+        hard exception for a no-op/ineffective GRANT attempt in every
+        scenario — the absence of an exception doesn't prove the privilege
+        escalation succeeded, it may just mean Postgres silently did
+        nothing. So this test no longer treats "no exception raised" as
+        failure. Instead it proves the property via catalog state: capture
+        the ACL before and after the attempt (read via admin_conn, not the
+        connection under test, so the read itself isn't subject to the same
+        permission question being tested), attempt the GRANT and swallow
+        whatever happens, then assert PUBLIC never gained EXECUTE and
+        app/worker's own EXECUTE grants (legitimate per migration 002)
+        didn't change either way.
+        """
         from .conftest import set_tenant_local
 
         await set_tenant_local(app_conn, seeded_tenants["tenant-a"])
-        with pytest.raises(Exception):
+
+        acl_query = (
+            "SELECT "
+            "has_function_privilege('public', "
+            "'resolve_service_identity_by_credential_hash(text)', 'EXECUTE') AS public_can, "
+            "has_function_privilege('cognitive_app', "
+            "'resolve_service_identity_by_credential_hash(text)', 'EXECUTE') AS app_can, "
+            "has_function_privilege('cognitive_worker', "
+            "'resolve_service_identity_by_credential_hash(text)', 'EXECUTE') AS worker_can"
+        )
+        before = await admin_conn.fetchrow(acl_query)
+
+        try:
             await app_conn.execute(
                 "GRANT EXECUTE ON FUNCTION resolve_service_identity_by_credential_hash(TEXT) "
                 "TO PUBLIC"
             )
+        except Exception:
+            pass
+
+        after = await admin_conn.fetchrow(acl_query)
+
+        assert before["public_can"] is False
+        assert after["public_can"] is False
+        assert after["app_can"] == before["app_can"]
+        assert after["worker_can"] == before["worker_can"]
 
     async def test_worker_role_cannot_change_grants_on_function(
-        self, db_pools, seeded_tenants, worker_conn
+        self, db_pools, seeded_tenants, worker_conn, admin_conn
     ):
+        """Same rationale as test_app_role_cannot_change_grants_on_function
+        (see that test's docstring) — proven via before/after catalog state
+        on admin_conn, not by asserting an exception was raised.
+        """
         from .conftest import set_tenant_local
 
         await set_tenant_local(worker_conn, seeded_tenants["tenant-a"])
-        with pytest.raises(Exception):
+
+        acl_query = (
+            "SELECT "
+            "has_function_privilege('public', "
+            "'resolve_service_identity_by_credential_hash(text)', 'EXECUTE') AS public_can, "
+            "has_function_privilege('cognitive_app', "
+            "'resolve_service_identity_by_credential_hash(text)', 'EXECUTE') AS app_can, "
+            "has_function_privilege('cognitive_worker', "
+            "'resolve_service_identity_by_credential_hash(text)', 'EXECUTE') AS worker_can"
+        )
+        before = await admin_conn.fetchrow(acl_query)
+
+        try:
             await worker_conn.execute(
                 "GRANT EXECUTE ON FUNCTION resolve_service_identity_by_credential_hash(TEXT) "
                 "TO PUBLIC"
             )
+        except Exception:
+            pass
+
+        after = await admin_conn.fetchrow(acl_query)
+
+        assert before["public_can"] is False
+        assert after["public_can"] is False
+        assert after["app_can"] == before["app_can"]
+        assert after["worker_can"] == before["worker_can"]
 
     async def test_app_role_cannot_set_role_to_admin(self, db_pools, app_conn):
         with pytest.raises(Exception):
