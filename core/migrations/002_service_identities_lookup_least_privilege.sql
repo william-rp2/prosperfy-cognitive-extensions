@@ -1,8 +1,11 @@
 -- Migration: 002_service_identities_lookup_least_privilege
--- Sprint 0.3 — Prosperfy Cognitive V2 — SEC-001 / SEC-002 remediation
+-- Sprint 0.3 — Prosperfy Cognitive V2 — SEC-001 / SEC-002 / ownership remediation
 -- Depende de: 001_capability_registry_audit
--- NÃO aplicada em nenhum ambiente até o momento desta revisão (SEC-002) —
--- corrigida em lugar de sofrer um patch em migration nova.
+-- Nunca teve um COMMIT bem-sucedido em nenhum ambiente até esta revisão:
+-- a tentativa de aplicação real em Homolog falhou em ALTER FUNCTION ...
+-- OWNER TO (ver seção de ownership abaixo), então `_migrations` continua
+-- sem a linha '002' — corrigida em lugar de sofrer um patch em migration
+-- nova (000/001 nunca alterados).
 --
 -- SEC-001: o lookup de credential_hash -> tenant_id/actor_id precisa
 -- acontecer ANTES de existir contexto de tenant (SET LOCAL
@@ -31,6 +34,26 @@
 -- o ActorContext — nunca o credential_hash, nunca outras linhas.
 -- register()/deactivate() (bootstrap/CLI, fora do processo web) seguem
 -- via cognitive_admin, que mantém acesso direto à tabela por ownership.
+--
+-- Gate hotfix (retry pós-falha real em Homolog): `ALTER FUNCTION ... OWNER
+-- TO cognitive_admin` falhou com
+-- `InsufficientPrivilegeError: must be able to SET ROLE "cognitive_admin"`.
+-- Causa raiz: migration 000 cria `cognitive_admin` com `CREATE ROLE
+-- cognitive_admin BYPASSRLS` (sem LOGIN — não é uma role conectável
+-- diretamente) mas nunca concede a role a quem quer que conecte como
+-- admin pra rodar migrations (`postgres`, no Supabase — ver DG-001).
+-- Criar uma role não torna automaticamente o criador membro dela; sem
+-- essa membership, ninguém além de superuser consegue `SET ROLE`/transferir
+-- ownership pra `cognitive_admin`. 000/001 não podem ser alterados, então
+-- a correção entra aqui: concede `cognitive_admin` a `CURRENT_USER` (quem
+-- quer que esteja rodando ESTA migration — sempre a conexão admin, por
+-- definição; não depende de o nome literal ser "postgres", funciona em
+-- qualquer ambiente). Isso NÃO é uma escalação: a conexão admin já é a
+-- mais privilegiada do sistema (é quem cria/concede tudo via DDL); ganhar
+-- membership numa role que ela mesma criou não aumenta seu poder real.
+-- Idempotente — regrant de uma membership já concedida é um no-op no
+-- Postgres, não falha se rodado de novo.
+GRANT cognitive_admin TO CURRENT_USER;
 
 -- ─── service_identities: nenhum acesso direto para app/worker ──────────
 DROP POLICY IF EXISTS tenant_isolation ON service_identities;

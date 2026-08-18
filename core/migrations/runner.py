@@ -4,12 +4,32 @@ migrations/runner.py — Migration runner minimalista para o Cognitive Core.
 Sem Alembic — dependência pesada desnecessária para Sprint 0.2.
 Conecta como cognitive_admin (BYPASSRLS) para criar/destruir schema.
 
+Contrato de atomicidade (Sprint 0.3, hotfix pós-Gate):
+  Cada migration = UMA unidade atômica = (executar o arquivo SQL inteiro +
+  gravar a linha de tracking em _migrations) dentro de UMA única transação
+  explícita (`async with conn.transaction()`). Se qualquer statement do
+  arquivo falhar, TUDO é revertido — inclusive a linha de tracking, que
+  nunca chega a existir. Migrations são aplicadas uma de cada vez, cada
+  qual em sua própria transação — a falha da migration N nunca reverte
+  migrations 1..N-1 já commitadas.
+
+  Antes deste hotfix, o arquivo inteiro ia num `conn.execute(sql)` e o
+  INSERT de tracking em outro `conn.execute(...)` separado — duas
+  chamadas, duas transações implícitas (protocolo simples do Postgres já
+  agrupa múltiplos statements de UM `execute()` sem params numa transação
+  implícita só; ver docs.postgresql.org/current/protocol-flow.html —
+  mas isso não cobria o intervalo ENTRE a execução do arquivo e o INSERT
+  de tracking. Um crash exatamente nesse intervalo deixaria a migration
+  aplicada porém não rastreada).
+
 Uso:
   python runner.py --up               # aplicar todas as pending
   python runner.py --up 001           # aplicar até versão 001
   python runner.py --down 0           # reverter até versão 0 (estado limpo)
   python runner.py --status           # listar estado atual
   python runner.py --verify           # checksum de cada migration aplicada
+  python runner.py --inspect 002      # diagnóstico de estado residual (CLEAN/PARTIAL/APPLIED)
+                                       # antes de reaplicar uma migration que falhou no meio
 """
 
 from __future__ import annotations
@@ -65,6 +85,23 @@ async def get_applied(conn: asyncpg.Connection) -> dict[str, str]:
     return {r["version"]: r["checksum"] for r in rows}
 
 
+async def apply_one_migration(conn: asyncpg.Connection, version: str, path: Path) -> None:
+    """
+    Aplica UMA migration como unidade atômica: SQL do arquivo + tracking
+    row, na mesma transação explícita. Qualquer falha reverte os dois —
+    nunca fica "SQL aplicado, tracking ausente" nem o inverso.
+    """
+    sql = path.read_text(encoding="utf-8")
+    checksum = file_checksum(path)
+
+    async with conn.transaction():
+        await conn.execute(sql)
+        await conn.execute(
+            "INSERT INTO _migrations(version, checksum) VALUES($1, $2)",
+            version, checksum,
+        )
+
+
 async def run_up(conn: asyncpg.Connection, target: str | None = None) -> None:
     await ensure_migrations_table(conn)
     applied = await get_applied(conn)
@@ -84,14 +121,16 @@ async def run_up(conn: asyncpg.Connection, target: str | None = None) -> None:
             continue
 
         logger.info("APPLYING: %s (%s)", version, path.name)
-        sql = path.read_text(encoding="utf-8")
-        await conn.execute(sql)
-        checksum = file_checksum(path)
-        await conn.execute(
-            "INSERT INTO _migrations(version, checksum) VALUES($1, $2)",
-            version, checksum,
-        )
-        logger.info("DONE: %s (checksum=%s)", version, checksum)
+        try:
+            await apply_one_migration(conn, version, path)
+        except Exception:
+            logger.error(
+                "FAILED: %s — transação revertida (SQL + tracking), migration permanece PENDING. "
+                "Rode `--inspect %s` antes de tentar de novo.",
+                version, version,
+            )
+            raise
+        logger.info("DONE: %s (checksum=%s)", version, file_checksum(path))
 
 
 async def run_down(conn: asyncpg.Connection, target: int) -> None:
@@ -112,8 +151,9 @@ async def run_down(conn: asyncpg.Connection, target: int) -> None:
 
         logger.info("REVERTING: %s", version)
         sql = rollback_path.read_text(encoding="utf-8")
-        await conn.execute(sql)
-        await conn.execute("DELETE FROM _migrations WHERE version = $1", version)
+        async with conn.transaction():
+            await conn.execute(sql)
+            await conn.execute("DELETE FROM _migrations WHERE version = $1", version)
         logger.info("REVERTED: %s", version)
 
 
@@ -132,6 +172,93 @@ async def run_status(conn: asyncpg.Connection) -> None:
     print()
 
 
+# ─── Reconciliation: diagnóstico de estado residual antes de retry ─────────
+#
+# Fingerprint mínimo por migration: um pequeno conjunto de sinais de estado
+# do banco que juntos indicam se os efeitos daquele arquivo específico já
+# aconteceram, parcialmente ou não. Não substitui `_migrations` como fonte
+# de verdade sobre "está aplicada" — é um raio-x pra decidir se é seguro
+# reaplicar depois de uma falha no meio do arquivo.
+INSPECTION_QUERIES: dict[str, list[tuple[str, str]]] = {
+    "002": [
+        (
+            "function_exists",
+            "SELECT EXISTS (SELECT 1 FROM pg_proc WHERE proname = "
+            "'resolve_service_identity_by_credential_hash') AS v",
+        ),
+        (
+            "function_owner_is_cognitive_admin",
+            "SELECT COALESCE((SELECT pg_get_userbyid(proowner) = 'cognitive_admin' "
+            "FROM pg_proc WHERE proname = 'resolve_service_identity_by_credential_hash'), false) AS v",
+        ),
+        (
+            "public_has_execute_on_function",
+            "SELECT COALESCE(has_function_privilege('public', "
+            "'resolve_service_identity_by_credential_hash(text)', 'EXECUTE'), false) AS v",
+        ),
+        (
+            "cognitive_app_has_direct_select_on_table",
+            "SELECT has_table_privilege('cognitive_app', 'service_identities', 'SELECT') AS v",
+        ),
+        (
+            "old_tenant_isolation_policy_exists",
+            "SELECT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'service_identities' "
+            "AND policyname = 'tenant_isolation') AS v",
+        ),
+    ],
+}
+
+
+async def inspect_migration(conn: asyncpg.Connection, version: str) -> str:
+    """
+    Roda o fingerprint de `version` e imprime um diagnóstico legível.
+    Não decide sozinho se é seguro reaplicar — dá ao operador humano/Gate
+    a evidência pra decidir. Versões sem fingerprint cadastrado avisam e
+    caem pra só reportar o status via `_migrations`.
+    """
+    await ensure_migrations_table(conn)
+    applied = await get_applied(conn)
+    tracked = version in applied
+
+    print(f"\n=== Inspect: migration {version} ===")
+    print(f"  tracked in _migrations: {tracked}")
+
+    queries = INSPECTION_QUERIES.get(version)
+    if not queries:
+        print(f"  (sem fingerprint cadastrado para {version} — só o tracking acima é verificado)")
+        print()
+        return "APPLIED" if tracked else "UNKNOWN"
+
+    signals: dict[str, bool] = {}
+    for name, query in queries:
+        try:
+            value = await conn.fetchval(query)
+        except Exception as exc:
+            logger.warning("inspect(%s): sinal '%s' falhou ao consultar: %s", version, name, exc)
+            value = None
+        signals[name] = bool(value)
+        print(f"  {name}: {value}")
+
+    any_signal_true = any(signals.values())
+
+    if tracked:
+        verdict = "APPLIED"
+    elif not any_signal_true:
+        verdict = "CLEAN"
+    else:
+        verdict = "PARTIAL"
+
+    print(f"  VERDICT: {verdict}")
+    if verdict == "PARTIAL":
+        print(
+            "  ATENÇÃO: sinais de execução parcial encontrados sem tracking correspondente. "
+            "NÃO rode --up direto — revise os sinais acima e decida uma migration de "
+            "reconciliação versionada antes de reaplicar."
+        )
+    print()
+    return verdict
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Cognitive migration runner")
     group = parser.add_mutually_exclusive_group(required=True)
@@ -140,6 +267,9 @@ async def main() -> None:
     group.add_argument("--down", type=int, metavar="TARGET",
                        help="Reverter migrations até (exclusive) TARGET (ex: --down 0 = reverter tudo)")
     group.add_argument("--status", action="store_true", help="Mostrar estado atual")
+    group.add_argument("--verify", action="store_true", help="Verificar checksums de migrations aplicadas")
+    group.add_argument("--inspect", metavar="VERSION",
+                       help="Diagnosticar estado residual de uma migration antes de reaplicar")
 
     args = parser.parse_args()
 
@@ -152,6 +282,24 @@ async def main() -> None:
     try:
         if args.status:
             await run_status(conn)
+        elif args.verify:
+            await ensure_migrations_table(conn)
+            applied = await get_applied(conn)
+            mismatches = []
+            for version, path in MIGRATIONS:
+                if version not in applied:
+                    continue
+                checksum = file_checksum(path)
+                if applied[version] != checksum:
+                    mismatches.append(version)
+                    logger.error("CHECKSUM MISMATCH: %s", version)
+            if mismatches:
+                sys.exit(1)
+            logger.info("Todos os checksums conferem (%d migrations aplicadas).", len(applied))
+        elif args.inspect is not None:
+            verdict = await inspect_migration(conn, args.inspect)
+            if verdict == "PARTIAL":
+                sys.exit(1)
         elif args.up is not None:
             target = args.up or None
             await run_up(conn, target)

@@ -420,6 +420,131 @@ class TestResolveFunctionHardening:
         assert row["app_can"] is True
         assert row["worker_can"] is True
 
+    async def test_current_user_is_member_of_cognitive_admin(self, db_pools, admin_conn):
+        """A conexão admin (quem roda migrations) precisa ser membro de
+        cognitive_admin pra `ALTER FUNCTION ... OWNER TO` funcionar — é a
+        causa raiz do InsufficientPrivilegeError original. `GRANT
+        cognitive_admin TO CURRENT_USER` em 002 resolve isso."""
+        row = await admin_conn.fetchrow(
+            "SELECT pg_has_role(current_user, 'cognitive_admin', 'MEMBER') AS is_member"
+        )
+        assert row["is_member"] is True
+
+
+class TestFunctionOwnershipRestrictions:
+    """SEC-002 hotfix (retry pós-Gate): app/worker só têm EXECUTE — nunca
+    conseguem alterar, substituir, remover ou mudar grants da função, nem
+    adquirir a role owner via SET ROLE."""
+
+    async def test_app_role_cannot_alter_function_owner(
+        self, db_pools, seeded_tenants, app_conn
+    ):
+        from .conftest import set_tenant_local
+
+        await set_tenant_local(app_conn, seeded_tenants["tenant-a"])
+        with pytest.raises(Exception):
+            await app_conn.execute(
+                "ALTER FUNCTION resolve_service_identity_by_credential_hash(TEXT) "
+                "OWNER TO cognitive_app"
+            )
+
+    async def test_worker_role_cannot_alter_function_owner(
+        self, db_pools, seeded_tenants, worker_conn
+    ):
+        from .conftest import set_tenant_local
+
+        await set_tenant_local(worker_conn, seeded_tenants["tenant-a"])
+        with pytest.raises(Exception):
+            await worker_conn.execute(
+                "ALTER FUNCTION resolve_service_identity_by_credential_hash(TEXT) "
+                "OWNER TO cognitive_worker"
+            )
+
+    async def test_app_role_cannot_drop_function(self, db_pools, seeded_tenants, app_conn):
+        from .conftest import set_tenant_local
+
+        await set_tenant_local(app_conn, seeded_tenants["tenant-a"])
+        with pytest.raises(Exception):
+            await app_conn.execute(
+                "DROP FUNCTION resolve_service_identity_by_credential_hash(TEXT)"
+            )
+
+    async def test_worker_role_cannot_drop_function(self, db_pools, seeded_tenants, worker_conn):
+        from .conftest import set_tenant_local
+
+        await set_tenant_local(worker_conn, seeded_tenants["tenant-a"])
+        with pytest.raises(Exception):
+            await worker_conn.execute(
+                "DROP FUNCTION resolve_service_identity_by_credential_hash(TEXT)"
+            )
+
+    async def test_app_role_cannot_replace_function_body(
+        self, db_pools, seeded_tenants, app_conn
+    ):
+        """Se app conseguisse CREATE OR REPLACE, poderia trocar o corpo
+        da função por SQL arbitrário rodando com privilégio de owner —
+        exatamente o que SECURITY DEFINER + ownership travado impede."""
+        from .conftest import set_tenant_local
+
+        await set_tenant_local(app_conn, seeded_tenants["tenant-a"])
+        with pytest.raises(Exception):
+            await app_conn.execute(
+                """
+                CREATE OR REPLACE FUNCTION resolve_service_identity_by_credential_hash(p_credential_hash TEXT)
+                RETURNS TABLE (service_identity_id UUID, tenant_id UUID, actor_id TEXT, profile TEXT)
+                LANGUAGE sql SECURITY DEFINER
+                AS $$ SELECT id, tenant_id, actor_id, profile FROM service_identities $$
+                """
+            )
+
+    async def test_app_role_cannot_change_grants_on_function(
+        self, db_pools, seeded_tenants, app_conn
+    ):
+        from .conftest import set_tenant_local
+
+        await set_tenant_local(app_conn, seeded_tenants["tenant-a"])
+        with pytest.raises(Exception):
+            await app_conn.execute(
+                "GRANT EXECUTE ON FUNCTION resolve_service_identity_by_credential_hash(TEXT) "
+                "TO PUBLIC"
+            )
+
+    async def test_worker_role_cannot_change_grants_on_function(
+        self, db_pools, seeded_tenants, worker_conn
+    ):
+        from .conftest import set_tenant_local
+
+        await set_tenant_local(worker_conn, seeded_tenants["tenant-a"])
+        with pytest.raises(Exception):
+            await worker_conn.execute(
+                "GRANT EXECUTE ON FUNCTION resolve_service_identity_by_credential_hash(TEXT) "
+                "TO PUBLIC"
+            )
+
+    async def test_app_role_cannot_set_role_to_admin(self, db_pools, app_conn):
+        with pytest.raises(Exception):
+            await app_conn.execute("SET ROLE cognitive_admin")
+
+    async def test_worker_role_cannot_set_role_to_admin(self, db_pools, worker_conn):
+        with pytest.raises(Exception):
+            await worker_conn.execute("SET ROLE cognitive_admin")
+
+    async def test_app_role_is_not_member_of_cognitive_admin(self, db_pools, admin_conn):
+        """Confirma no catálogo (não só por tentativa/erro) que cognitive_app
+        nunca ganhou membership em cognitive_admin — a correção do
+        ownership (GRANT ... TO CURRENT_USER) é sobre a conexão que RODA
+        migrations, nunca sobre as roles de runtime."""
+        row = await admin_conn.fetchrow(
+            "SELECT pg_has_role('cognitive_app', 'cognitive_admin', 'MEMBER') AS is_member"
+        )
+        assert row["is_member"] is False
+
+    async def test_worker_role_is_not_member_of_cognitive_admin(self, db_pools, admin_conn):
+        row = await admin_conn.fetchrow(
+            "SELECT pg_has_role('cognitive_worker', 'cognitive_admin', 'MEMBER') AS is_member"
+        )
+        assert row["is_member"] is False
+
 
 class TestWorkerIdentity:
     async def test_worker_identity_isolated_from_app_identity(
