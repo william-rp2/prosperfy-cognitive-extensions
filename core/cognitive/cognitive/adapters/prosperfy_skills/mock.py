@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from .guard import guard_arguments
+
 logger = logging.getLogger(__name__)
 
 # Respostas mock por tool_name
@@ -59,6 +61,13 @@ class MockSkillsAdapter:
         tenant_id: str,
         correlation_id: str,
     ) -> dict[str, Any]:
+        """
+        Aplica a mesma boundary guard do adapter real (ADR-V2-003), para que
+        payloads maliciosos sejam rejeitados igualmente em dev/CI
+        (COGNITIVE_LIVE_MCP=0) e em produção.
+        """
+        guard_arguments(tool_name, arguments)
+
         logger.debug(
             "MockSkillsAdapter.invoke_tool tool=%s tenant=%s correlation=%s",
             tool_name, tenant_id, correlation_id,
