@@ -18,6 +18,8 @@ from typing import Any
 
 import httpx
 
+from .guard import guard_arguments
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_HOST = "skills.prosperfy.com.br"
@@ -61,7 +63,14 @@ class ProsperfySkillsAdapter:
         Invoca uma tool no ProsperfySkill via HTTP.
 
         Nunca loga o api_key ou valores de arguments sensíveis.
+        Levanta ForbiddenArgumentError (ADR-V2-003 boundary guard) se
+        `arguments` contiver chaves de comando/shell arbitrário ou um
+        'resource' malformado (não resolvido para um slug lógico).
+        Erros de rede/HTTP são sanitizados antes de propagar — nunca vazam
+        corpo de resposta do upstream, headers ou stack interno.
         """
+        guard_arguments(tool_name, arguments)
+
         if not self._api_key:
             raise RuntimeError("MCP_PROSPERFYSKILLS_API_KEY não configurada")
 
@@ -75,14 +84,37 @@ class ProsperfySkillsAdapter:
             tool_name, tenant_id, correlation_id,
         )
 
-        async with httpx.AsyncClient(
-            base_url=self._base_url,
-            headers=self._headers(),
-            timeout=self._timeout,
-        ) as client:
-            response = await client.post("/mcp/tools/call", json=payload)
-            response.raise_for_status()
-            return response.json()
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                headers=self._headers(),
+                timeout=self._timeout,
+            ) as client:
+                response = await client.post("/mcp/tools/call", json=payload)
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as exc:
+            # Loga detalhe completo apenas server-side; nunca propaga corpo/
+            # headers da resposta upstream para o chamador (pode conter
+            # detalhes internos do ProsperfySkill).
+            logger.error(
+                "ProsperfySkillsAdapter upstream error tool=%s status=%s "
+                "tenant=%s correlation=%s",
+                tool_name, exc.response.status_code, tenant_id, correlation_id,
+            )
+            raise RuntimeError(
+                f"ProsperfySkill tool '{tool_name}' falhou (status "
+                f"{exc.response.status_code})"
+            ) from None
+        except httpx.HTTPError as exc:
+            logger.error(
+                "ProsperfySkillsAdapter transport error tool=%s type=%s "
+                "tenant=%s correlation=%s",
+                tool_name, type(exc).__name__, tenant_id, correlation_id,
+            )
+            raise RuntimeError(
+                f"ProsperfySkill tool '{tool_name}' inacessível (erro de transporte)"
+            ) from None
 
     async def health(self) -> bool:
         """Verifica se o ProsperfySkill está acessível."""
