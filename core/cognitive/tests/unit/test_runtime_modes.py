@@ -28,12 +28,25 @@ class TestCognitiveMode:
         monkeypatch.setenv("COGNITIVE_DB_ADMIN_URL", "postgresql://postgres:x@db.esvjfkknrzzziafovwrv.supabase.co:5432/postgres")
         assert is_database_mode()
 
-    def test_database_mode_requires_admin_url(self, monkeypatch):
+    def test_database_mode_requires_app_url(self, monkeypatch):
         monkeypatch.setenv("COGNITIVE_MODE", "database")
-        monkeypatch.setenv("COGNITIVE_DB_URL", "postgresql://app:x@db.esvjfkknrzzziafovwrv.supabase.co:5432/postgres")
+        monkeypatch.delenv("COGNITIVE_DB_URL", raising=False)
         monkeypatch.delenv("COGNITIVE_DB_ADMIN_URL", raising=False)
-        with pytest.raises(RuntimeError, match="COGNITIVE_DB_ADMIN_URL"):
+        with pytest.raises(RuntimeError, match="COGNITIVE_DB_URL"):
             require_database_config()
+
+    def test_database_mode_boots_without_admin_url(self, monkeypatch):
+        """SEC-001 (Sprint 0.3): admin DSN não é mais obrigatório no
+        processo web público — só COGNITIVE_DB_URL (cognitive_app,
+        RLS enforced) é exigido. Identity resolution em runtime usa o
+        pool app, não o pool admin."""
+        monkeypatch.setenv("COGNITIVE_MODE", "database")
+        monkeypatch.setenv(
+            "COGNITIVE_DB_URL",
+            "postgresql://app:x@db.esvjfkknrzzziafovwrv.supabase.co:5432/postgres",
+        )
+        monkeypatch.delenv("COGNITIVE_DB_ADMIN_URL", raising=False)
+        require_database_config()  # não deve levantar
 
 
 class TestIdentityResolverFailClosed:

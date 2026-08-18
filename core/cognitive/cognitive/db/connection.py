@@ -7,7 +7,12 @@ Aplica DENTRO de cada transação — nunca com SET SESSION (perigoso em pools).
 Três DSNs:
   COGNITIVE_DB_URL         → cognitive_app (RLS enforced) — path normal da API
   COGNITIVE_DB_WORKER_URL  → cognitive_worker (RLS enforced) — workers/jobs
-  COGNITIVE_DB_ADMIN_URL   → cognitive_admin (BYPASSRLS) — migrations, seed, lookup de identidade
+  COGNITIVE_DB_ADMIN_URL   → cognitive_admin (BYPASSRLS) — migrations e bootstrap
+                             (register/deactivate de service identity via
+                             CLI/script). OPCIONAL no processo web público
+                             desde Sprint 0.3 (SEC-001) — a resolução de
+                             identidade em runtime usa app_connection_no_tenant()
+                             (pool cognitive_app), não mais admin_connection().
 """
 
 from __future__ import annotations
@@ -88,6 +93,27 @@ async def tenant_transaction(tenant_id: str) -> AsyncIterator[asyncpg.Connection
                 tenant_id,
             )
             yield conn
+
+
+@contextlib.asynccontextmanager
+async def app_connection_no_tenant() -> AsyncIterator[asyncpg.Connection]:
+    """
+    Conexão do pool da app (cognitive_app), SEM SET LOCAL de tenant.
+
+    Uso exclusivo: resolução de identidade (credential_hash -> tenant_id),
+    que por definição precisa acontecer ANTES de existir tenant context
+    (SEC-001). RLS de service_identities permite SELECT irrestrito nessa
+    role (o credential_hash é o boundary, ver migration 002); INSERT/UPDATE
+    continuam tenant-scoped.
+
+    NÃO usar para nenhuma outra tabela — sem tenant context, qualquer
+    outra tabela com RLS tenant-scoped simplesmente não retorna linhas.
+    """
+    if _app_pool is None:
+        raise RuntimeError("DB pool não inicializado. Verificar COGNITIVE_DB_URL.")
+
+    async with _app_pool.acquire() as conn:
+        yield conn
 
 
 @contextlib.asynccontextmanager

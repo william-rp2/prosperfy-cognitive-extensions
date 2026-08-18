@@ -39,6 +39,7 @@ COGNITIVE_DB_ADMIN_URL=<url-do-dev-homolog> python core/migrations/runner.py --u
 |---|---|
 | `000_foundation_tenancy.sql` | roles, tenants, members, resources, credential_refs, grants + RLS |
 | `001_capability_registry_audit.sql` | service_identities, audit_events, execution_traces, cost_telemetry + RLS |
+| `002_service_identities_lookup_least_privilege.sql` | SEC-001 (Sprint 0.3): troca RLS de `service_identities` para SELECT irrestrito (credential_hash é o boundary) + INSERT/UPDATE tenant-scoped + função SECURITY DEFINER `touch_service_identity_last_used` — remove a necessidade de `cognitive_admin`/BYPASSRLS para lookup de identidade em runtime |
 
 ## Estratégia RLS (Sprint 0.2)
 
