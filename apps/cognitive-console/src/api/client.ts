@@ -1,4 +1,5 @@
 import { consoleConfig, hasTestContext } from '../config/env'
+import { getSessionCredential } from '../config/session'
 
 export type HealthResponse = {
   status: string
@@ -42,7 +43,7 @@ function authHeaders(): HeadersInit {
     throw new Error('Test context not configured')
   }
   return {
-    Authorization: `Bearer ${consoleConfig.testCredential}`,
+    Authorization: `Bearer ${getSessionCredential()}`,
     'X-Tenant-Id': consoleConfig.testTenant,
     'X-Actor-Id': consoleConfig.testActor,
     'Content-Type': 'application/json',
@@ -50,6 +51,9 @@ function authHeaders(): HeadersInit {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  if (!consoleConfig.apiBaseUrl) {
+    throw new Error('VITE_COGNITIVE_API_BASE_URL is not configured')
+  }
   const res = await fetch(`${consoleConfig.apiBaseUrl}${path}`, init)
   if (!res.ok) {
     const text = await res.text()
