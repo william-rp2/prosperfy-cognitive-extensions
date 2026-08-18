@@ -75,6 +75,40 @@ class TestServiceIdentityLookup:
         assert rows[0]["credential_hash"] != credential
 
 
+class TestRegisterDeactivateLookupEndToEnd:
+    """Fluxo de negócio completo via ServiceIdentityRepository — register()
+    e deactivate() usam admin_connection() (bootstrap/CLI), lookup() usa a
+    função estreita (runtime). Nunca exercitado fim-a-fim antes."""
+
+    async def test_register_then_lookup_resolves(self, db_pools, seeded_tenants):
+        tenant_a_id = seeded_tenants["tenant-a"]
+        credential = "e2e-register-lookup-credential"
+        repo = ServiceIdentityRepository()
+        try:
+            registered = await repo.register(tenant_a_id, "actor-e2e", credential)
+            assert registered.tenant_id == tenant_a_id
+
+            resolved = await repo.lookup(credential)
+            assert resolved is not None
+            assert resolved.tenant_id == tenant_a_id
+            assert resolved.actor_id == "actor-e2e"
+        finally:
+            await repo.deactivate(credential)
+
+    async def test_register_then_deactivate_then_lookup_returns_none(
+        self, db_pools, seeded_tenants
+    ):
+        tenant_a_id = seeded_tenants["tenant-a"]
+        credential = "e2e-register-deactivate-credential"
+        repo = ServiceIdentityRepository()
+        await repo.register(tenant_a_id, "actor-e2e-2", credential)
+        assert await repo.lookup(credential) is not None
+
+        await repo.deactivate(credential)
+
+        assert await repo.lookup(credential) is None
+
+
 class TestIdentityResolverDatabaseMode:
     async def test_valid_identity_resolves(self, db_pools, seeded_identity):
         credential, tenant_a_id = seeded_identity
@@ -190,19 +224,37 @@ class TestLookupLeastPrivilege:
                 uuid.UUID(tenant_b_id),
             )
 
-    async def test_no_wildcard_or_prefix_matching(self, db_pools, seeded_identity):
-        """A função faz igualdade exata — um prefixo do hash real não deve
-        casar (nada de LIKE/enumeração por prefixo)."""
+    async def test_repo_lookup_of_a_hash_prefix_never_matches(self, db_pools, seeded_identity):
+        """lookup() sempre hasheia a credencial recebida — um "hash parcial"
+        passado como credencial vira, ele mesmo, um hash totalmente
+        diferente (efeito avalanche do sha256), então nunca bate. Isso
+        prova que nada de texto livre do cliente pode aproximar-se de um
+        credential_hash real — não prova, sozinho, a semântica `=` da
+        função no banco (ver test_function_uses_exact_equality_not_wildcard
+        pra isso)."""
         credential, _ = seeded_identity
         full_hash = hash_credential(credential)
         prefix = full_hash[:10]
 
         repo = ServiceIdentityRepository()
-        # lookup() sempre hasheia a credencial recebida — simulamos uma
-        # tentativa de casar por prefixo direto via SQL, não pelo repo
-        # (o repo nunca aceitaria um "hash parcial" como entrada de texto
-        # livre de qualquer forma — isso é o ponto).
         assert await repo.lookup(prefix) is None
+
+    async def test_function_uses_exact_equality_not_wildcard(
+        self, db_pools, seeded_identity, admin_conn
+    ):
+        """Chama a função SQL diretamente (bypassando o hashing do Python)
+        com um valor no formato de wildcard SQL — prova que a comparação
+        interna é `=`, não `LIKE`/`~`, então um % ou _ no input não vira
+        curinga."""
+        credential, _ = seeded_identity
+        full_hash = hash_credential(credential)
+        wildcard_attempt = f"{full_hash[:10]}%"
+
+        row = await admin_conn.fetchrow(
+            "SELECT * FROM resolve_service_identity_by_credential_hash($1)",
+            wildcard_attempt,
+        )
+        assert row is None
 
 
 class TestDirectTableAccessLockedDown:
@@ -272,6 +324,56 @@ class TestDirectTableAccessLockedDown:
         await set_tenant_local(worker_conn, seeded_tenants["tenant-a"])
         with pytest.raises(Exception):
             await worker_conn.fetch("SELECT credential_hash FROM service_identities")
+
+    async def test_app_role_cannot_delete(self, db_pools, seeded_tenants, admin_conn, app_conn):
+        from .conftest import set_tenant_local
+
+        tenant_a_id = seeded_tenants["tenant-a"]
+        cred_hash = hash_credential("lockdown-delete-probe-app")
+        await admin_conn.execute(
+            """
+            INSERT INTO service_identities(tenant_id, actor_id, credential_hash, profile)
+            VALUES($1, 'actor-a', $2, 'owner-core')
+            ON CONFLICT (credential_hash) DO NOTHING
+            """,
+            uuid.UUID(tenant_a_id), cred_hash,
+        )
+        try:
+            await set_tenant_local(app_conn, tenant_a_id)
+            with pytest.raises(Exception):
+                await app_conn.execute(
+                    "DELETE FROM service_identities WHERE credential_hash = $1", cred_hash,
+                )
+        finally:
+            await admin_conn.execute(
+                "DELETE FROM service_identities WHERE credential_hash = $1", cred_hash
+            )
+
+    async def test_worker_role_cannot_delete(
+        self, db_pools, seeded_tenants, admin_conn, worker_conn
+    ):
+        from .conftest import set_tenant_local
+
+        tenant_a_id = seeded_tenants["tenant-a"]
+        cred_hash = hash_credential("lockdown-delete-probe-worker")
+        await admin_conn.execute(
+            """
+            INSERT INTO service_identities(tenant_id, actor_id, credential_hash, profile)
+            VALUES($1, 'actor-a', $2, 'owner-core')
+            ON CONFLICT (credential_hash) DO NOTHING
+            """,
+            uuid.UUID(tenant_a_id), cred_hash,
+        )
+        try:
+            await set_tenant_local(worker_conn, tenant_a_id)
+            with pytest.raises(Exception):
+                await worker_conn.execute(
+                    "DELETE FROM service_identities WHERE credential_hash = $1", cred_hash,
+                )
+        finally:
+            await admin_conn.execute(
+                "DELETE FROM service_identities WHERE credential_hash = $1", cred_hash
+            )
 
 
 class TestResolveFunctionHardening:

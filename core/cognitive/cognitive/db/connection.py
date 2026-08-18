@@ -102,9 +102,16 @@ async def app_connection_no_tenant() -> AsyncIterator[asyncpg.Connection]:
 
     Uso exclusivo: resolução de identidade (credential_hash -> tenant_id),
     que por definição precisa acontecer ANTES de existir tenant context
-    (SEC-001). RLS de service_identities permite SELECT irrestrito nessa
-    role (o credential_hash é o boundary, ver migration 002); INSERT/UPDATE
-    continuam tenant-scoped.
+    (SEC-001). cognitive_app NÃO tem nenhum grant direto (SELECT/INSERT/
+    UPDATE/DELETE) em service_identities — migration 002 revoga isso
+    explicitamente (SEC-002: uma primeira versão liberou SELECT
+    irrestrito via RLS `USING (true)`, o que permitia dump completo da
+    tabela cross-tenant; foi corrigido). O único acesso é via
+    `resolve_service_identity_by_credential_hash(credential_hash)`,
+    função SECURITY DEFINER que recebe só o hash e nunca retorna
+    credential_hash. NÃO reintroduza GRANT SELECT nesta tabela achando
+    que "resolve" um erro de permissão aqui — é o comportamento
+    pretendido; use a função.
 
     NÃO usar para nenhuma outra tabela — sem tenant context, qualquer
     outra tabela com RLS tenant-scoped simplesmente não retorna linhas.
