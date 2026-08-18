@@ -21,9 +21,10 @@ Credential discipline:
     hash_credential() prefix, for operator confirmation.
 
 --rotate depends on ServiceIdentityRepository.rotate(old_credential,
-new_credential), added by a parallel workstream (branch
-dev/sprint-0.4-db-identity) that may not be merged yet. If rotate() isn't
-present on the repository, --rotate prints a clear, actionable error and
+new_credential), added by dev/sprint-0.4-db-identity (merged). The
+hasattr() guard in cmd_rotate() is kept as defense-in-depth — if this
+script is ever checked out against an older/reverted identity_repo.py
+without rotate(), --rotate still prints a clear, actionable error and
 exits 1 instead of raising a raw AttributeError.
 
 --list was intentionally NOT implemented: doing it "cleanly" would require

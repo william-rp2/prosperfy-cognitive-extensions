@@ -10,8 +10,10 @@ Covers:
   - argument parsing (required flags per mode)
   - one-time-credential-display discipline (printed once on stdout, never
     logged)
-  - the --rotate AttributeError guard (repo without rotate() yet, matching
-    today's identity_repo.py before dev/sprint-0.4-db-identity merges)
+  - the --rotate AttributeError guard (repo without rotate() — a scenario
+    tested via FakeRepoNoRotate; kept as regression coverage for the guard
+    itself even though dev/sprint-0.4-db-identity has since merged and
+    ServiceIdentityRepository has rotate() for real)
   - generated credential entropy/length
 """
 
@@ -270,19 +272,19 @@ class TestCmdRotate:
         assert "dev/sprint-0.4-db-identity" in err
         assert "Traceback" not in err
 
-    @pytest.mark.asyncio
-    async def test_guard_fires_against_the_real_repository_class(self, capsys):
-        """Sanity check against the actual (unmodified) repository class,
-        not just our fake — confirms the guard reflects real current state."""
+    def test_rotate_now_available_on_the_real_repository_class(self):
+        """Sanity check against the actual repository class (not just our
+        fake): dev/sprint-0.4-db-identity has merged into dev/sprint-0.4, so
+        rotate() now exists for real and the hasattr() guard in cmd_rotate
+        is dead code on this path (still harmless — it protects any future
+        checkout that reverts/branches before that merge). We only assert
+        the method is present; we do NOT call cmd_rotate() against the real
+        class here, since that would need a live admin DB pool (out of
+        scope for a no-DB unit test) — that path is exercised for real by
+        tests/db/test_identity_lifecycle_audit.py (HOMOLOG_REQUIRED)."""
         from cognitive.db.repositories.identity_repo import ServiceIdentityRepository
 
-        repo = ServiceIdentityRepository()
-        args = _args(rotate=True, old_credential="old-tok")
-
-        rc = await cli.cmd_rotate(args, repo)
-
-        assert rc == 1
-        assert "rotate" in capsys.readouterr().err.lower()
+        assert hasattr(ServiceIdentityRepository, "rotate")
 
     @pytest.mark.asyncio
     async def test_success_prints_new_credential_exactly_once(self, capsys):
