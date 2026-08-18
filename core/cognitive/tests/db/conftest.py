@@ -43,8 +43,12 @@ GATE_TENANT_SLUGS = ("gate-tenant-a", "gate-tenant-b")
 
 
 def _remote_dsns_configured() -> bool:
+    # .strip() antes do truthiness check — "COGNITIVE_DB_ADMIN_URL= " (só
+    # espaço) não deve contar como "configurado": produziria "remote" com
+    # um host inválido, um modo de falha confuso em vez de simplesmente
+    # reconhecer que a variável não foi de fato preenchida.
     return all(
-        os.getenv(name)
+        os.getenv(name, "").strip()
         for name in (
             "COGNITIVE_DB_ADMIN_URL",
             "COGNITIVE_DB_URL",

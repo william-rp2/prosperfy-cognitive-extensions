@@ -339,14 +339,22 @@ async def inspect_migration(conn: asyncpg.Connection, version: str) -> str:
         print()
         return "APPLIED" if tracked else "UNKNOWN"
 
-    signals: dict[str, bool] = {}
+    signals: dict[str, bool | None] = {}
     for name, query in queries:
         try:
             value = await conn.fetchval(query)
         except Exception as exc:
             logger.warning("inspect(%s): sinal '%s' falhou ao consultar: %s", canonical, name, exc)
-            value = None
-        signals[name] = bool(value)
+            signals[name] = None
+            print(f"  {name}: None (query falhou — ver log)")
+            continue
+        # Nunca coagir a bool() incondicionalmente: bool(None) == False
+        # coincidiria silenciosamente com o valor "seguro" esperado por
+        # sinais sensíveis (ex.: PUBLIC sem EXECUTE), mascarando uma
+        # falha de consulta como "confirmado seguro". None nunca bate
+        # igualdade com um EXPECTED_CLEAN/EXPECTED_APPLIED (só têm
+        # True/False) — cai em PARTIAL corretamente (fail-closed).
+        signals[name] = value if value is None else bool(value)
         print(f"  {name}: {value}")
 
     expected_clean = EXPECTED_CLEAN.get(short_key)
@@ -461,33 +469,49 @@ async def migrations_table_exists(conn: asyncpg.Connection) -> bool:
     return bool(await conn.fetchval("SELECT to_regclass('public._migrations') IS NOT NULL AS v"))
 
 
-async def collect_signals(conn: asyncpg.Connection, queries: list[tuple[str, str]]) -> dict[str, bool]:
-    signals: dict[str, bool] = {}
+async def collect_signals(
+    conn: asyncpg.Connection, queries: list[tuple[str, str]]
+) -> dict[str, bool | None]:
+    """
+    Retorna True/False para sucesso, None para falha de consulta —
+    NUNCA coage None para False. `bool(None) == False` colidiria
+    silenciosamente com o valor esperado de sinais sensíveis (ex.: 002
+    "PUBLIC sem EXECUTE" espera False no estado saudável), mascarando um
+    erro de query como "confirmado seguro". Um None em qualquer sinal
+    garante que nenhum EXPECTED_* (só contém True/False) bate por
+    igualdade, então `classify_diagnosis`/`inspect_migration` caem em
+    UNKNOWN_UNSAFE_STATE/PARTIAL — fail-closed, nunca fail-open.
+    """
+    signals: dict[str, bool | None] = {}
     for name, query in queries:
         try:
             value = await conn.fetchval(query)
         except Exception as exc:
             logger.warning("diagnose: sinal '%s' falhou ao consultar: %s", name, exc)
-            value = None
-        signals[name] = bool(value)
+            signals[name] = None
+            continue
+        signals[name] = value if value is None else bool(value)
     return signals
 
 
 @dataclass(frozen=True)
 class DiagnosisResult:
     verdict: str
-    signals_000: dict[str, bool]
-    signals_001: dict[str, bool]
-    signals_002: dict[str, bool]
+    # bool = sinal coletado com sucesso; None = a query falhou (ver
+    # collect_signals) — nunca coagido a False, pra não mascarar erro de
+    # consulta como "confirmado seguro".
+    signals_000: dict[str, bool | None]
+    signals_001: dict[str, bool | None]
+    signals_002: dict[str, bool | None]
     # "000"/"001"/"002" -> True (tracked, checksum bate) / False (tracked,
     # checksum não bate) / None (nenhuma linha de tracking pra essa versão)
     tracked: dict[str, bool | None]
 
 
 def classify_diagnosis(
-    signals_000: dict[str, bool],
-    signals_001: dict[str, bool],
-    signals_002: dict[str, bool],
+    signals_000: dict[str, bool | None],
+    signals_001: dict[str, bool | None],
+    signals_002: dict[str, bool | None],
     tracked: dict[str, bool | None],
 ) -> str:
     """
