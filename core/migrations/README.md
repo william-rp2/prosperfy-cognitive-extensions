@@ -66,8 +66,78 @@ COGNITIVE_DB_ADMIN_URL=<url-do-dev-homolog> python core/migrations/runner.py --u
 COGNITIVE_DB_ADMIN_URL=<url-do-dev-homolog> python core/migrations/runner.py --verify
 
 # Antes de reaplicar uma migration que falhou no meio: diagnosticar estado residual
+# (aceita prefixo curto ou stem completo do arquivo — as duas formas resolvem
+# pro mesmo veredito)
 COGNITIVE_DB_ADMIN_URL=<url-do-dev-homolog> python core/migrations/runner.py --inspect 002
+COGNITIVE_DB_ADMIN_URL=<url-do-dev-homolog> python core/migrations/runner.py --inspect 002_service_identities_lookup_least_privilege
+
+# Raio-x READ-ONLY do banco inteiro (000/001/002 + _migrations) — usar quando
+# _migrations não é confiável (ex: dropada por engano, incidente real do
+# Gate — ver seção "Recovery" abaixo)
+COGNITIVE_DB_ADMIN_URL=<url-do-dev-homolog> python core/migrations/runner.py --diagnose
+
+# Reconstruir só a linha de tracking em _migrations — ÚNICO comando que
+# escreve, e só age se --diagnose provar TRACKING_MISSING_ONLY
+COGNITIVE_DB_ADMIN_URL=<url-do-dev-homolog> python core/migrations/runner.py --recover-tracking
 ```
+
+## Recovery: quando `_migrations` não é confiável
+
+Incidente real (Sprint 0.3, VPS/Homolog Gate): um run real contra
+Supabase Homolog aplicou 000/001/002 com sucesso, mas um teste destrutivo
+rodado depois derrubou a tabela `_migrations`. Sem `_migrations`, o runner
+não consegue mais dizer "o que já está aplicado" — e reaplicar às cegas
+(`--up`) arrisca rodar SQL não-idempotente contra um schema que já existe.
+
+`--diagnose` e `--recover-tracking` existem exatamente pra esse cenário:
+
+1. **`--diagnose` (read-only)** roda um fingerprint de estado real —
+   existência de tabelas, roles, RLS habilitada — pra 000, 001 e 002
+   (mesmo estilo do fingerprint que `--inspect 002` já usa), **sem
+   depender de `_migrations` em nenhum momento**. Nenhum
+   `CREATE`/`ALTER`/`DROP`/`INSERT`/`UPDATE`/`DELETE` roda aqui — só
+   `SELECT` contra o catálogo do Postgres (`pg_class`, `pg_roles`,
+   `pg_policies`, `to_regclass`, `has_table_privilege`, etc.). Termina
+   imprimindo um `VERDICT`:
+   - `HEALTHY` — schema intacto e `_migrations` bate certinho.
+   - `TRACKING_MISSING_ONLY` — schema 100% intacto (000/001/002
+     comprovadamente aplicadas), só falta a linha de tracking. **Único**
+     veredito que `--recover-tracking` aceita agir sobre.
+   - `MIGRATION_002_MISSING` — 000/001 completas, 002 nunca rodou
+     (fingerprint bate exatamente com o estado limpo pré-002). Normal,
+     seguro, não é corrupção.
+   - `SCHEMA_PARTIAL` / `UNKNOWN_UNSAFE_STATE` — estado ambíguo ou
+     inesperado. Exige revisão humana antes de qualquer ação; exit code 1.
+
+2. **`--recover-tracking` (o único write path)** roda `--diagnose`
+   internamente primeiro. Se o veredito não for **exatamente**
+   `TRACKING_MISSING_ONLY` — "perto o suficiente" não conta — recusa com
+   `RECOVERY REFUSED` e exit 1, sem tentar nenhum write. Só quando o
+   schema/roles/RLS/policies/função já foram **provados intactos pelo
+   fingerprint ANTES de qualquer escrita** é que ele:
+   - `CREATE TABLE IF NOT EXISTS _migrations` (idempotente, mesma DDL de
+     `ensure_migrations_table()`);
+   - `INSERT ... ON CONFLICT (version) DO NOTHING` pras três migrations,
+     com o checksum sempre **recalculado na hora** a partir do arquivo
+     `.sql` real em disco — nunca aceito como input do operador (evita
+     poluir `--verify`/`--up` com um checksum digitado errado);
+   - tudo dentro de **uma única transação explícita** (`async with
+     conn.transaction()`), mesmo contrato de atomicidade do resto deste
+     runner.
+
+   Nunca toca tabela, role, policy ou função de negócio — só
+   `_migrations`. Também guarda contra rodar fora de Homolog: recusa
+   qualquer `COGNITIVE_DB_ADMIN_URL` cujo project ref não verifique como
+   `esvjfkknrzzziafovwrv` (reaproveita `verify_homolog_admin_dsn` de
+   `cognitive.config.db_target` — o mesmo helper usado por
+   `tests/db/conftest.py`).
+
+   Idempotente: rodar duas vezes seguidas é seguro — a segunda vez já vê
+   `HEALTHY` e recusa educadamente ("nada a fazer", exit 0), não como
+   erro.
+
+Nunca alcançável a partir de `--up`/`--down`/fluxo normal de migration —
+é uma ação de operador deliberada e isolada.
 
 ## Ordem de Migrations
 

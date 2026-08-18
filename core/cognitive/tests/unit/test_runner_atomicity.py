@@ -137,10 +137,15 @@ class TestInspectMigrationClassification:
         return fake_fetchval
 
     async def test_tracked_is_always_applied(self, monkeypatch):
+        """_migrations.version grava o STEM COMPLETO (ver
+        apply_one_migration) — o fake precisa refletir isso, não o
+        prefixo curto "002" (esse era exatamente o bug de normalização
+        corrigido em resolve_migration_version/inspect_migration: comparar
+        "002" cru contra o stem completo sempre dava tracked=False)."""
         conn = FakeConn()
 
         async def fake_get_applied(_conn):
-            return {"002": "abc123"}
+            return {"002_service_identities_lookup_least_privilege": "abc123"}
 
         monkeypatch.setattr(runner, "get_applied", fake_get_applied)
         verdict = await runner.inspect_migration(conn, "002")
@@ -210,7 +215,13 @@ class TestInspectMigrationClassification:
         verdict = await runner.inspect_migration(conn, "002")
         assert verdict == "PARTIAL"
 
-    async def test_unknown_version_without_fingerprint_falls_back_to_tracking(self, monkeypatch):
+    async def test_unrecognized_version_is_invalid(self, monkeypatch):
+        """"999_nonexistent" não bate com nenhum arquivo real em MIGRATIONS
+        — desde a correção de normalização (resolve_migration_version),
+        isso é INVALID_VERSION (fail-closed), não mais um fallback
+        silencioso pra UNKNOWN. UNKNOWN continua reservado pra uma
+        migration REAL sem fingerprint cadastrado (ex: 000/001) e não
+        rastreada — ver test_inspect_normalization.py."""
         conn = FakeConn()
 
         async def fake_get_applied(_conn):
@@ -218,4 +229,4 @@ class TestInspectMigrationClassification:
 
         monkeypatch.setattr(runner, "get_applied", fake_get_applied)
         verdict = await runner.inspect_migration(conn, "999_nonexistent")
-        assert verdict == "UNKNOWN"
+        assert verdict == "INVALID_VERSION"
