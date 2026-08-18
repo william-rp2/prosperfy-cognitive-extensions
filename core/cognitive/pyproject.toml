@@ -31,4 +31,8 @@ include = ["cognitive*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "safe_remote: DB test safe to run against the shared remote Homolog target — read-only or scoped to rows/tenants it creates and cleans up itself, never mutates shared schema",
+    "ephemeral_only: DB test that mutates or destroys schema — only permitted against a disposable ephemeral Postgres (COGNITIVE_DB_TEST_MODE=ephemeral); must never run against remote Homolog",
+]
 

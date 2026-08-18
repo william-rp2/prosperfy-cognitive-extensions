@@ -84,10 +84,68 @@ def db_mode() -> str:
     return "remote" if _remote_dsns_configured() else "testcontainers"
 
 
+def resolve_db_test_mode() -> str:
+    """Returns 'remote_homolog', 'ephemeral', or 'unset'. Raises RuntimeError
+    if the env var is set to anything else."""
+    raw = os.getenv("COGNITIVE_DB_TEST_MODE", "").strip().lower()
+    if raw and raw not in ("remote_homolog", "ephemeral"):
+        raise RuntimeError(
+            f"COGNITIVE_DB_TEST_MODE inválido: {raw!r} — use 'remote_homolog' ou 'ephemeral'"
+        )
+    return raw or "unset"
+
+
+class DbTestModeFailClosed(Exception):
+    """Raised by _decide_db_test_mode when the declared COGNITIVE_DB_TEST_MODE
+    and the actual DB target disagree (or agreement is missing). The message
+    is the exact text the db_test_mode fixture passes to pytest.exit — kept
+    as a plain exception (rather than calling pytest.exit directly) so the
+    decision logic is unit-testable without invoking real pytest internals."""
+
+
+def _decide_db_test_mode(db_mode: str, declared: str) -> str:
+    """Pure decision function — no pytest, no I/O. See db_test_mode fixture
+    for the fail-closed safety contract this implements."""
+    if db_mode == "remote":
+        if declared != "remote_homolog":
+            raise DbTestModeFailClosed(
+                "SAFETY: COGNITIVE_DB_* aponta para um alvo remoto real, mas "
+                "COGNITIVE_DB_TEST_MODE não está declarado como 'remote_homolog'. "
+                "Recusando conectar a um alvo remoto sem declaração explícita de modo. "
+                "Defina COGNITIVE_DB_TEST_MODE=remote_homolog antes de rodar testes DB "
+                "contra Homolog."
+            )
+        return "remote_homolog"
+    # db_mode == "testcontainers" (no full remote DSN triplet configured)
+    if declared == "remote_homolog":
+        raise DbTestModeFailClosed(
+            "SAFETY: COGNITIVE_DB_TEST_MODE=remote_homolog foi declarado, mas "
+            "COGNITIVE_DB_ADMIN_URL/COGNITIVE_DB_URL/COGNITIVE_DB_WORKER_URL não estão "
+            "totalmente configurados para um alvo remoto real. Declaração e ambiente "
+            "divergem — recusando prosseguir."
+        )
+    return "ephemeral" if declared == "ephemeral" else "testcontainers_undeclared"
+
+
 @pytest.fixture(scope="session")
-def allow_destructive_migrations(db_mode: str) -> bool:
-    """Rollback/destructive migration tests only on ephemeral testcontainers."""
-    return db_mode == "testcontainers"
+def db_test_mode(db_mode: str) -> str:
+    declared = resolve_db_test_mode()
+    try:
+        return _decide_db_test_mode(db_mode, declared)
+    except DbTestModeFailClosed as exc:
+        pytest.exit(str(exc), returncode=1)
+
+
+@pytest.fixture(scope="session")
+def allow_destructive_migrations(db_test_mode: str) -> bool:
+    """Destructive DB tests require an EXPLICIT COGNITIVE_DB_TEST_MODE=ephemeral.
+    There is NO implicit default that grants this — merely having testcontainers
+    available without the explicit declaration is NOT enough (this is intentional:
+    the previous, more permissive default is exactly what let a destructive test
+    run somewhere it shouldn't have). There is also no override mechanism — no
+    other env var can flip this to True while db_test_mode is 'remote_homolog' or
+    'testcontainers_undeclared'."""
+    return db_test_mode == "ephemeral"
 
 
 @pytest.fixture(scope="session")
