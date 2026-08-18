@@ -2,7 +2,10 @@
 migrations/runner.py — Migration runner minimalista para o Cognitive Core.
 
 Sem Alembic — dependência pesada desnecessária para Sprint 0.2.
-Conecta como cognitive_admin (BYPASSRLS) para criar/destruir schema.
+Conecta via COGNITIVE_DB_ADMIN_URL — a identidade admin do ambiente
+(`postgres` no Supabase, `cognitive_admin` no docker-compose.dev.yml
+local) para criar/destruir schema. Migrations nunca assumem que essa
+identidade tem um nome fixo (ver SEC-003 em 002_*.sql).
 
 Contrato de atomicidade (Sprint 0.3, hotfix pós-Gate):
   Cada migration = UMA unidade atômica = (executar o arquivo SQL inteiro +
@@ -190,13 +193,24 @@ INSPECTION_QUERIES: dict[str, list[tuple[str, str]]] = {
     "002": [
         (
             "function_exists",
-            "SELECT EXISTS (SELECT 1 FROM pg_proc WHERE proname = "
-            "'resolve_service_identity_by_credential_hash') AS v",
+            # to_regprocedure() (não o cast ::regprocedure) retorna NULL em vez
+            # de lançar erro quando a função não existe — importante porque
+            # este sinal PRECISA resolver limpo (False) no estado CLEAN, sem
+            # logar um "falhou ao consultar" falso-positivo.
+            "SELECT to_regprocedure('resolve_service_identity_by_credential_hash(text)') "
+            "IS NOT NULL AS v",
         ),
         (
-            "function_owner_is_cognitive_admin",
-            "SELECT COALESCE((SELECT pg_get_userbyid(proowner) = 'cognitive_admin' "
-            "FROM pg_proc WHERE proname = 'resolve_service_identity_by_credential_hash'), false) AS v",
+            "function_owner_is_not_app_or_worker",
+            # Checa por MEMBERSHIP (pg_has_role), não só por nome do owner —
+            # cobre tanto "owner se chama cognitive_app/worker" quanto
+            # "app/worker de alguma forma ganharam membership no owner real"
+            # (hoje nunca acontece, ver 000/001, mas o sinal deve detectar
+            # se algum dia acontecer, não só comparar string).
+            "SELECT COALESCE((SELECT NOT pg_has_role('cognitive_app', proowner, 'MEMBER') "
+            "AND NOT pg_has_role('cognitive_worker', proowner, 'MEMBER') "
+            "FROM pg_proc WHERE oid = to_regprocedure("
+            "'resolve_service_identity_by_credential_hash(text)')), false) AS v",
         ),
         (
             "public_has_execute_on_function",
@@ -220,7 +234,7 @@ INSPECTION_QUERIES: dict[str, list[tuple[str, str]]] = {
 EXPECTED_CLEAN: dict[str, dict[str, bool]] = {
     "002": {
         "function_exists": False,
-        "function_owner_is_cognitive_admin": False,
+        "function_owner_is_not_app_or_worker": False,
         "public_has_execute_on_function": False,
         "cognitive_app_has_direct_select_on_table": True,
         "old_tenant_isolation_policy_exists": True,
@@ -233,7 +247,7 @@ EXPECTED_CLEAN: dict[str, dict[str, bool]] = {
 EXPECTED_APPLIED: dict[str, dict[str, bool]] = {
     "002": {
         "function_exists": True,
-        "function_owner_is_cognitive_admin": True,
+        "function_owner_is_not_app_or_worker": True,
         "public_has_execute_on_function": False,
         "cognitive_app_has_direct_select_on_table": False,
         "old_tenant_isolation_policy_exists": False,
