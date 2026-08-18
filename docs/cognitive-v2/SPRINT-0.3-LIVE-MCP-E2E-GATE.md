@@ -76,6 +76,24 @@ anything against Production, and it does not touch the database directly
 5. **Migrations 000/001/002 applied and healthy** on the Homolog database —
    already confirmed by the Homolog Gate (see `core/migrations/README.md`).
 
+## MCP transport (Sprint 0.3 audit)
+
+| Item | Value |
+|---|---|
+| MCP transport | MCP Streamable HTTP |
+| MCP endpoint | `https://skills.prosperfy.com.br/mcp` |
+| Client library | `fastmcp` (same library used by the FastMCP server) |
+| Library version | `>=3.3.1` (see `core/cognitive/pyproject.toml`) |
+| Auth contract | `Authorization: Bearer <MCP_PROSPERFYSKILLS_API_KEY>` — passed via `auth=<str>` to `fastmcp.Client`, which maps it to the Bearer header |
+| Live MCP opt-in | `COGNITIVE_LIVE_MCP=1` (default `0`; required at startup, fail-closed) |
+| Security boundary | `guard_arguments()` at orchestrator level (Step 2.4) and adapter level; tool sequence from registry YAML only, never from HTTP request |
+
+The adapter (`adapters/prosperfy_skills/client.py`) uses `fastmcp.Client` as an
+async context manager against the single endpoint `{base_url}/mcp`. The
+JSON-RPC initialization handshake, session negotiation, and transport lifecycle
+are handled by `fastmcp` internally. The Cognitive never calls `/mcp/tools/call`
+or any REST endpoint — all communication is standard MCP Streamable HTTP.
+
 ## Command sequence
 
 All commands require `--environment homolog` explicitly — this is a
@@ -89,6 +107,13 @@ HTTP call attempted.
 export COGNITIVE_LIVE_MCP=1
 export COGNITIVE_HOMOLOG_API_URL=https://api-cognitive-homolog.prosperfy.com.br
 CRED_FILE=$(python scripts/sprint_0_3_synthetic_context.py bootstrap-homolog-context)
+
+# 0. [Optional] Direct MCP tools/list — verifies the MCP transport layer
+#    BEFORE going through the Cognitive API. Reads MCP_PROSPERFYSKILLS_API_KEY
+#    from env; does NOT use the credential file.
+export MCP_PROSPERFYSKILLS_API_KEY=<the api key provisioned on homolog>
+python scripts/sprint_0_3_live_mcp_gate.py run-mcp-tools-list \
+    --environment homolog
 
 # 1. Preconditions only — no HTTP call yet.
 python scripts/sprint_0_3_live_mcp_gate.py verify-preconditions \
@@ -111,7 +136,7 @@ python scripts/sprint_0_3_live_mcp_gate.py run-idempotency \
 python scripts/sprint_0_3_live_mcp_gate.py run-performance \
     --environment homolog --credential-file "$CRED_FILE"
 
-# ...or run everything in sequence, stop at first failure:
+# ...or run steps 1-5 in sequence, stop at first failure:
 python scripts/sprint_0_3_live_mcp_gate.py run-full \
     --environment homolog --credential-file "$CRED_FILE" \
     --correlation-id-out /tmp/e2e_correlation_id.txt
@@ -121,6 +146,23 @@ python scripts/sprint_0_3_live_mcp_gate.py run-full \
 `COGNITIVE_HOMOLOG_API_URL`; the CLI flag wins when both are present.
 
 ## What PASS/FAIL looks like
+
+### `run-mcp-tools-list`
+
+Prints `mcp_endpoint`, `tools_found_count`, `tools_found` (sorted list of all
+tool names), `expected_tools_present`, any `expected_tools_missing`, and:
+
+```
+RUN_MCP_TOOLS_LIST_RESULT=PASS
+```
+
+PASS requires the three tools (`prosperfy_vps_panorama`,
+`prosperfy_vps_listar_containers`, `prosperfy_vps_verificar_portas`) to all be
+present. Any MCP connection failure exits FAIL immediately with
+`error=MCP connection/list_tools failed type=<ExceptionType>` (never includes
+the api_key or response body). Fail-closed guards: `COGNITIVE_LIVE_MCP=1`,
+`--environment homolog`, `MCP_PROSPERFYSKILLS_API_KEY` present, endpoint is
+HTTPS — all must pass or the command refuses with `GATE_REFUSED`.
 
 ### `verify-preconditions`
 

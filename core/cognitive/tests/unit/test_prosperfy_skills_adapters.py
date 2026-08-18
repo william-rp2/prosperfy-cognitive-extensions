@@ -428,6 +428,73 @@ class TestProsperfySkillsAdapterHealth:
         assert await adapter.health() is False
 
 
+# ─── ProsperfySkillsAdapter — URL construction + auth parameter ──────────
+
+class TestProsperfySkillsAdapterUrlAndAuthConstruction:
+    """
+    Verifica que o adapter constrói a URL MCP corretamente e passa o auth
+    como Bearer token para fastmcp.Client (protocolo MCP Streamable HTTP).
+
+    Gap identificado no audit Sprint 0.3: existiam testes para resultado/erros
+    mas nenhum verificava explicitamente a URL e o parâmetro auth passados ao
+    fastmcp.Client — podia haver regressão silenciosa se alguém mudasse
+    _base_url/_mcp_url sem quebrar nenhum outro teste.
+    """
+
+    def test_url_uses_https_scheme_never_http(self):
+        """HTTPS enforced: URL MCP nunca é construída como http://."""
+        adapter = ProsperfySkillsAdapter(api_key="key", host="skills.example.test")
+        assert adapter._mcp_url.startswith("https://")
+        assert not adapter._mcp_url.startswith("http://")
+
+    def test_url_path_is_exactly_slash_mcp(self):
+        """Caminho /mcp é o único endpoint do FastMCP Streamable HTTP."""
+        adapter = ProsperfySkillsAdapter(api_key="key", host="skills.example.test")
+        assert adapter._mcp_url.endswith("/mcp")
+        assert "/mcp/tools" not in adapter._mcp_url
+        assert "/mcp/tools/call" not in adapter._mcp_url
+
+    def test_default_host_is_skills_prosperfy_com_br(self, monkeypatch):
+        monkeypatch.delenv("MCP_PROSPERFYSKILLS_HOST", raising=False)
+        adapter = ProsperfySkillsAdapter(api_key="key")
+        assert adapter._mcp_url == "https://skills.prosperfy.com.br/mcp"
+
+    @pytest.mark.asyncio
+    async def test_fastmcp_client_receives_correct_url_and_auth(self, monkeypatch):
+        """
+        fastmcp.Client deve ser instanciado com:
+          - url  = "https://{host}/mcp"  (não /mcp/tools/call nem /tools/call)
+          - auth = api_key               (fastmcp mapeia para Authorization: Bearer)
+        """
+        from typing import Any as _Any
+
+        captured: dict[str, _Any] = {}
+
+        class _CapturingClient(_FakeMcpClient):
+            def __init__(self, url, auth=None, timeout=None, **kwargs):
+                captured["url"] = url
+                captured["auth"] = auth
+                super().__init__(url, auth=auth, timeout=timeout)
+
+            async def call_tool(self, name, arguments=None, *, raise_on_error=True, **kwargs):
+                return _FakeCallToolResult(is_error=False, structured_content={"ok": True})
+
+        monkeypatch.setattr(fastmcp, "Client", _CapturingClient)
+        adapter = ProsperfySkillsAdapter(api_key=_FAKE_API_KEY, host="skills.example.test")
+        await adapter.invoke_tool(
+            tool_name="prosperfy_vps_panorama",
+            arguments={"resource": "prosperfy-main"},
+            tenant_id="tenant-a",
+            correlation_id="corr-1",
+        )
+        assert captured["url"] == "https://skills.example.test/mcp", (
+            "Protocolo MCP Streamable HTTP requer endpoint /mcp, nunca /mcp/tools/call"
+        )
+        assert captured["auth"] == _FAKE_API_KEY, (
+            "auth deve ser a api_key para Bearer token (Authorization: Bearer <api_key>)"
+        )
+
+
 # ─── COGNITIVE_LIVE_MCP selection (gateway/app.py) ────────────────────────
 
 class TestLiveMcpAdapterSelection:

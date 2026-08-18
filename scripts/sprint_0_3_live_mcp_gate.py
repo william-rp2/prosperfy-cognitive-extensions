@@ -109,6 +109,14 @@ EXPECTED_TOOL_RESULT_KEYS = (
     "prosperfy_vps_verificar_portas",
 )
 
+# Tools esperadas na resposta DIRETA do ProsperfySkill MCP (tools/list).
+# Usadas por run-mcp-tools-list, que bypassa o Cognitive e chama o MCP
+# diretamente para verificar que o catálogo está acessível e as tools
+# necessárias para infra.inspect estão presentes.
+EXPECTED_MCP_CATALOG_TOOLS = frozenset(EXPECTED_TOOL_RESULT_KEYS)
+
+_DEFAULT_MCP_HOST = "skills.prosperfy.com.br"
+
 
 # ─── Errors ──────────────────────────────────────────────────────────────
 
@@ -685,6 +693,85 @@ def cmd_run_performance(args: argparse.Namespace) -> int:
     return asyncio.run(_run_performance_async(cred, api_base_url))
 
 
+# ─── run-mcp-tools-list ────────────────────────────────────────────────────
+
+async def _run_mcp_tools_list_async(endpoint: str, api_key: str) -> int:
+    """
+    Chama diretamente o ProsperfySkill MCP (fastmcp.Client, Streamable HTTP)
+    para verificar que tools/list retorna as tools esperadas.
+
+    Não passa pelo Cognitive — testa o transport layer diretamente.
+    Não loga o api_key; qualquer falha de conexão é reportada pelo tipo da
+    exceção, sem incluir credenciais ou corpo de resposta.
+    """
+    import fastmcp  # importação local: evita importar fastmcp em testes que mockem
+
+    print(f"mcp_endpoint={endpoint}")
+    print(
+        "NOTE: Calling ProsperfySkill MCP directly via fastmcp.Client (Streamable HTTP) "
+        "— this bypasses the Cognitive API and tests the transport layer itself."
+    )
+
+    try:
+        async with fastmcp.Client(endpoint, auth=api_key, timeout=30.0) as client:
+            tools = await client.list_tools()
+    except Exception as exc:
+        print(f"error=MCP connection/list_tools failed type={type(exc).__name__}")
+        print("RUN_MCP_TOOLS_LIST_RESULT=FAIL")
+        return 1
+
+    tool_names = {t.name for t in tools}
+    print(f"tools_found_count={len(tool_names)}")
+    print(f"tools_found={sorted(tool_names)}")
+
+    present = sorted(t for t in EXPECTED_MCP_CATALOG_TOOLS if t in tool_names)
+    missing = sorted(t for t in EXPECTED_MCP_CATALOG_TOOLS if t not in tool_names)
+
+    print(f"expected_tools_present={present}")
+    if missing:
+        print(f"expected_tools_missing={missing}")
+
+    ok = not missing
+    print(f"RUN_MCP_TOOLS_LIST_RESULT={'PASS' if ok else 'FAIL'}")
+    return 0 if ok else 1
+
+
+def cmd_run_mcp_tools_list(args: argparse.Namespace) -> int:
+    """
+    Verifica o catálogo MCP do ProsperfySkill diretamente (tools/list).
+
+    Não usa credencial do Cognitive — lê MCP_PROSPERFYSKILLS_API_KEY do ambiente.
+    Requer COGNITIVE_LIVE_MCP=1 e --environment homolog (mesmos gates fail-closed).
+    Endpoint: --mcp-endpoint ou https://{MCP_PROSPERFYSKILLS_HOST}/mcp.
+    """
+    try:
+        check_environment_flag(args.environment)
+        check_live_mcp_flag()
+    except EnvironmentGateError as exc:
+        print(f"GATE_REFUSED: {exc}")
+        return 1
+
+    api_key = os.getenv("MCP_PROSPERFYSKILLS_API_KEY", "").strip()
+    if not api_key:
+        print(
+            "GATE_REFUSED: MCP_PROSPERFYSKILLS_API_KEY must be set to call the "
+            "ProsperfySkill MCP directly — no HTTP call was attempted."
+        )
+        return 1
+
+    mcp_host = os.getenv("MCP_PROSPERFYSKILLS_HOST", _DEFAULT_MCP_HOST)
+    endpoint: str = getattr(args, "mcp_endpoint", None) or f"https://{mcp_host}/mcp"
+
+    if not endpoint.startswith("https://"):
+        print(
+            f"GATE_REFUSED: MCP endpoint must use HTTPS (got {endpoint!r}) — "
+            "no HTTP call was attempted."
+        )
+        return 1
+
+    return asyncio.run(_run_mcp_tools_list_async(endpoint, api_key))
+
+
 # ─── run-full ──────────────────────────────────────────────────────────────
 
 def cmd_run_full(args: argparse.Namespace) -> int:
@@ -782,6 +869,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     _add_common_args(p_perf)
 
+    p_mcp = sub.add_parser(
+        "run-mcp-tools-list",
+        help=(
+            "Directly call ProsperfySkill MCP tools/list (Streamable HTTP via "
+            "fastmcp.Client) to verify the expected tools are in the catalog. "
+            "Reads MCP_PROSPERFYSKILLS_API_KEY from env. Does NOT use the "
+            "Cognitive API or the credential file."
+        ),
+    )
+    p_mcp.add_argument(
+        "--environment",
+        required=True,
+        help="Must be exactly 'homolog'. Fail-closed, same as all other subcommands.",
+    )
+    p_mcp.add_argument(
+        "--mcp-endpoint",
+        default=None,
+        dest="mcp_endpoint",
+        help=(
+            "MCP endpoint URL (e.g. https://skills.prosperfy.com.br/mcp). "
+            "Falls back to https://{MCP_PROSPERFYSKILLS_HOST}/mcp, "
+            "or https://skills.prosperfy.com.br/mcp if the env var is unset."
+        ),
+    )
+
     p_full = sub.add_parser(
         "run-full",
         help="Run all steps in sequence, stop at first failure.",
@@ -803,6 +915,7 @@ def main(argv: list[str] | None = None) -> int:
         "run-negative": cmd_run_negative,
         "run-idempotency": cmd_run_idempotency,
         "run-performance": cmd_run_performance,
+        "run-mcp-tools-list": cmd_run_mcp_tools_list,
         "run-full": cmd_run_full,
     }
     return handlers[args.command](args)
