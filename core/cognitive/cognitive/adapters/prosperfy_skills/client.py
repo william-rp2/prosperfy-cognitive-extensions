@@ -19,6 +19,11 @@ REST inventado (`POST /mcp/tools/call`) que nunca existiu no servidor real:
      acontece, por exemplo, quando o token está autenticado mas não autorizado
      para a tool (PERMISSION_DENIED). Ambos os níveis são convertidos em
      exceção — nunca retornados como sucesso.
+6. Fail-closed em payload desconhecido: se isError=False mas nem
+   structured_content nem .data forem um dict reconhecível (achado de
+   revisão adversarial — versão anterior mascarava isso como sucesso vazio
+   `{"success": True, "data": {}}`), levanta exceção em vez de fabricar
+   sucesso silenciosamente.
 
 Ativado apenas quando COGNITIVE_LIVE_MCP=1.
 Sprint 0.3: integração real com infra.inspect opt-in.
@@ -149,7 +154,27 @@ class ProsperfySkillsAdapter:
         if payload is None and isinstance(result.data, dict):
             payload = result.data
 
-        if isinstance(payload, dict) and payload.get("status") == "error":
+        if payload is None or not isinstance(payload, dict):
+            # Achado da revisão adversarial (Sprint 0.3 MCP auth+transport
+            # hotfix): isError=False mas nem structured_content nem .data
+            # eram um dict reconhecível (ex.: None, string, lista) — versão
+            # anterior tratava isso como sucesso vazio silencioso
+            # (`{"success": True, "data": {}}`), mascarando uma resposta
+            # genuinamente malformada/inesperada do servidor como se tivesse
+            # funcionado. Nunca fail-open aqui: se o payload não bate com
+            # nenhum formato reconhecido (nem envelope de erro, nem dict de
+            # sucesso), é um estado desconhecido — trata como falha.
+            logger.error(
+                "ProsperfySkillsAdapter unrecognized payload shape tool=%s "
+                "type=%s tenant=%s correlation=%s",
+                tool_name, type(payload).__name__, tenant_id, correlation_id,
+            )
+            raise RuntimeError(
+                f"ProsperfySkill tool '{tool_name}' retornou payload em formato "
+                "não reconhecido (nem sucesso, nem envelope de erro esperado)"
+            )
+
+        if payload.get("status") == "error":
             # Falha a nível de aplicação: resultado MCP bem-sucedido
             # (isError=False) cujo corpo é o envelope de erro do servidor
             # (CapabilityResult.fail(...).to_dict()) — ex.: PERMISSION_DENIED
@@ -172,7 +197,7 @@ class ProsperfySkillsAdapter:
                 f"[{code}] {message}"
             )
 
-        return {"success": True, "data": payload if payload is not None else {}}
+        return {"success": True, "data": payload}
 
     async def health(self) -> bool:
         """

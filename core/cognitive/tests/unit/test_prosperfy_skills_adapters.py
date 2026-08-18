@@ -283,6 +283,43 @@ class TestProsperfySkillsAdapterProtocolLevelError:
             )
 
 
+# ─── ProsperfySkillsAdapter — payload malformado/inesperado (fail-closed) ─
+
+class TestProsperfySkillsAdapterUnrecognizedPayload:
+    """Achado de revisão adversarial (Sprint 0.3 MCP auth+transport hotfix):
+    isError=False mas nem structured_content nem .data são um dict
+    reconhecível — versão anterior mascarava isso como sucesso vazio
+    silencioso (`{"success": True, "data": {}}`). Corrigido: levanta."""
+
+    @pytest.mark.asyncio
+    async def test_none_payload_raises_not_fabricated_success(self, monkeypatch):
+        result = _FakeCallToolResult(is_error=False, structured_content=None, data=None)
+        monkeypatch.setattr(fastmcp, "Client", _make_result_client(result))
+        adapter = ProsperfySkillsAdapter(api_key=_FAKE_API_KEY, host="skills.invalid.test")
+
+        with pytest.raises(RuntimeError, match="formato não reconhecido"):
+            await adapter.invoke_tool(
+                tool_name="prosperfy_vps_panorama",
+                arguments={"resource": "prosperfy-main"},
+                tenant_id="tenant-a",
+                correlation_id="corr-1",
+            )
+
+    @pytest.mark.asyncio
+    async def test_non_dict_payload_raises_not_fabricated_success(self, monkeypatch):
+        result = _FakeCallToolResult(is_error=False, structured_content=None, data="unexpected-string")
+        monkeypatch.setattr(fastmcp, "Client", _make_result_client(result))
+        adapter = ProsperfySkillsAdapter(api_key=_FAKE_API_KEY, host="skills.invalid.test")
+
+        with pytest.raises(RuntimeError, match="formato não reconhecido"):
+            await adapter.invoke_tool(
+                tool_name="prosperfy_vps_panorama",
+                arguments={"resource": "prosperfy-main"},
+                tenant_id="tenant-a",
+                correlation_id="corr-1",
+            )
+
+
 # ─── ProsperfySkillsAdapter — falhas de transporte/conexão ───────────────
 
 class TestProsperfySkillsAdapterTransportErrors:
