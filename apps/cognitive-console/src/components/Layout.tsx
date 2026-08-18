@@ -1,5 +1,6 @@
 import { NavLink, Outlet } from 'react-router-dom'
 import { consoleConfig, isHomologTestContext } from '../config/env'
+import { TestSessionPanel } from './TestSessionPanel'
 
 const nav = [
   ['/', 'Overview'],
@@ -34,11 +35,7 @@ export function Layout() {
         </nav>
       </aside>
       <main className="flex-1 p-8">
-        {isHomologTestContext() && (
-          <div className="mb-6 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-            HOMOLOG TEST CONTEXT — configure tenant/actor/credential via VITE_* env vars only.
-          </div>
-        )}
+        {isHomologTestContext() && <TestSessionPanel />}
         <Outlet />
       </main>
     </div>
