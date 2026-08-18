@@ -25,11 +25,28 @@ from cognitive.db.repositories import identity_repo as identity_repo_module
 from cognitive.db.repositories.identity_repo import ServiceIdentityRepository, hash_credential
 
 
+class _FakeTransaction:
+    """No-op `async with conn.transaction():` — register()/deactivate()
+    wrap their writes in a transaction since Sprint 0.4 (identity_events
+    audit trail), but these tests only care about call counts/shape, not
+    real commit/rollback semantics (see tests/unit/test_runner_atomicity.py
+    for a FakeTransaction that does track BEGIN/COMMIT/ROLLBACK)."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
 class FakeConn:
     def __init__(self, row=None):
         self._row = row
         self.fetchrow_calls: list[tuple] = []
         self.execute_calls: list[tuple] = []
+
+    def transaction(self):
+        return _FakeTransaction()
 
     async def fetchrow(self, query, *args):
         self.fetchrow_calls.append((query, args))
