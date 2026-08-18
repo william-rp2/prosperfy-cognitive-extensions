@@ -34,12 +34,24 @@ def is_database_mode() -> bool:
 
 
 def require_database_config() -> None:
-    """Levanta RuntimeError se modo database sem DSNs mínimos."""
+    """
+    Levanta RuntimeError se modo database sem DSNs mínimos.
+
+    COGNITIVE_DB_URL (cognitive_app) é obrigatório: é o pool usado para
+    servir tráfego, incluindo resolução de identidade (SEC-001, Sprint 0.3).
+
+    COGNITIVE_DB_ADMIN_URL (cognitive_admin, BYPASSRLS) NÃO é mais
+    obrigatório para o processo web público — só é necessário para
+    migrations e bootstrap/CLI de credenciais (scripts separados). Se
+    ausente, o Gateway inicia e serve autenticação/identity resolution
+    normalmente; apenas register()/deactivate() de service identity
+    (chamados fora do processo web) exigiriam essa variável.
+    """
     if not is_database_mode():
         return
     missing = [
         name
-        for name in ("COGNITIVE_DB_URL", "COGNITIVE_DB_ADMIN_URL")
+        for name in ("COGNITIVE_DB_URL",)
         if not os.getenv(name)
     ]
     if missing:

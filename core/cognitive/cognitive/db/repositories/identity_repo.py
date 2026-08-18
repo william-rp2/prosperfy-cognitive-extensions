@@ -4,8 +4,23 @@ db/repositories/identity_repo.py — ServiceIdentityRepository.
 Substitui credenciais estáticas in-memory (Sprint 0.1).
 credential_hash = sha256(Bearer token) — nunca o valor (ADR-V2-006).
 
-Lookup usa admin_connection: precisamos encontrar o tenant ANTES
-de setar o contexto RLS — o que é correto e intencional.
+SEC-001 (Sprint 0.3): lookup() precisa encontrar o tenant ANTES de existir
+contexto RLS — mas isso não exige mais cognitive_admin/BYPASSRLS. A tabela
+service_identities é estruturalmente uma tabela de login/auth: o
+credential_hash exato É o boundary de autorização (só quem tem o Bearer
+token original calcula o hash igual), não o tenant_id. A migration 002
+troca a policy tenant-scoped em service_identities por SELECT irrestrito
+para cognitive_app/cognitive_worker, então lookup() usa o pool normal da
+app (app_connection_no_tenant), sem precisar do pool admin.
+
+O touch de last_used_at (também antes do tenant context existir) usa a
+função SECURITY DEFINER touch_service_identity_last_used — atualiza
+apenas essa coluna, apenas por id, sem exigir UPDATE irrestrito nem admin.
+
+register()/deactivate() continuam em admin_connection(): não são
+chamados por nenhuma rota HTTP do Gateway (grep confirma) — são apenas
+bootstrap/CLI de provisionamento de credenciais, executados fora do
+processo web público. Não fazem parte do problema do SEC-001.
 """
 
 from __future__ import annotations
@@ -15,7 +30,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 
-from ..connection import admin_connection
+from ..connection import admin_connection, app_connection_no_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +54,12 @@ class ServiceIdentityRepository:
     """
     Repositório de identidades de serviço.
 
-    O lookup é feito como cognitive_admin porque precisamos encontrar
-    tenant_id a partir do credential_hash ANTES de ter o contexto RLS.
-    Isso é explicitamente permitido e documentado (ADR-V2-002 §4).
+    O lookup usa o pool normal da app (least privilege): precisamos
+    encontrar tenant_id a partir do credential_hash ANTES de ter o
+    contexto RLS, mas isso não exige BYPASSRLS — a migration 002 dá a
+    cognitive_app/cognitive_worker SELECT irrestrito em service_identities
+    (o credential_hash é o boundary real, não o tenant_id). Ver docstring
+    do módulo para o raciocínio completo.
     """
 
     async def lookup(self, credential: str) -> ServiceIdentityRow | None:
@@ -49,10 +67,11 @@ class ServiceIdentityRepository:
         Resolve credential (Bearer token) → ServiceIdentityRow.
 
         Usa hash para comparação — nunca armazena ou loga o valor original.
+        Roda no pool cognitive_app, sem tenant context (SEC-001).
         """
         cred_hash = hash_credential(credential)
 
-        async with admin_connection() as conn:
+        async with app_connection_no_tenant() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT id, tenant_id, actor_id, credential_hash, profile, active
@@ -63,9 +82,11 @@ class ServiceIdentityRepository:
             )
 
             if row:
-                # Atualizar last_used_at sem bloqueio
+                # Atualizar last_used_at via função SECURITY DEFINER
+                # (id-scoped, single-column) — não precisa de admin nem de
+                # tenant context.
                 await conn.execute(
-                    "UPDATE service_identities SET last_used_at = NOW() WHERE id = $1",
+                    "SELECT touch_service_identity_last_used($1)",
                     row["id"],
                 )
 
@@ -91,6 +112,10 @@ class ServiceIdentityRepository:
         """
         Registra uma nova service identity (credential → tenant + actor).
         Armazena apenas o hash — nunca o valor em claro.
+
+        Bootstrap/CLI apenas — nenhuma rota HTTP do Gateway chama isto em
+        runtime, então continuar em admin_connection() não reintroduz
+        SEC-001 (pool admin não precisa ficar vivo no processo web).
         """
         cred_hash = hash_credential(credential)
 
@@ -118,7 +143,11 @@ class ServiceIdentityRepository:
         )
 
     async def deactivate(self, credential: str) -> None:
-        """Desativa uma credential (revogação)."""
+        """
+        Desativa uma credential (revogação).
+
+        Bootstrap/CLI apenas — mesma justificativa de register().
+        """
         cred_hash = hash_credential(credential)
         async with admin_connection() as conn:
             await conn.execute(

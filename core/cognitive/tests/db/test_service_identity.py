@@ -101,6 +101,80 @@ class TestIdentityResolverDatabaseMode:
             )
 
 
+class TestLookupLeastPrivilege:
+    """SEC-001 (Sprint 0.3): lookup via pool cognitive_app (least privilege),
+    sem admin_connection/BYPASSRLS. Confirma comportamento pretendido pela
+    migration 002 num Postgres real."""
+
+    async def test_lookup_updates_last_used_at(self, db_pools, seeded_identity, admin_conn):
+        credential, _ = seeded_identity
+        repo = ServiceIdentityRepository()
+        identity = await repo.lookup(credential)
+        assert identity is not None
+
+        row = await admin_conn.fetchrow(
+            "SELECT last_used_at FROM service_identities WHERE id = $1",
+            uuid.UUID(identity.id),
+        )
+        assert row["last_used_at"] is not None
+
+    async def test_app_role_insert_into_other_tenant_denied(
+        self, db_pools, seeded_tenants, app_conn
+    ):
+        """RLS INSERT continua tenant-scoped mesmo com SELECT irrestrito."""
+        from .conftest import set_tenant_local
+
+        tenant_a_id = seeded_tenants["tenant-a"]
+        tenant_b_id = seeded_tenants["tenant-b"]
+
+        await set_tenant_local(app_conn, tenant_a_id)
+        with pytest.raises(Exception):
+            await app_conn.execute(
+                """
+                INSERT INTO service_identities(tenant_id, actor_id, credential_hash, profile)
+                VALUES($1, 'cross-tenant-actor', 'cross-tenant-hash-xyz', 'owner-core')
+                """,
+                uuid.UUID(tenant_b_id),
+            )
+
+    async def test_app_role_select_is_unrestricted_by_tenant(
+        self, db_pools, seeded_tenants, app_conn, admin_conn
+    ):
+        """Documenta o comportamento pretendido: SELECT em service_identities
+        não é mais filtrado por tenant context — o credential_hash exato é
+        o boundary (ver migration 002). Isolamento cross-tenant de outras
+        tabelas (audit_events, tenant_resources, ...) permanece intocado —
+        ver tests/db/test_rls_cross_tenant.py."""
+        from .conftest import set_tenant_local
+
+        tenant_b_id = seeded_tenants["tenant-b"]
+        cred_hash = hash_credential("least-privilege-select-probe")
+        await admin_conn.execute(
+            """
+            INSERT INTO service_identities(tenant_id, actor_id, credential_hash, profile)
+            VALUES($1, 'actor-b-probe', $2, 'owner-core')
+            ON CONFLICT (credential_hash) DO NOTHING
+            """,
+            uuid.UUID(tenant_b_id),
+            cred_hash,
+        )
+        try:
+            # app_conn nunca teve set_config para tenant_b — mesmo assim
+            # o SELECT enxerga a linha (é isso que torna o lookup possível
+            # antes do tenant context existir).
+            await set_tenant_local(app_conn, seeded_tenants["tenant-a"])
+            row = await app_conn.fetchrow(
+                "SELECT tenant_id FROM service_identities WHERE credential_hash = $1",
+                cred_hash,
+            )
+            assert row is not None
+            assert str(row["tenant_id"]) == tenant_b_id
+        finally:
+            await admin_conn.execute(
+                "DELETE FROM service_identities WHERE credential_hash = $1", cred_hash
+            )
+
+
 class TestWorkerIdentity:
     async def test_worker_identity_isolated_from_app_identity(
         self, db_pools, seeded_tenants, admin_conn
