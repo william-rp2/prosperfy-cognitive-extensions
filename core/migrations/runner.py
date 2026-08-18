@@ -175,10 +175,17 @@ async def run_status(conn: asyncpg.Connection) -> None:
 # ─── Reconciliation: diagnóstico de estado residual antes de retry ─────────
 #
 # Fingerprint mínimo por migration: um pequeno conjunto de sinais de estado
-# do banco que juntos indicam se os efeitos daquele arquivo específico já
-# aconteceram, parcialmente ou não. Não substitui `_migrations` como fonte
-# de verdade sobre "está aplicada" — é um raio-x pra decidir se é seguro
-# reaplicar depois de uma falha no meio do arquivo.
+# do banco. Não substitui `_migrations` como fonte de verdade sobre "está
+# aplicada" — é um raio-x pra decidir se é seguro reaplicar depois de uma
+# falha no meio do arquivo.
+#
+# IMPORTANTE: nem todo sinal é "false no estado limpo, true se algo de X
+# rodou". Alguns sinais vêm de uma migration ANTERIOR (ex.: 001 já concede
+# SELECT direto em service_identities e cria a policy tenant_isolation —
+# 002 é quem REVOGA isso). Esses são true no estado limpo (só 001 aplicada)
+# e só viram false depois que 002 termina. Comparar cada sinal contra um
+# fingerprint completo esperado (CLEAN vs APPLIED), em vez de um `any()`
+# genérico, evita classificar o estado limpo como resíduo por engano.
 INSPECTION_QUERIES: dict[str, list[tuple[str, str]]] = {
     "002": [
         (
@@ -208,6 +215,31 @@ INSPECTION_QUERIES: dict[str, list[tuple[str, str]]] = {
     ],
 }
 
+# Fingerprint esperado ANTES de 002 rodar (só 001 aplicada) — note que os
+# dois últimos sinais são True aqui (herdados de 001), não False.
+EXPECTED_CLEAN: dict[str, dict[str, bool]] = {
+    "002": {
+        "function_exists": False,
+        "function_owner_is_cognitive_admin": False,
+        "public_has_execute_on_function": False,
+        "cognitive_app_has_direct_select_on_table": True,
+        "old_tenant_isolation_policy_exists": True,
+    },
+}
+
+# Fingerprint esperado depois que 002 termina com sucesso (mesmo que a
+# transação ainda não tenha sido commitada como tracking — ver
+# "applied_but_untracked" abaixo).
+EXPECTED_APPLIED: dict[str, dict[str, bool]] = {
+    "002": {
+        "function_exists": True,
+        "function_owner_is_cognitive_admin": True,
+        "public_has_execute_on_function": False,
+        "cognitive_app_has_direct_select_on_table": False,
+        "old_tenant_isolation_policy_exists": False,
+    },
+}
+
 
 async def inspect_migration(conn: asyncpg.Connection, version: str) -> str:
     """
@@ -215,6 +247,13 @@ async def inspect_migration(conn: asyncpg.Connection, version: str) -> str:
     Não decide sozinho se é seguro reaplicar — dá ao operador humano/Gate
     a evidência pra decidir. Versões sem fingerprint cadastrado avisam e
     caem pra só reportar o status via `_migrations`.
+
+    Com o runner atômico (cada migration = uma transação), um estado
+    "rodou até a metade e ficou assim" não deveria mais acontecer daqui pra
+    frente — isso serve principalmente pra diagnosticar incidentes
+    históricos (rodados sob uma versão anterior do runner, sem transação) e
+    como cinto-de-segurança caso a suposição de atomicidade do Postgres
+    falhe por algum motivo não previsto.
     """
     await ensure_migrations_table(conn)
     applied = await get_applied(conn)
@@ -239,21 +278,36 @@ async def inspect_migration(conn: asyncpg.Connection, version: str) -> str:
         signals[name] = bool(value)
         print(f"  {name}: {value}")
 
-    any_signal_true = any(signals.values())
+    expected_clean = EXPECTED_CLEAN.get(version)
+    expected_applied = EXPECTED_APPLIED.get(version)
 
     if tracked:
         verdict = "APPLIED"
-    elif not any_signal_true:
+    elif expected_clean is not None and signals == expected_clean:
         verdict = "CLEAN"
+    elif expected_applied is not None and signals == expected_applied:
+        # Sinais batem 100% com "terminou com sucesso", mas sem tracking —
+        # só é possível sob o runner antigo (não-atômico) ou se alguém
+        # rodou o SQL manualmente. Distinto de um resíduo confuso/parcial:
+        # aqui dá pra confiar que basta rodar --up de novo (todo statement
+        # de 002 é idempotente) pra fechar o tracking, sem reconciliação.
+        verdict = "APPLIED_BUT_UNTRACKED"
     else:
         verdict = "PARTIAL"
 
     print(f"  VERDICT: {verdict}")
-    if verdict == "PARTIAL":
+    if verdict == "APPLIED_BUT_UNTRACKED":
         print(
-            "  ATENÇÃO: sinais de execução parcial encontrados sem tracking correspondente. "
-            "NÃO rode --up direto — revise os sinais acima e decida uma migration de "
-            "reconciliação versionada antes de reaplicar."
+            "  Sinais batem exatamente com 'aplicada com sucesso', mas falta o tracking "
+            "row — provável artefato do runner anterior (não-atômico). Todo statement "
+            "desta migration é idempotente; rodar --up de novo deve só fechar o "
+            "tracking, sem side-effect adicional. Revise mesmo assim antes de prosseguir."
+        )
+    elif verdict == "PARTIAL":
+        print(
+            "  ATENÇÃO: sinais não batem com nenhum fingerprint conhecido (nem limpo, nem "
+            "aplicado). NÃO rode --up direto — revise os sinais acima e decida uma "
+            "migration de reconciliação versionada antes de reaplicar."
         )
     print()
     return verdict

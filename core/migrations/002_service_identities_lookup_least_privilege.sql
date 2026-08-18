@@ -32,8 +32,13 @@
 -- (elimina a necessidade de uma segunda função "touch" que aceitava
 -- um id arbitrário), e retorna só os 4 campos necessários pra montar
 -- o ActorContext — nunca o credential_hash, nunca outras linhas.
--- register()/deactivate() (bootstrap/CLI, fora do processo web) seguem
--- via cognitive_admin, que mantém acesso direto à tabela por ownership.
+-- register()/deactivate() (bootstrap/CLI, fora do processo web) seguem via
+-- admin_connection() — a CONEXÃO admin (quem roda migrations; `postgres`
+-- no Supabase, dono real das tabelas por ter rodado o CREATE TABLE),
+-- não a ROLE SQL `cognitive_admin` em si. `cognitive_admin` só tem GRANT
+-- SELECT explícito em service_identities (migration 001) — sem INSERT/
+-- UPDATE. Não confundir os dois: a role é usada pro SECURITY DEFINER
+-- abaixo; quem escreve via register()/deactivate() é o dono da tabela.
 --
 -- Gate hotfix (retry pós-falha real em Homolog): `ALTER FUNCTION ... OWNER
 -- TO cognitive_admin` falhou com
@@ -53,7 +58,41 @@
 -- membership numa role que ela mesma criou não aumenta seu poder real.
 -- Idempotente — regrant de uma membership já concedida é um no-op no
 -- Postgres, não falha se rodado de novo.
-GRANT cognitive_admin TO CURRENT_USER;
+--
+-- Defesa em profundidade (revisão adversarial): nada aqui valida que
+-- CURRENT_USER é de fato a conexão admin — só o operador que aponta
+-- COGNITIVE_DB_ADMIN_URL corretamente garante isso hoje. Se por engano de
+-- configuração COGNITIVE_DB_ADMIN_URL um dia apontasse pra
+-- cognitive_app/cognitive_worker (roles LOGIN, expostas ao processo web),
+-- este GRANT daria BYPASSRLS a uma delas — bypass total de RLS
+-- multi-tenant. Guarda barata: aborta a migration inteira (a transação
+-- do runner reverte tudo) se CURRENT_USER for uma dessas duas roles.
+-- Também evita um self-grant redundante (`GRANT cognitive_admin TO
+-- cognitive_admin`) no cenário de dev local via docker-compose.dev.yml,
+-- onde POSTGRES_USER=cognitive_admin faz o próprio Postgres bootstrapar
+-- essa role como superuser via initdb — nesse caso migration 000 nunca
+-- chega a criar uma role nova (IF NOT EXISTS já a encontra), e
+-- CURRENT_USER já É cognitive_admin. `pg_has_role(x, x, 'MEMBER')` é
+-- sempre true (toda role é membro de si mesma), então o `IF NOT` abaixo
+-- pula o GRANT nesse caso sem depender de saber se o Postgres aceita ou
+-- rejeita um self-grant explícito.
+DO $$
+BEGIN
+  IF CURRENT_USER IN ('cognitive_app', 'cognitive_worker') THEN
+    RAISE EXCEPTION
+      'migration 002: CURRENT_USER (%) é uma role de runtime (app/worker) — '
+      'migrations devem rodar com a conexão admin (COGNITIVE_DB_ADMIN_URL), '
+      'nunca com credenciais de app/worker. Abortando antes de conceder '
+      'cognitive_admin a essa conexão.', CURRENT_USER;
+  END IF;
+
+  IF NOT pg_has_role(CURRENT_USER, 'cognitive_admin', 'MEMBER') THEN
+    -- CURRENT_USER aqui é o keyword de role-spec do GRANT, não uma
+    -- variável interpolada — não precisa (nem deve) de EXECUTE/SQL
+    -- dinâmico pra isso.
+    GRANT cognitive_admin TO CURRENT_USER;
+  END IF;
+END $$;
 
 -- ─── service_identities: nenhum acesso direto para app/worker ──────────
 DROP POLICY IF EXISTS tenant_isolation ON service_identities;

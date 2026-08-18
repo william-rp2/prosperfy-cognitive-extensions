@@ -112,6 +112,30 @@ class TestInspectMigrationClassification:
     """Lógica pura de classificação CLEAN/PARTIAL/APPLIED — não depende de
     Postgres real, só do valor que os sinais retornariam."""
 
+    # Mapeia cada nome de sinal cadastrado em INSPECTION_QUERIES["002"] pra
+    # um trecho da própria query que o identifica de forma única — permite
+    # simular fetchval() por SINAL (não por ordem de chamada), robusto a
+    # reordenar INSPECTION_QUERIES no futuro. Isso é o que faltava no gap
+    # apontado pela revisão adversarial: o teste anterior simulava "1º
+    # sinal true, resto false" (um `any()` uniforme), que nunca reproduzia
+    # o estado real pré-002 — onde os DOIS ÚLTIMOS sinais (herdados de 001)
+    # já são True e os três primeiros False.
+    SIGNAL_MARKERS = {
+        "function_exists": "EXISTS (SELECT 1 FROM pg_proc",
+        "function_owner_is_cognitive_admin": "pg_get_userbyid(proowner)",
+        "public_has_execute_on_function": "has_function_privilege('public'",
+        "cognitive_app_has_direct_select_on_table": "has_table_privilege",
+        "old_tenant_isolation_policy_exists": "pg_policies",
+    }
+
+    def _fetchval_returning(self, signal_values: dict[str, bool]):
+        async def fake_fetchval(query, *args):
+            for name, marker in self.SIGNAL_MARKERS.items():
+                if marker in query:
+                    return signal_values[name]
+            raise AssertionError(f"query não reconhecida por nenhum marcador: {query}")
+        return fake_fetchval
+
     async def test_tracked_is_always_applied(self, monkeypatch):
         conn = FakeConn()
 
@@ -122,37 +146,62 @@ class TestInspectMigrationClassification:
         verdict = await runner.inspect_migration(conn, "002")
         assert verdict == "APPLIED"
 
-    async def test_untracked_with_no_signals_is_clean(self, monkeypatch):
+    async def test_clean_state_matches_post_001_pre_002_fingerprint(self, monkeypatch):
+        """Estado real pré-002 (só 001 aplicada): function_exists=False,
+        MAS cognitive_app_has_direct_select_on_table=True e
+        old_tenant_isolation_policy_exists=True (herdados de 001). Esse é
+        o cenário exato que a revisão adversarial achou classificado
+        errado como PARTIAL antes desta correção."""
         conn = FakeConn()
 
         async def fake_get_applied(_conn):
             return {}
 
-        async def fake_fetchval(query, *args):
-            return False
-
         monkeypatch.setattr(runner, "get_applied", fake_get_applied)
-        monkeypatch.setattr(conn, "fetchval", fake_fetchval)
+        monkeypatch.setattr(conn, "fetchval", self._fetchval_returning({
+            "function_exists": False,
+            "function_owner_is_cognitive_admin": False,
+            "public_has_execute_on_function": False,
+            "cognitive_app_has_direct_select_on_table": True,
+            "old_tenant_isolation_policy_exists": True,
+        }))
         verdict = await runner.inspect_migration(conn, "002")
         assert verdict == "CLEAN"
 
-    async def test_untracked_with_any_signal_true_is_partial(self, monkeypatch):
+    async def test_fully_applied_signals_without_tracking_is_applied_but_untracked(self, monkeypatch):
         conn = FakeConn()
 
         async def fake_get_applied(_conn):
             return {}
 
-        call_count = {"n": 0}
+        monkeypatch.setattr(runner, "get_applied", fake_get_applied)
+        monkeypatch.setattr(conn, "fetchval", self._fetchval_returning({
+            "function_exists": True,
+            "function_owner_is_cognitive_admin": True,
+            "public_has_execute_on_function": False,
+            "cognitive_app_has_direct_select_on_table": False,
+            "old_tenant_isolation_policy_exists": False,
+        }))
+        verdict = await runner.inspect_migration(conn, "002")
+        assert verdict == "APPLIED_BUT_UNTRACKED"
 
-        async def fake_fetchval(query, *args):
-            call_count["n"] += 1
-            # primeiro sinal (function_exists) retorna True, resto False —
-            # simula exatamente o caso real: CREATE FUNCTION rodou, ALTER
-            # OWNER falhou antes do resto.
-            return call_count["n"] == 1
+    async def test_genuinely_mixed_signals_is_partial(self, monkeypatch):
+        """Reproduz o cenário real do Gate: CREATE FUNCTION rodou (function_exists
+        True) mas ALTER OWNER falhou antes do resto (owner ainda False) —
+        não bate com CLEAN nem com APPLIED."""
+        conn = FakeConn()
+
+        async def fake_get_applied(_conn):
+            return {}
 
         monkeypatch.setattr(runner, "get_applied", fake_get_applied)
-        monkeypatch.setattr(conn, "fetchval", fake_fetchval)
+        monkeypatch.setattr(conn, "fetchval", self._fetchval_returning({
+            "function_exists": True,
+            "function_owner_is_cognitive_admin": False,
+            "public_has_execute_on_function": True,  # default do Postgres pra função nova
+            "cognitive_app_has_direct_select_on_table": True,
+            "old_tenant_isolation_policy_exists": True,
+        }))
         verdict = await runner.inspect_migration(conn, "002")
         assert verdict == "PARTIAL"
 
