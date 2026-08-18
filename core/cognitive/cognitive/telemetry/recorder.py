@@ -2,7 +2,16 @@
 telemetry/recorder.py — TelemetryPort in-memory (Sprint 0.1).
 
 Registra métricas por request: rota, latência, tool calls, estimativa de custo.
-Sprint 0.1: in-memory. Sprint 0.2+: cost_telemetry no Postgres.
+Sprint 0.1: in-memory. Sprint 0.3 (fechamento E2E): cost_telemetry no Postgres
+via db/repositories/telemetry_repo.py::PostgresTelemetryRecorder — achado
+durante a integração do Live MCP E2E Runner: gateway/app.py fiava
+InMemoryTelemetryRecorder() incondicionalmente, mesmo em COGNITIVE_MODE=
+database, então telemetry nunca persistia de verdade (só audit persistia).
+`record()` é `async` desde este hotfix — único call site é
+execution/orchestrator.py::_record_telemetry, que já é `await`ado; nenhum
+teste chama `.record()` diretamente (só constroem o recorder e leem
+`.get_all_for_tenant()`, que continua síncrono), então esta mudança de
+assinatura não quebra nenhum teste existente.
 """
 
 from __future__ import annotations
@@ -38,7 +47,7 @@ class InMemoryTelemetryRecorder:
     def __init__(self) -> None:
         self._records: list[TelemetryRecord] = []
 
-    def record(self, record: TelemetryRecord) -> None:
+    async def record(self, record: TelemetryRecord) -> None:
         self._records.append(record)
         logger.info(
             "TELEMETRY tenant=%s cap=%s latency_ms=%d tool_calls=%d cost=%.4f",

@@ -52,8 +52,14 @@ def _build_services(app: FastAPI) -> None:
         from ..db.repositories.audit_repo import PostgresAuditWriter
         from ..db.repositories.identity_repo import ServiceIdentityRepository
         from ..db.repositories.resource_repo import TenantResourceRepository
+        from ..db.repositories.telemetry_repo import PostgresTelemetryRecorder
 
         audit_writer = PostgresAuditWriter()
+        # Sprint 0.3 (fechamento E2E): antes deste fix, telemetry_recorder
+        # era fiado incondicionalmente como InMemoryTelemetryRecorder mais
+        # abaixo (fora deste if/else) — cost_telemetry nunca recebia linha
+        # nenhuma em database mode, só audit_events persistia de verdade.
+        telemetry_recorder = PostgresTelemetryRecorder()
         identity_resolver = IdentityResolver(
             identity_repo=ServiceIdentityRepository(),
             database_mode=True,
@@ -66,6 +72,7 @@ def _build_services(app: FastAPI) -> None:
         logger.info("Runtime: database mode (Postgres)")
     else:
         audit_writer = InMemoryAuditWriter()
+        telemetry_recorder = InMemoryTelemetryRecorder()
         identity_resolver = IdentityResolver(identity_repo=None, database_mode=False)
         resource_resolver = InMemoryResourceResolver()
         dev_tenant = os.getenv("COGNITIVE_DEV_TENANT_ID", "prosperfy")
@@ -78,8 +85,6 @@ def _build_services(app: FastAPI) -> None:
         dev_actor = os.getenv("COGNITIVE_DEV_ACTOR_ID", "william")
         identity_resolver.register_static(dev_credential, dev_tenant, dev_actor, "owner-core")
         logger.info("Runtime: in_memory mode")
-
-    telemetry_recorder = InMemoryTelemetryRecorder()
 
     orchestrator = ExecutionOrchestrator(
         registry=registry,

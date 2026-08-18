@@ -134,7 +134,7 @@ class ExecutionOrchestrator:
                 execution_id=execution_id,
             )
             audit_id = await self._audit.record(audit_event)
-            self._record_telemetry(ctx, capability_id, duration_ms, tool_calls=0)
+            await self._record_telemetry(ctx, capability_id, duration_ms, tool_calls=0)
             return CapabilityExecuteResponse(
                 execution_id=execution_id,
                 correlation_id=ctx.correlation_id,
@@ -173,7 +173,7 @@ class ExecutionOrchestrator:
                     execution_id=execution_id,
                 )
                 audit_id = await self._audit.record(audit_event)
-                self._record_telemetry(ctx, capability_id, duration_ms, tool_calls=0)
+                await self._record_telemetry(ctx, capability_id, duration_ms, tool_calls=0)
                 return CapabilityExecuteResponse(
                     execution_id=execution_id,
                     correlation_id=ctx.correlation_id,
@@ -204,7 +204,7 @@ class ExecutionOrchestrator:
                 execution_id=execution_id,
             )
             audit_id = await self._audit.record(audit_event)
-            self._record_telemetry(ctx, capability_id, duration_ms, tool_calls=0)
+            await self._record_telemetry(ctx, capability_id, duration_ms, tool_calls=0)
             return CapabilityExecuteResponse(
                 execution_id=execution_id,
                 correlation_id=ctx.correlation_id,
@@ -228,7 +228,7 @@ class ExecutionOrchestrator:
                 execution_id=execution_id,
             )
             audit_id = await self._audit.record(audit_event)
-            self._record_telemetry(ctx, capability_id, duration_ms, tool_calls=0)
+            await self._record_telemetry(ctx, capability_id, duration_ms, tool_calls=0)
             # CONFIRM: NÃO invoca o adapter (ADR-V2-004)
             return CapabilityExecuteResponse(
                 execution_id=execution_id,
@@ -274,7 +274,7 @@ class ExecutionOrchestrator:
             execution_id=execution_id,
         )
         audit_id = await self._audit.record(audit_event)
-        self._record_telemetry(ctx, capability_id, duration_ms, tool_calls)
+        await self._record_telemetry(ctx, capability_id, duration_ms, tool_calls)
 
         if outcome == AuditOutcome.FAILED:
             return CapabilityExecuteResponse(
@@ -369,14 +369,14 @@ class ExecutionOrchestrator:
 
         return call_count, results
 
-    def _record_telemetry(
+    async def _record_telemetry(
         self,
         ctx: ActorContext,
         capability_id: str,
         duration_ms: int,
         tool_calls: int,
     ) -> None:
-        self._telemetry.record(TelemetryRecord(
+        await self._telemetry.record(TelemetryRecord(
             tenant_id=ctx.tenant_id,
             actor_id=ctx.actor_id,
             capability_id=capability_id,
