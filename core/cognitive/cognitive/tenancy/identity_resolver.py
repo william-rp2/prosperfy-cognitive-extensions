@@ -97,7 +97,7 @@ class IdentityResolver:
 
     def _build_context_from_db(
         self,
-        identity,  # ServiceIdentityRow
+        identity,  # ResolvedServiceIdentity (identity_repo.py)
         x_tenant_id: str,
         x_actor_id: str,
         x_correlation_id: str | None,

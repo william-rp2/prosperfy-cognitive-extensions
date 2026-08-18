@@ -4,7 +4,12 @@ tests/unit/test_identity_repo_least_privilege.py
 SEC-001 (Sprint 0.3): ServiceIdentityRepository.lookup() deve usar o pool
 normal da app (app_connection_no_tenant), nunca admin_connection — o
 processo web público não deve depender de BYPASSRLS para resolver
-identidade. register()/deactivate() continuam em admin_connection()
+identidade.
+
+SEC-002 (revisão do Gate): lookup() deve chamar exclusivamente a função
+SECURITY DEFINER resolve_service_identity_by_credential_hash — nunca um
+SELECT direto na tabela — e o resultado nunca deve carregar
+credential_hash. register()/deactivate() continuam em admin_connection()
 (bootstrap/CLI, fora do processo web).
 
 Mocka as connection functions — sem DB real necessário.
@@ -39,21 +44,21 @@ async def _fake_ctx(conn):
     yield conn
 
 
-def _make_row():
+def _make_resolved_row():
+    """Shape do retorno de resolve_service_identity_by_credential_hash —
+    nunca inclui credential_hash (SEC-002)."""
     return {
-        "id": "id-1",
+        "service_identity_id": "id-1",
         "tenant_id": "tenant-1",
         "actor_id": "actor-1",
-        "credential_hash": hash_credential("cred"),
         "profile": "owner-core",
-        "active": True,
     }
 
 
 class TestLookupUsesAppPoolNoTenant:
     @pytest.mark.asyncio
     async def test_lookup_uses_app_connection_no_tenant_not_admin(self, monkeypatch):
-        conn = FakeConn(row=_make_row())
+        conn = FakeConn(row=_make_resolved_row())
         app_calls = {"count": 0}
 
         def fake_app_no_tenant():
@@ -74,8 +79,11 @@ class TestLookupUsesAppPoolNoTenant:
         assert result.tenant_id == "tenant-1"
 
     @pytest.mark.asyncio
-    async def test_lookup_touches_last_used_via_security_definer_function(self, monkeypatch):
-        conn = FakeConn(row=_make_row())
+    async def test_lookup_calls_only_the_security_definer_function(self, monkeypatch):
+        """SEC-002: um único fetchrow, chamando a função — nunca SELECT
+        direto na tabela, nunca uma segunda operação de 'touch' separada
+        (a função atualiza last_used_at atomicamente por dentro)."""
+        conn = FakeConn(row=_make_resolved_row())
         monkeypatch.setattr(
             identity_repo_module, "app_connection_no_tenant", lambda: _fake_ctx(conn)
         )
@@ -83,14 +91,29 @@ class TestLookupUsesAppPoolNoTenant:
         repo = ServiceIdentityRepository()
         await repo.lookup("cred")
 
-        assert len(conn.execute_calls) == 1
-        query, args = conn.execute_calls[0]
-        assert "touch_service_identity_last_used" in query
-        assert "SET last_used_at" not in query  # não faz UPDATE direto
-        assert args == ("id-1",)
+        assert len(conn.fetchrow_calls) == 1
+        query, args = conn.fetchrow_calls[0]
+        assert "resolve_service_identity_by_credential_hash" in query
+        assert "FROM service_identities" not in query  # nunca SELECT direto na tabela
+        assert args == (hash_credential("cred"),)
+        # Nenhuma chamada extra de "touch" — a função já fez tudo.
+        assert conn.execute_calls == []
 
     @pytest.mark.asyncio
-    async def test_lookup_miss_does_not_touch(self, monkeypatch):
+    async def test_lookup_result_never_has_credential_hash(self, monkeypatch):
+        conn = FakeConn(row=_make_resolved_row())
+        monkeypatch.setattr(
+            identity_repo_module, "app_connection_no_tenant", lambda: _fake_ctx(conn)
+        )
+
+        repo = ServiceIdentityRepository()
+        result = await repo.lookup("cred")
+
+        assert result is not None
+        assert not hasattr(result, "credential_hash")
+
+    @pytest.mark.asyncio
+    async def test_lookup_miss_returns_none(self, monkeypatch):
         conn = FakeConn(row=None)
         monkeypatch.setattr(
             identity_repo_module, "app_connection_no_tenant", lambda: _fake_ctx(conn)
@@ -100,7 +123,6 @@ class TestLookupUsesAppPoolNoTenant:
         result = await repo.lookup("wrong-credential")
 
         assert result is None
-        assert conn.execute_calls == []
 
 
 class TestRegisterDeactivateStayAdminBootstrapOnly:

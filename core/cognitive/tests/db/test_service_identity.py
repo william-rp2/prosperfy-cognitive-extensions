@@ -1,4 +1,13 @@
-"""tests/db/test_service_identity.py — ServiceIdentityRepository + identity resolver DB."""
+"""tests/db/test_service_identity.py — ServiceIdentityRepository + identity resolver DB.
+
+SEC-002: a versão anterior deste arquivo continha
+test_app_role_select_is_unrestricted_by_tenant, que DOCUMENTAVA (como
+comportamento pretendido) a vulnerabilidade encontrada pelo Gate: SELECT
+irrestrito em service_identities para cognitive_app/cognitive_worker.
+Substituída pela bateria TestDirectTableAccessLockedDown, que prova o
+oposto: nenhuma das duas roles consegue ler a tabela diretamente — o único
+acesso é via resolve_service_identity_by_credential_hash.
+"""
 
 from __future__ import annotations
 
@@ -43,11 +52,19 @@ class TestServiceIdentityLookup:
         identity = await repo.lookup(credential)
         assert identity is not None
         assert identity.tenant_id == tenant_a_id
-        assert identity.credential_hash == hash_credential(credential)
 
     async def test_lookup_invalid_credential_returns_none(self, db_pools):
         repo = ServiceIdentityRepository()
         assert await repo.lookup("definitely-wrong-credential") is None
+
+    async def test_lookup_result_never_carries_credential_hash(self, db_pools, seeded_identity):
+        """SEC-002: o retorno do lookup nunca inclui credential_hash — nem
+        como atributo do objeto."""
+        credential, _ = seeded_identity
+        repo = ServiceIdentityRepository()
+        identity = await repo.lookup(credential)
+        assert identity is not None
+        assert not hasattr(identity, "credential_hash")
 
     async def test_hash_credential_never_stores_plaintext(self, seeded_identity, admin_conn):
         credential, _ = seeded_identity
@@ -102,9 +119,9 @@ class TestIdentityResolverDatabaseMode:
 
 
 class TestLookupLeastPrivilege:
-    """SEC-001 (Sprint 0.3): lookup via pool cognitive_app (least privilege),
-    sem admin_connection/BYPASSRLS. Confirma comportamento pretendido pela
-    migration 002 num Postgres real."""
+    """SEC-001/SEC-002 (Sprint 0.3): lookup via pool cognitive_app (least
+    privilege), sem admin_connection/BYPASSRLS e sem SELECT direto na
+    tabela — só a função SECURITY DEFINER estreita."""
 
     async def test_lookup_updates_last_used_at(self, db_pools, seeded_identity, admin_conn):
         credential, _ = seeded_identity
@@ -118,10 +135,46 @@ class TestLookupLeastPrivilege:
         )
         assert row["last_used_at"] is not None
 
+    async def test_lookup_only_touches_the_matched_identity(
+        self, db_pools, seeded_tenants, admin_conn
+    ):
+        """last_used_at só muda pra identidade cujo credential_hash bateu —
+        nunca pra outras, mesmo de outro tenant."""
+        tenant_a_id = seeded_tenants["tenant-a"]
+        tenant_b_id = seeded_tenants["tenant-b"]
+        cred_a = "touch-scope-a"
+        cred_b = "touch-scope-b"
+        hash_a, hash_b = hash_credential(cred_a), hash_credential(cred_b)
+        await admin_conn.execute(
+            """
+            INSERT INTO service_identities(tenant_id, actor_id, credential_hash, profile)
+            VALUES ($1, 'actor-a', $2, 'owner-core'), ($3, 'actor-b', $4, 'owner-core')
+            ON CONFLICT (credential_hash) DO NOTHING
+            """,
+            uuid.UUID(tenant_a_id), hash_a, uuid.UUID(tenant_b_id), hash_b,
+        )
+        try:
+            repo = ServiceIdentityRepository()
+            await repo.lookup(cred_a)
+
+            row_a = await admin_conn.fetchrow(
+                "SELECT last_used_at FROM service_identities WHERE credential_hash = $1", hash_a,
+            )
+            row_b = await admin_conn.fetchrow(
+                "SELECT last_used_at FROM service_identities WHERE credential_hash = $1", hash_b,
+            )
+            assert row_a["last_used_at"] is not None
+            assert row_b["last_used_at"] is None
+        finally:
+            await admin_conn.execute(
+                "DELETE FROM service_identities WHERE credential_hash IN ($1, $2)", hash_a, hash_b,
+            )
+
     async def test_app_role_insert_into_other_tenant_denied(
         self, db_pools, seeded_tenants, app_conn
     ):
-        """RLS INSERT continua tenant-scoped mesmo com SELECT irrestrito."""
+        """Sem GRANT algum em service_identities para cognitive_app (SEC-002)
+        — INSERT direto falha por privilégio, não só por RLS."""
         from .conftest import set_tenant_local
 
         tenant_a_id = seeded_tenants["tenant-a"]
@@ -137,42 +190,133 @@ class TestLookupLeastPrivilege:
                 uuid.UUID(tenant_b_id),
             )
 
-    async def test_app_role_select_is_unrestricted_by_tenant(
-        self, db_pools, seeded_tenants, app_conn, admin_conn
+    async def test_no_wildcard_or_prefix_matching(self, db_pools, seeded_identity):
+        """A função faz igualdade exata — um prefixo do hash real não deve
+        casar (nada de LIKE/enumeração por prefixo)."""
+        credential, _ = seeded_identity
+        full_hash = hash_credential(credential)
+        prefix = full_hash[:10]
+
+        repo = ServiceIdentityRepository()
+        # lookup() sempre hasheia a credencial recebida — simulamos uma
+        # tentativa de casar por prefixo direto via SQL, não pelo repo
+        # (o repo nunca aceitaria um "hash parcial" como entrada de texto
+        # livre de qualquer forma — isso é o ponto).
+        assert await repo.lookup(prefix) is None
+
+
+class TestDirectTableAccessLockedDown:
+    """SEC-002: prova o oposto do que o teste antigo (removido) documentava.
+    cognitive_app e cognitive_worker não conseguem ler service_identities
+    por SELECT direto — só pela função estreita."""
+
+    async def test_app_role_cannot_select_service_identities(
+        self, db_pools, seeded_tenants, app_conn
     ):
-        """Documenta o comportamento pretendido: SELECT em service_identities
-        não é mais filtrado por tenant context — o credential_hash exato é
-        o boundary (ver migration 002). Isolamento cross-tenant de outras
-        tabelas (audit_events, tenant_resources, ...) permanece intocado —
-        ver tests/db/test_rls_cross_tenant.py."""
+        from .conftest import set_tenant_local
+
+        await set_tenant_local(app_conn, seeded_tenants["tenant-a"])
+        with pytest.raises(Exception):
+            await app_conn.fetch("SELECT * FROM service_identities")
+
+    async def test_app_role_cannot_select_credential_hash_column(
+        self, db_pools, seeded_tenants, app_conn
+    ):
+        from .conftest import set_tenant_local
+
+        await set_tenant_local(app_conn, seeded_tenants["tenant-a"])
+        with pytest.raises(Exception):
+            await app_conn.fetch("SELECT credential_hash FROM service_identities")
+
+    async def test_app_role_cannot_update_other_tenant_identity(
+        self, db_pools, seeded_tenants, admin_conn, app_conn
+    ):
         from .conftest import set_tenant_local
 
         tenant_b_id = seeded_tenants["tenant-b"]
-        cred_hash = hash_credential("least-privilege-select-probe")
+        cred_hash = hash_credential("lockdown-update-probe")
         await admin_conn.execute(
             """
             INSERT INTO service_identities(tenant_id, actor_id, credential_hash, profile)
-            VALUES($1, 'actor-b-probe', $2, 'owner-core')
+            VALUES($1, 'actor-b', $2, 'owner-core')
             ON CONFLICT (credential_hash) DO NOTHING
             """,
-            uuid.UUID(tenant_b_id),
-            cred_hash,
+            uuid.UUID(tenant_b_id), cred_hash,
         )
         try:
-            # app_conn nunca teve set_config para tenant_b — mesmo assim
-            # o SELECT enxerga a linha (é isso que torna o lookup possível
-            # antes do tenant context existir).
             await set_tenant_local(app_conn, seeded_tenants["tenant-a"])
-            row = await app_conn.fetchrow(
-                "SELECT tenant_id FROM service_identities WHERE credential_hash = $1",
-                cred_hash,
-            )
-            assert row is not None
-            assert str(row["tenant_id"]) == tenant_b_id
+            with pytest.raises(Exception):
+                await app_conn.execute(
+                    "UPDATE service_identities SET last_used_at = NOW() WHERE credential_hash = $1",
+                    cred_hash,
+                )
         finally:
             await admin_conn.execute(
                 "DELETE FROM service_identities WHERE credential_hash = $1", cred_hash
             )
+
+    async def test_worker_role_cannot_select_service_identities(
+        self, db_pools, seeded_tenants, worker_conn
+    ):
+        from .conftest import set_tenant_local
+
+        await set_tenant_local(worker_conn, seeded_tenants["tenant-a"])
+        with pytest.raises(Exception):
+            await worker_conn.fetch("SELECT * FROM service_identities")
+
+    async def test_worker_role_cannot_select_credential_hash_column(
+        self, db_pools, seeded_tenants, worker_conn
+    ):
+        from .conftest import set_tenant_local
+
+        await set_tenant_local(worker_conn, seeded_tenants["tenant-a"])
+        with pytest.raises(Exception):
+            await worker_conn.fetch("SELECT credential_hash FROM service_identities")
+
+
+class TestResolveFunctionHardening:
+    """Owner, search_path e grants EXECUTE da função SECURITY DEFINER."""
+
+    async def test_function_owner_is_cognitive_admin(self, db_pools, admin_conn):
+        row = await admin_conn.fetchrow(
+            """
+            SELECT pg_get_userbyid(proowner) AS owner
+            FROM pg_proc
+            WHERE proname = 'resolve_service_identity_by_credential_hash'
+            """
+        )
+        assert row is not None
+        assert row["owner"] == "cognitive_admin"
+
+    async def test_function_search_path_is_hardened(self, db_pools, admin_conn):
+        row = await admin_conn.fetchrow(
+            """
+            SELECT proconfig
+            FROM pg_proc
+            WHERE proname = 'resolve_service_identity_by_credential_hash'
+            """
+        )
+        assert row is not None
+        assert row["proconfig"] is not None
+        assert any("search_path" in cfg for cfg in row["proconfig"])
+
+    async def test_public_has_no_execute(self, db_pools, admin_conn):
+        row = await admin_conn.fetchrow(
+            "SELECT has_function_privilege('public', "
+            "'resolve_service_identity_by_credential_hash(text)', 'EXECUTE') AS can_execute"
+        )
+        assert row["can_execute"] is False
+
+    async def test_app_and_worker_have_execute(self, db_pools, admin_conn):
+        row = await admin_conn.fetchrow(
+            "SELECT "
+            "has_function_privilege('cognitive_app', "
+            "'resolve_service_identity_by_credential_hash(text)', 'EXECUTE') AS app_can, "
+            "has_function_privilege('cognitive_worker', "
+            "'resolve_service_identity_by_credential_hash(text)', 'EXECUTE') AS worker_can"
+        )
+        assert row["app_can"] is True
+        assert row["worker_can"] is True
 
 
 class TestWorkerIdentity:

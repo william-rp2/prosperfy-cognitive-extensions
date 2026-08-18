@@ -1,67 +1,84 @@
 -- Migration: 002_service_identities_lookup_least_privilege
--- Sprint 0.3 — Prosperfy Cognitive V2 — SEC-001 remediation
+-- Sprint 0.3 — Prosperfy Cognitive V2 — SEC-001 / SEC-002 remediation
 -- Depende de: 001_capability_registry_audit
+-- NÃO aplicada em nenhum ambiente até o momento desta revisão (SEC-002) —
+-- corrigida em lugar de sofrer um patch em migration nova.
 --
--- Problema (SEC-001): o lookup de credential_hash -> tenant_id/actor_id
--- precisa acontecer ANTES de existir contexto de tenant (SET LOCAL
--- app.current_tenant_id). A policy tenant_isolation original em
--- service_identities exigia esse contexto, então o Gateway usava
--- cognitive_admin (BYPASSRLS) para o lookup — o que forçava o pool admin
--- a ficar vivo durante toda a vida do processo web público.
+-- SEC-001: o lookup de credential_hash -> tenant_id/actor_id precisa
+-- acontecer ANTES de existir contexto de tenant (SET LOCAL
+-- app.current_tenant_id). Usar cognitive_admin (BYPASSRLS) pra isso força
+-- o pool admin a ficar vivo durante toda a vida do processo web público.
 --
--- Correção: service_identities é estruturalmente uma tabela de
--- login/auth (mesmo padrão de auth.users do Supabase) — a autorização
--- real vem do credential_hash exato (só quem tem o Bearer token original
--- calcula o hash igual), não do tenant_id. A query de aplicação SEMPRE
--- filtra por credential_hash exato (nunca faz scan livre), então o hash
--- É o boundary de segurança para leitura — RLS tenant-scoped no SELECT
--- não agrega isolamento real e apenas força o uso de BYPASSRLS.
+-- SEC-002 (achado do Gate, corrigindo a primeira versão desta mesma
+-- migration): a primeira tentativa de correção liberou
+-- `USING (true)` para SELECT em service_identities para
+-- cognitive_app/cognitive_worker, assumindo que "a query da aplicação
+-- sempre filtra por credential_hash exato" era suficiente boundary de
+-- segurança. Não é — RLS permissiva + GRANT SELECT da migration 001
+-- juntos permitem `SELECT * FROM service_identities` completo (todos os
+-- tenants, actor_ids, credential_hash, profiles) para qualquer código
+-- rodando com essas roles, não só o caminho de lookup pretendido. O
+-- filtro por credential_hash só existe no application code — isso não é
+-- boundary de banco.
 --
--- INSERT/UPDATE continuam tenant-scoped: uma conexão de um tenant não
--- pode criar/alterar identidades de outro tenant.
+-- Correção real: cognitive_app/cognitive_worker perdem QUALQUER
+-- privilégio direto (SELECT/INSERT/UPDATE) sobre service_identities.
+-- O único acesso possível é via uma função SECURITY DEFINER estreita,
+-- que recebe exclusivamente o credential_hash, faz o match exato
+-- internamente, atualiza last_used_at atomicamente na mesma operação
+-- (elimina a necessidade de uma segunda função "touch" que aceitava
+-- um id arbitrário), e retorna só os 4 campos necessários pra montar
+-- o ActorContext — nunca o credential_hash, nunca outras linhas.
+-- register()/deactivate() (bootstrap/CLI, fora do processo web) seguem
+-- via cognitive_admin, que mantém acesso direto à tabela por ownership.
 
--- ─── service_identities: SELECT sem filtro de tenant, INSERT/UPDATE tenant-scoped ──
+-- ─── service_identities: nenhum acesso direto para app/worker ──────────
 DROP POLICY IF EXISTS tenant_isolation ON service_identities;
 
-CREATE POLICY service_identities_select ON service_identities
-  FOR SELECT
-  TO cognitive_app, cognitive_worker
-  USING (true);
+-- REVOKE explícito do que a migration 001 concedeu — não confiar só em
+-- RLS. Com RLS enabled e nenhuma policy para estas roles, um SELECT
+-- tentado sem o GRANT já falha com permission denied antes mesmo de RLS
+-- ser avaliada; o REVOKE é a camada primária e intencional aqui.
+REVOKE SELECT, INSERT, UPDATE, DELETE ON service_identities FROM cognitive_app, cognitive_worker;
 
-CREATE POLICY service_identities_insert ON service_identities
-  FOR INSERT
-  TO cognitive_app, cognitive_worker
-  WITH CHECK (tenant_id::text = current_setting('app.current_tenant_id', true));
+-- cognitive_admin mantém o SELECT concedido em 001 (uso administrativo/
+-- inspeção; register()/deactivate() usam a conexão admin para
+-- INSERT/UPDATE, cobertos por ownership/BYPASSRLS, não por GRANT
+-- explícito adicional aqui).
 
-CREATE POLICY service_identities_update ON service_identities
-  FOR UPDATE
-  TO cognitive_app, cognitive_worker
-  USING (tenant_id::text = current_setting('app.current_tenant_id', true))
-  WITH CHECK (tenant_id::text = current_setting('app.current_tenant_id', true));
-
--- Grants de 001 (SELECT, INSERT, UPDATE para cognitive_app/cognitive_worker;
--- SELECT para cognitive_admin) permanecem válidos e não precisam mudar —
--- RLS policies e GRANTs são camadas independentes, ambas continuam
--- aplicadas.
-
--- ─── last_used_at touch: SECURITY DEFINER, single-column, id-scoped ────────
--- O lookup ainda precisa gravar last_used_at ANTES do tenant context
--- existir (mesmo ciclo do SELECT). Em vez de reabrir o ciclo via admin
--- pool ou afrouxar a policy de UPDATE para USING(true), expomos uma
--- função SECURITY DEFINER estreita: atualiza apenas last_used_at, apenas
--- por id, nada mais. A função roda com os privilégios de quem a criou
--- (cognitive_admin, via migration runner — BYPASSRLS), então funciona
--- sem tenant context; cognitive_app/cognitive_worker só recebem EXECUTE,
--- nunca UPDATE irrestrito na tabela.
-CREATE OR REPLACE FUNCTION touch_service_identity_last_used(p_id UUID)
-RETURNS VOID
+-- ─── Lookup seguro: função SECURITY DEFINER estreita, hash-in only ──────
+-- Contrato:
+--   entrada:  credential_hash (sha256 hex do Bearer token)
+--   saída:    no máximo 1 linha — service_identity_id, tenant_id,
+--             actor_id, profile (nunca credential_hash, nunca outras
+--             identidades)
+--   efeito:   atualiza last_used_at atomicamente APENAS na linha cujo
+--             credential_hash bateu — impossível direcionar a um id
+--             arbitrário, porque não há parâmetro de id, só de hash.
+--   garantia: UNIQUE(credential_hash) em 001 já garante 0 ou 1 linha.
+CREATE OR REPLACE FUNCTION resolve_service_identity_by_credential_hash(p_credential_hash TEXT)
+RETURNS TABLE (
+  service_identity_id UUID,
+  tenant_id UUID,
+  actor_id TEXT,
+  profile TEXT
+)
 LANGUAGE sql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = pg_catalog, public
 AS $$
-  UPDATE service_identities SET last_used_at = NOW() WHERE id = p_id;
+  UPDATE service_identities
+  SET last_used_at = NOW()
+  WHERE credential_hash = p_credential_hash AND active = true
+  RETURNING id, service_identities.tenant_id, service_identities.actor_id, service_identities.profile;
 $$;
 
-REVOKE ALL ON FUNCTION touch_service_identity_last_used(UUID) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION touch_service_identity_last_used(UUID)
+-- Owner explícito e controlado — nunca depender de quem rodou a migration
+-- (poderia ser o service_role/postgres do runner, não cognitive_admin).
+ALTER FUNCTION resolve_service_identity_by_credential_hash(TEXT) OWNER TO cognitive_admin;
+
+-- PUBLIC nunca executa; só as duas roles que realmente precisam resolver
+-- identidade em runtime.
+REVOKE ALL ON FUNCTION resolve_service_identity_by_credential_hash(TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION resolve_service_identity_by_credential_hash(TEXT)
   TO cognitive_app, cognitive_worker;
