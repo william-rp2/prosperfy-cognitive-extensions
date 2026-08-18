@@ -76,6 +76,7 @@ COGNITIVE_DB_ADMIN_URL=<url-do-dev-homolog> python core/migrations/runner.py --i
 | `000_foundation_tenancy.sql` | roles, tenants, members, resources, credential_refs, grants + RLS |
 | `001_capability_registry_audit.sql` | service_identities, audit_events, execution_traces, cost_telemetry + RLS |
 | `002_service_identities_lookup_least_privilege.sql` | SEC-001/SEC-002 (Sprint 0.3): remove `cognitive_app`/`cognitive_worker` de qualquer grant direto (SELECT/INSERT/UPDATE/DELETE) em `service_identities` — o único acesso é via `resolve_service_identity_by_credential_hash(hash)`, função `SECURITY DEFINER` (owner `cognitive_admin`, `search_path` hardened, `PUBLIC` sem `EXECUTE`) que recebe só o hash, nunca retorna `credential_hash`, e atualiza `last_used_at` atomicamente na mesma operação. Também concede `cognitive_admin` a `CURRENT_USER` (quem roda a migration) — necessário pra `ALTER FUNCTION ... OWNER TO` funcionar, já que criar uma role não torna o criador membro dela |
+| `003_identity_lifecycle_audit.sql` | Sprint 0.4: cria `identity_events` (append-only) — trilha de auditoria de provisionamento/revogação de `service_identities`, gravada por `ServiceIdentityRepository.register()`/`.deactivate()`/`.rotate()` na mesma transação `admin_connection()` da escrita em `service_identities`. RLS: leitura tenant-scoped para `cognitive_app`/`cognitive_worker` (mesmo shape de `audit_events` em 001); nenhum `GRANT INSERT/UPDATE/DELETE` pra essas duas roles — escrita é exclusiva da conexão admin (bootstrap/CLI), nunca de rota HTTP |
 
 ## Estratégia RLS (Sprint 0.2)
 
@@ -90,5 +91,6 @@ COGNITIVE_DB_ADMIN_URL=<url-do-dev-homolog> python core/migrations/runner.py --i
 rollback/
 ├── 000_rollback.sql   ← DROP de tudo da migration 000
 ├── 001_rollback.sql   ← DROP de tudo da migration 001
-└── 002_rollback.sql   ← restaura policy tenant-scoped original (PERIGO: reintroduz SEC-001, dev/test only)
+├── 002_rollback.sql   ← restaura policy tenant-scoped original (PERIGO: reintroduz SEC-001, dev/test only)
+└── 003_rollback.sql   ← DROP TABLE identity_events (PERIGO: destrói histórico de auditoria, dev/test only)
 ```
