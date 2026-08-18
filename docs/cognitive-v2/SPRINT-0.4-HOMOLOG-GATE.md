@@ -24,10 +24,11 @@ identidade ao Hermes." Duas entregas integradas nesta branch:
 ## 1. Checkpoint esperado
 
 - Branch: `dev/sprint-0.4`
-- Commit: `<FINAL_CHECKPOINT>` — o Lead Dev preenche este hash depois da
-  integração final (merge de `dev/sprint-0.4-cli-gate` +
-  `dev/sprint-0.4-db-identity` em `dev/sprint-0.4`). **Não rode o Gate sem
-  esse hash preenchido** — confirme `git log -1 --format=%H` no checkout da
+- Commit: `9c5113a` (Lead Dev integration commit — merge de
+  `dev/sprint-0.4-db-identity` + `dev/sprint-0.4-cli-gate` em
+  `dev/sprint-0.4`, mais o fix do teste de guard do `rotate()` que a
+  integração revelou como obsoleto). **Confirme** `git log -1 --format=%H`
+  no checkout da
   VPS bate exatamente com o valor publicado pelo Lead Dev antes de prosseguir.
 
 ---
@@ -368,9 +369,8 @@ Estrutura esperada:
 - **Findings**: lista objetiva do que foi verificado e o resultado de cada
   seção (1-17), especialmente contagens de teste (Seção 8, 14) e o
   resultado do smoke test (Seção 11) passo a passo.
-- **Checkpoint**: o commit hash real que rodou (deve bater com
-  `<FINAL_CHECKPOINT>` da Seção 1 — se não bater, isso por si só é motivo
-  de nota no relatório).
+- **Checkpoint**: o commit hash real que rodou (deve bater com o commit da
+  Seção 1 — se não bater, isso por si só é motivo de nota no relatório).
 - **Published**: onde o relatório foi deixado (commit message, doc, ambos)
   e para quem — nunca inclua nenhuma credential, DSN completo, ou senha em
   qualquer parte publicada, mesmo em rascunho.
