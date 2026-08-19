@@ -255,6 +255,21 @@ class TestRunPreconditions:
         assert report.ok is False
         assert report.checks["api_base_url_provided"] is False
 
+    def test_credential_with_crlf_reports_credential_file_not_ok(self, tmp_path, monkeypatch):
+        """Adversarial (Sprint 0.3 closure): secret com CR/LF — verify-
+        preconditions deve reportar credential_file_ok=False, não PASS (um
+        valor que só estouraria no transporte)."""
+        monkeypatch.setenv("COGNITIVE_LIVE_MCP", "1")
+        payload = dict(VALID_CREDENTIAL)
+        payload["credential"] = "abc123\r\n"
+        p = _write_credential_file(tmp_path, payload)
+        report = gate.run_preconditions(
+            "homolog", str(p), "https://api-cognitive-homolog.prosperfy.com.br",
+        )
+        assert report.ok is False
+        assert report.checks["credential_file_ok"] is False
+        assert all("abc123" not in e for e in report.errors)
+
 
 class TestCommonGate:
     def _args(self, tmp_path, environment="homolog", api_base_url="https://api-cognitive-homolog.prosperfy.com.br"):
@@ -315,6 +330,21 @@ class TestCommonGate:
             result = gate._common_gate(self._args(tmp_path))
             assert result is None
             mock_client_cls.assert_not_called()
+
+    def test_refuses_credential_with_crlf_cleanly(self, tmp_path, monkeypatch, capsys):
+        """Adversarial (Sprint 0.3 closure): secret com CR no arquivo — o gate
+        recusa com GATE_REFUSED estático (sem traceback cru e sem eco do valor)."""
+        monkeypatch.setenv("COGNITIVE_LIVE_MCP", "1")
+        ns = self._args(tmp_path)  # escreve cred.json válido e retorna o path
+        payload = dict(VALID_CREDENTIAL)
+        payload["credential"] = "abc123\r"
+        p = _write_credential_file(tmp_path, payload)  # sobrescreve o mesmo arquivo
+        assert str(p) == ns.credential_file
+        result = gate._common_gate(ns)
+        assert result is None
+        out = capsys.readouterr().out
+        assert "GATE_REFUSED" in out
+        assert "abc123" not in out  # nunca ecoa o valor, nem parcial
 
 
 class TestRequestBuilding:
@@ -402,6 +432,61 @@ class TestSanitize:
     def test_noop_without_credential(self):
         text = "some error text"
         assert gate._sanitize(text, None) == text
+
+
+class TestCredentialCrlfAndPartialLeak:
+    """Sprint 0.3 RETURN_TO_DEV (Item B): recusa CRLF/controle na credencial
+    antes de montar qualquer header e sanitiza vazamento parcial do Bearer em
+    qualquer texto impresso pelo runner."""
+
+    CANARY = "55a0ccf2" + "f" * 40
+
+    def _cred(self, credential="secret-x"):
+        return gate.CredentialFile(
+            tenant_id="tenant-x", actor_id="actor-x", credential=credential,
+            resource_key="res-x", capability_id="infra.inspect", path=Path("x"),
+        )
+
+    def test_build_headers_rejects_crlf_credential_no_leak(self):
+        bad = f"{self.CANARY}\r"
+        with pytest.raises(RuntimeError) as exc_info:
+            gate.build_headers(self._cred(bad))
+        message = str(exc_info.value)
+        assert "contém caractere de controle" in message
+        assert self.CANARY not in message
+        assert self.CANARY[:8] not in message
+
+    def test_sanitize_strips_partial_bearer_leak(self):
+        cred = self._cred("full-secret-value")
+        leak = f"Illegal header value b'Bearer {cred.credential[:8]}...\\r'"
+        sanitized = gate._sanitize(leak, cred)
+        assert cred.credential[:8] not in sanitized
+
+    def test_sanitize_strips_full_credential_in_authorization_header(self):
+        cred = self._cred("super-secret-value")
+        text = "Authorization: Bearer super-secret-value rejected"
+        sanitized = gate._sanitize(text, cred)
+        assert "super-secret-value" not in sanitized
+
+    def test_sanitize_noop_without_secret_shape(self):
+        assert gate._sanitize("plain error", None) == "plain error"
+
+    def test_cmd_run_mcp_tools_list_refuses_embedded_cr_key(self, monkeypatch, capsys):
+        import argparse
+
+        # CR EMBUTIDO (não trailing): .strip() não remove — validação precisa
+        # pegar o caractere de controle de verdade.
+        bad_key = f"{self.CANARY[:8]}\r" + "f" * 32
+        monkeypatch.setenv("COGNITIVE_LIVE_MCP", "1")
+        monkeypatch.setenv("MCP_PROSPERFYSKILLS_API_KEY", bad_key)
+        monkeypatch.delenv("MCP_PROSPERFYSKILLS_HOST", raising=False)
+        args = argparse.Namespace(environment="homolog", mcp_endpoint=None)
+        rc = gate.cmd_run_mcp_tools_list(args)
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "GATE_REFUSED" in out
+        assert "no HTTP call was attempted" in out
+        assert self.CANARY[:8] not in out
 
 
 class TestGatewayStatusReuse:

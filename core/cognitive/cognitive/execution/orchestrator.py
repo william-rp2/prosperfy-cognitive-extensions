@@ -23,8 +23,10 @@ from ..contracts.capability import ExecutionRequest, SkillsAdapterPort
 from ..contracts.gateway import CapabilityExecuteResponse, GatewayStatus
 from ..contracts.policy import PolicyDecision
 from ..contracts.tenancy import ActorContext
+from ..gate.redaction import sanitize_exception
 from ..policy.engine import PolicyEngine
 from ..registry.registry import InMemoryCapabilityRegistry
+from ..registry.grant_resolver import GrantResolverPort, RegistryGrantResolver
 from ..telemetry.recorder import InMemoryTelemetryRecorder, TelemetryRecord
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,7 @@ class ExecutionOrchestrator:
         audit_writer: InMemoryAuditWriter,
         telemetry_recorder: InMemoryTelemetryRecorder,
         resource_resolver: Any | None = None,
+        grant_resolver: GrantResolverPort | None = None,
     ) -> None:
         self._registry = registry
         self._policy = policy_engine
@@ -55,13 +58,22 @@ class ExecutionOrchestrator:
         # adapter. None é permitido (capabilities sem resource, ou runtime que
         # ainda não fia um resolver) — nesse caso params fluem sem resolução.
         self._resource_resolver = resource_resolver
+        # Sprint 0.3 RETURN_TO_DEV (Item A): resolução de grant agora é feita
+        # por um GrantResolverPort. Em database mode o gateway injeta
+        # PostgresGrantResolver (RLS/capability_grants); sem injetação cai em
+        # RegistryGrantResolver (in-memory, retrocompat Sprint 0.1).
+        self._grant_resolver = grant_resolver or RegistryGrantResolver(registry)
         # Idempotency-Key (Sprint 0.3): cache in-process, chave
-        # (tenant_id, capability_id, idempotency_key) -> resposta já concluída.
-        # Só COMPLETED é cacheado (DENY/CONFIRM não — policy pode mudar; CONFIRM
-        # precisa do fluxo de aprovação de novo). In-process apenas: não
-        # sobrevive restart nem é compartilhado entre instâncias — dedup
-        # cross-processo exigiria store em banco (fora de escopo do Sprint 0.3).
-        self._idempotency_cache: dict[tuple[str, str, str], CapabilityExecuteResponse] = {}
+        # (tenant_id, profile, capability_id, idempotency_key) -> resposta já
+        # concluída. O profile faz parte da chave: a decisão de grant é feita
+        # por (tenant, profile, capability) — um actor de perfil inferior
+        # reenviando a mesma chave não pode herdar o COMPLETED de um perfil
+        # com grant (revisão adversarial, Sprint 0.3 closure). Só COMPLETED é
+        # cacheado (DENY/CONFIRM não — policy pode mudar; CONFIRM precisa do
+        # fluxo de aprovação de novo). In-process apenas: não sobrevive
+        # restart nem é compartilhado entre instâncias — dedup cross-processo
+        # exigiria store em banco (fora de escopo do Sprint 0.3).
+        self._idempotency_cache: dict[tuple[str, str, str, str], CapabilityExecuteResponse] = {}
 
     async def execute(
         self,
@@ -80,7 +92,13 @@ class ExecutionOrchestrator:
         start_ms = time.monotonic()
 
         # ─── STEP 0: IDEMPOTENCY-KEY cache lookup ───────────────────────
-        cache_key = (ctx.tenant_id, capability_id, idempotency_key) if idempotency_key else None
+        # A chave inclui ctx.profile: um actor de perfil diferente (grant
+        # distinto) nunca reusa o COMPLETED de outro perfil — senão o DENY de
+        # um perfil sem grant seria contornado pela resposta cacheada.
+        cache_key = (
+            (ctx.tenant_id, ctx.profile, capability_id, idempotency_key)
+            if idempotency_key else None
+        )
         if cache_key is not None and cache_key in self._idempotency_cache:
             return self._idempotency_cache[cache_key]
 
@@ -95,7 +113,10 @@ class ExecutionOrchestrator:
             )
 
         # ─── STEP 2: GRANT resolution ────────────────────────────────────
-        grant = self._registry.resolve_grant(
+        # Sprint 0.3 RETURN_TO_DEV (Item A): consulta agora passa pelo
+        # GrantResolverPort (async) — database mode lê capability_grants via
+        # RLS; fail-closed em erro de DB (resolve_grant retorna None → DENY).
+        grant = await self._grant_resolver.resolve_grant(
             tenant_id=ctx.tenant_id,
             profile=ctx.profile,
             capability_id=capability_id,
@@ -252,10 +273,15 @@ class ExecutionOrchestrator:
                 correlation_id=ctx.correlation_id,
             )
         except Exception as exc:
-            logger.exception(
-                "Capability execution failed cap=%s tenant=%s", capability_id, ctx.tenant_id
+            # Sprint 0.3 RETURN_TO_DEV (Item B): nunca loga o traceback bruto
+            # (a mensagem da exceção pode embutir segredo, ex.: erro de header
+            # do transporte MCP com prefixo do Bearer) — loga versão
+            # sanitizada e registra o mesmo valor no response/audit.
+            error = sanitize_exception(exc)
+            logger.error(
+                "Capability execution failed cap=%s tenant=%s error=%s",
+                capability_id, ctx.tenant_id, error,
             )
-            error = str(exc)
             outcome = AuditOutcome.FAILED
 
         duration_ms = int((time.monotonic() - start_ms) * 1000)
@@ -361,11 +387,17 @@ class ExecutionOrchestrator:
                 call_count += 1
             except Exception as exc:
                 if required:
+                    # `from None`: sem __cause__ cru (se a exception original
+                    # embutir segredo, não fica encadeado p/ vazar num repr/
+                    # traceback posterior).
                     raise RuntimeError(
-                        f"Tool '{tool_name}' obrigatória falhou: {exc}"
-                    ) from exc
-                logger.warning("Tool opcional '%s' falhou: %s", tool_name, exc)
-                results[tool_name] = {"error": str(exc)}
+                        f"Tool '{tool_name}' obrigatória falhou: "
+                        f"{sanitize_exception(exc)}"
+                    ) from None
+                logger.warning(
+                    "Tool opcional '%s' falhou: %s", tool_name, sanitize_exception(exc),
+                )
+                results[tool_name] = {"error": sanitize_exception(exc)}
 
         return call_count, results
 

@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from ..gate.redaction import sanitize_secrets
+
 # Campos sempre redigidos (independente de configuração)
 _ALWAYS_REDACT = frozenset({"password", "secret", "token", "api_key", "credential", "bearer"})
 
@@ -47,4 +49,10 @@ def _redact_recursive(obj: Any, fields: frozenset[str]) -> Any:
         }
     if isinstance(obj, list):
         return [_redact_recursive(item, fields) for item in obj]
+    # Sprint 0.3 RETURN_TO_DEV (Item B): strings também passam pelo scrub
+    # genérico (Bearer/Authorization/DSN) — defense-in-depth caso um valor de
+    # erro embuta um secret fora das chaves sensíveis (ex.: mensagem de
+    # exceção do transporte MCP).
+    if isinstance(obj, str):
+        return sanitize_secrets(obj)
     return obj

@@ -84,6 +84,11 @@ sys.path.insert(0, str(COGNITIVE_DIR))
 # runner can never silently drift from what the codebase actually enforces.
 from cognitive.adapters.prosperfy_skills.guard import FORBIDDEN_ARG_KEYS  # noqa: E402
 from cognitive.contracts.gateway import GatewayStatus  # noqa: E402
+from cognitive.gate.redaction import (  # noqa: E402
+    install_secret_scrubbing_filter,
+    sanitize_secrets,
+    validate_credential_no_control,
+)
 
 REQUIRED_ENVIRONMENT_VALUE = "homolog"
 REQUIRED_CREDENTIAL_KEYS = (
@@ -279,8 +284,16 @@ def run_preconditions(
     credential: CredentialFile | None = None
     try:
         credential = load_credential_file(credential_file_path)
+        # Sprint 0.3 revisão adversarial: credencial com CR/LF/controle é
+        # inválida ANTES de qualquer header — verify-preconditions deve
+        # reportar falha, não PASS com um valor que só vai estourar no
+        # transporte.
+        validate_credential_no_control(credential.credential, "credential")
         checks["credential_file_ok"] = True
     except CredentialFileError as exc:
+        checks["credential_file_ok"] = False
+        errors.append(str(exc))
+    except RuntimeError as exc:
         checks["credential_file_ok"] = False
         errors.append(str(exc))
 
@@ -333,7 +346,11 @@ def _common_gate(args: argparse.Namespace) -> tuple[CredentialFile, str] | None:
 
     try:
         credential = load_credential_file(args.credential_file)
-    except CredentialFileError as exc:
+        # Sprint 0.3 revisão adversarial: um secret com CR/LF passava pelo
+        # load e só explodia com traceback cru no build_headers (run-positive).
+        # Recusar aqui também, com GATE_REFUSED limpo e estático.
+        validate_credential_no_control(credential.credential, "credential")
+    except (CredentialFileError, RuntimeError) as exc:
         print(f"GATE_REFUSED: {exc}")
         return None
 
@@ -363,6 +380,10 @@ def build_execute_url(api_base_url: str, capability_id: str) -> str:
 
 
 def build_headers(cred: CredentialFile, correlation_id: str | None = None) -> dict[str, str]:
+    # Sprint 0.3 RETURN_TO_DEV (Item B): recusa fail-closed qualquer quebra de
+    # linha/controle na credencial ANTES de montar o header Authorization. Um
+    # CR no valor fazia o transporte expor prefixos do token em exceção.
+    validate_credential_no_control(cred.credential, "credential")
     headers = {
         "Authorization": f"Bearer {cred.credential}",
         "X-Tenant-Id": cred.tenant_id,
@@ -398,9 +419,24 @@ def generate_idempotency_key() -> str:
 
 
 def _sanitize(text: str, cred: CredentialFile | None = None) -> str:
-    """Strips the raw credential value out of anything printed/raised, best-effort."""
-    if cred and cred.credential and cred.credential in text:
-        text = text.replace(cred.credential, "***")
+    """
+    Strips the raw credential value and ANY credential-shaped leak out of
+    anything printed/raised, best-effort.
+
+    Sprint 0.3 RETURN_TO_DEV (Item B): a troca exata do valor inteiro não
+    cobria vazamento PARCIAL (o transporte MCP expôs apenas prefixos hex do
+    Bearer, ex.: `Illegal header value b'Bearer 55a0ccf2...\r'`). sanitize_secrets
+    agora remove qualquer valor que siga um Bearer / Authorization header.
+
+    ValueError/AttributeError safety: um texto None/Stringify-able é aceito;
+    um CredentialFile sem .credential é tratado como cred=None.
+    """
+    if not text:
+        return text
+    text = sanitize_secrets(str(text))
+    if cred is not None and getattr(cred, "credential", None):
+        if cred.credential in text:
+            text = text.replace(cred.credential, "***")
     return text
 
 
@@ -706,6 +742,10 @@ async def _run_mcp_tools_list_async(endpoint: str, api_key: str) -> int:
     """
     import fastmcp  # importação local: evita importar fastmcp em testes que mockem
 
+    # Sprint 0.3 RETURN_TO_DEV (Item B): recusa CR/LF/controle na chave antes
+    # de montar o header (defense-in-depth; cmd_run_mcp_tools_list já valida).
+    validate_credential_no_control(api_key, "MCP_PROSPERFYSKILLS_API_KEY")
+
     print(f"mcp_endpoint={endpoint}")
     print(
         "NOTE: Calling ProsperfySkill MCP directly via fastmcp.Client (Streamable HTTP) "
@@ -716,7 +756,12 @@ async def _run_mcp_tools_list_async(endpoint: str, api_key: str) -> int:
         async with fastmcp.Client(endpoint, auth=api_key, timeout=30.0) as client:
             tools = await client.list_tools()
     except Exception as exc:
+        # Nunca imprime str(exc) bruto (pode expor prefixos do Bearer em erro
+        # de header); imprime tipo + detalhe sanitizado.
+        detail = sanitize_secrets(str(exc))
         print(f"error=MCP connection/list_tools failed type={type(exc).__name__}")
+        if detail:
+            print(f"error_detail={detail}")
         print("RUN_MCP_TOOLS_LIST_RESULT=FAIL")
         return 1
 
@@ -757,6 +802,12 @@ def cmd_run_mcp_tools_list(args: argparse.Namespace) -> int:
             "GATE_REFUSED: MCP_PROSPERFYSKILLS_API_KEY must be set to call the "
             "ProsperfySkill MCP directly — no HTTP call was attempted."
         )
+        return 1
+
+    try:
+        validate_credential_no_control(api_key, "MCP_PROSPERFYSKILLS_API_KEY")
+    except RuntimeError as exc:
+        print(f"GATE_REFUSED: {exc} — no HTTP call was attempted.")
         return 1
 
     mcp_host = os.getenv("MCP_PROSPERFYSKILLS_HOST", _DEFAULT_MCP_HOST)
@@ -906,6 +957,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Sprint 0.3 revisão adversarial (Item B): SDK/mcip/httpcore/httpx logam
+    # exceções de transporte com o valor embutido — anexa filtro de redação
+    # em qualquer subcomando que rode o gate.
+    install_secret_scrubbing_filter()
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 

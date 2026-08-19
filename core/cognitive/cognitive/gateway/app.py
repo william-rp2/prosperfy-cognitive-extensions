@@ -77,6 +77,8 @@ def _build_services(app: FastAPI) -> None:
         from ..db.repositories.identity_repo import ServiceIdentityRepository
         from ..db.repositories.resource_repo import TenantResourceRepository
         from ..db.repositories.telemetry_repo import PostgresTelemetryRecorder
+        from ..db.repositories.tenancy_repo import GrantRepository
+        from ..registry.grant_resolver import PostgresGrantResolver
 
         audit_writer = PostgresAuditWriter()
         # Sprint 0.3 (fechamento E2E): antes deste fix, telemetry_recorder
@@ -93,12 +95,18 @@ def _build_services(app: FastAPI) -> None:
         # antes do adapter. Sem isso, ExecutionOrchestrator recebia
         # resource_resolver=None e "resource" lógico ia cru pro adapter.
         resource_resolver = ResourceResolver(resource_repo)
+        # Sprint 0.3 RETURN_TO_DEV (Item A): em database mode a resolução de
+        # grant passa a consultar capability_grants via GrantRepository (RLS
+        # por tenant_transaction). Sem este wiring, grants persistidos eram
+        # ignorados → todo tenant em database mode levava DENY [no_grant].
+        grant_resolver = PostgresGrantResolver(repo=GrantRepository())
         logger.info("Runtime: database mode (Postgres)")
     else:
         audit_writer = InMemoryAuditWriter()
         telemetry_recorder = InMemoryTelemetryRecorder()
         identity_resolver = IdentityResolver(identity_repo=None, database_mode=False)
         resource_resolver = InMemoryResourceResolver()
+        grant_resolver = None
         dev_tenant = os.getenv("COGNITIVE_DEV_TENANT_ID", "prosperfy")
         resource_resolver.register(
             dev_tenant, "prosperfy-main",
@@ -117,6 +125,7 @@ def _build_services(app: FastAPI) -> None:
         audit_writer=audit_writer,
         telemetry_recorder=telemetry_recorder,
         resource_resolver=resource_resolver,
+        grant_resolver=grant_resolver,
     )
 
     if is_in_memory_mode():

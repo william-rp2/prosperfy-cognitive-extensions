@@ -37,6 +37,11 @@ from typing import Any
 
 import fastmcp
 
+from ...gate.redaction import (
+    install_secret_scrubbing_filter,
+    sanitize_exception,
+    validate_credential_no_control,
+)
 from .guard import guard_arguments
 
 logger = logging.getLogger(__name__)
@@ -67,6 +72,18 @@ class ProsperfySkillsAdapter:
         # Real MCP endpoint do servidor (FastMCP, Streamable HTTP): sempre
         # /mcp — construído uma vez, nunca recalculado por chamada.
         self._mcp_url = f"{self._base_url}/mcp"
+        # Sprint 0.3 RETURN_TO_DEV (Item B): rejeita CR/LF/controle na
+        # credencial na construção (fail-closed). Um secret com `\r` gerava o
+        # erro `Illegal header value b'Bearer 55a0ccf2...\r'` no transporte,
+        # expondo prefixos do token real. Recusar aqui elimina a origem antes
+        # de qualquer header/transporte.
+        validate_credential_no_control(self._api_key, "MCP_PROSPERFYSKILLS_API_KEY")
+        # Sprint 0.3 revisão adversarial (Item B): os loggers do SDK
+        # (mcp/fastmcp/httpcore/httpx) emitem exceções de transporte com o
+        # valor embutido via logger.exception/debug quando um header é
+        # recusado. Anexa filtro de redação neles (defense-in-depth — protege
+        # mesmo se a validação acima regredir num caminho futuro).
+        install_secret_scrubbing_filter()
 
     def _build_client(self, timeout: float | None = None) -> fastmcp.Client:
         """
@@ -76,6 +93,10 @@ class ProsperfySkillsAdapter:
         `auth=<str>` é resolvido pelo fastmcp como Bearer token
         (Authorization: Bearer <token>); o token nunca é logado.
         """
+        # Re-valida aqui como camada de defesa (env var pode mudar após init
+        # sem restart do processo): nunca deixar um header com CR/LF ser
+        # montado pelo fastmcp.
+        validate_credential_no_control(self._api_key, "MCP_PROSPERFYSKILLS_API_KEY")
         return fastmcp.Client(
             self._mcp_url,
             auth=self._api_key,
@@ -132,6 +153,11 @@ class ProsperfySkillsAdapter:
                 "ProsperfySkillsAdapter transport error tool=%s type=%s "
                 "tenant=%s correlation=%s",
                 tool_name, type(exc).__name__, tenant_id, correlation_id,
+            )
+            logger.debug(
+                "ProsperfySkillsAdapter transport detail (sanitized) "
+                "tool=%s detail=%s",
+                tool_name, sanitize_exception(exc),
             )
             raise RuntimeError(
                 f"ProsperfySkill tool '{tool_name}' inacessível (erro de transporte)"
