@@ -333,6 +333,10 @@ class TestTeardownTableOrder:
             "audit_events",
             "execution_traces",
             "cost_telemetry",
+            # identity_events (migration 003) referencia service_identities SEM
+            # ON DELETE CASCADE — removido ANTES de service_identities (fix de
+            # ordem de FK, mesmo padrão da Sprint 0.4 em tests/db/conftest.py).
+            "identity_events",
             "service_identities",
             "tenant_resources",
             "capability_grants",

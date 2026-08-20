@@ -85,6 +85,13 @@ TEARDOWN_TABLES: tuple[str, ...] = (
     "audit_events",
     "execution_traces",
     "cost_telemetry",
+    # identity_events (migration 003) referencia service_identities SEM
+    # ON DELETE CASCADE — precisa ser removido ANTES de service_identities
+    # (mesmo fix de ordem de FK já aplicado na Sprint 0.4 em
+    # core/cognitive/tests/db/conftest.py::seeded_tenants). Sem isso, o
+    # DELETE de service_identities viola a FK. Escopo: só linhas do tenant
+    # sintético (cada DELETE abaixo é WHERE tenant_id = $1).
+    "identity_events",
     "service_identities",
     "tenant_resources",
     "capability_grants",

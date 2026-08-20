@@ -116,23 +116,38 @@ REAL_HOMOLOG_RAW = {
     PANORAMA: {
         "success": True,
         "data": {
-            "data": {"status": "ok", "host": "real-vps", "uptime_seconds": 7200,
-                     "load_avg": [0.2, 0.3, 0.4]},
+            "status": "ok",
+            "data": {
+                "data": {"status": "ok", "host": "real-vps", "uptime_seconds": 7200,
+                         "load_avg": [0.2, 0.3, 0.4]},
+            },
+            "meta": {"latency_ms": 41},
+            "error": None,
         },
     },
     CONTAINERS: {
         "success": True,
         "data": {
-            "data": {"containers": [
-                {"name": "cognitive-api", "status": "running", "image": "prosperfy/cognitive:latest"},
-                {"name": "postgres", "status": "running", "image": "postgres:16"},
-            ]},
+            "status": "ok",
+            "data": {
+                "data": {"containers": [
+                    {"name": "cognitive-api", "status": "running", "image": "prosperfy/cognitive:latest"},
+                    {"name": "postgres", "status": "running", "image": "postgres:16"},
+                ]},
+            },
+            "meta": {"latency_ms": 39},
+            "error": None,
         },
     },
     PORTS: {
         "success": True,
         "data": {
-            "data": {"ports": {"80": "open", "5432": "open"}},
+            "status": "ok",
+            "data": {
+                "data": {"ports": {"80": "open", "5432": "open"}},
+            },
+            "meta": {"latency_ms": 37},
+            "error": None,
         },
     },
 }
@@ -154,9 +169,9 @@ class TestRealHomologNestedShape:
 
     def test_business_data_key_is_preserved(self):
         """O unwrap NÃO remove/desce um campo 'data' que é parte do payload
-        FINAL (dict com outras chaves) — só desce envelopes puros
-        ({success,data} / {data}). Um container com campo `data` legítimo
-        permanece intacto no raw preservado da visão."""
+        FINAL (dict com outras chaves) — só desce envelopes de transporte
+        reconhecidos. Um container com campo `data` legítimo permanece intacto
+        no raw preservado da visão."""
         from capability_intelligence.server_views import _unwrap_payload
 
         container = {"name": "a", "status": "running", "data": {"memo": "x"}}
@@ -167,14 +182,15 @@ class TestRealHomologNestedShape:
         raw[CONTAINERS] = {
             "success": True,
             "data": {
-                "data": {
-                    "containers": [container],
-                },
+                "status": "ok",
+                "data": {"data": {"containers": [container]}},
+                "meta": {},
+                "error": None,
             },
         }
         view = build_server_status_view(raw)
         # O raw preservado mantém o container com seu campo `data` legítimo.
-        assert view["raw"][CONTAINERS]["data"]["data"]["containers"][0]["data"] == {"memo": "x"}
+        assert view["raw"][CONTAINERS]["data"]["data"]["data"]["containers"][0]["data"] == {"memo": "x"}
 
     def test_mixed_dev_and_real_shapes_normalized(self):
         """Suporta shape DEV (success→data) e Homolog (success→data→data) na
@@ -196,3 +212,46 @@ class TestRealHomologNestedShape:
         assert view["normalized"]["container_count"] == 2
         assert view["normalized"]["degraded"] is True
         assert "2 containers: 2 rodando." in view["summary"]
+
+
+class TestTransportEnvelopeRecognition:
+    """Prova o unwrap NÃO cego: reconhece envelopes de transporte conhecidos
+    e NÃO desenrola payload de negócio com campo `data` legítimo."""
+
+    def test_envelope_status_data_meta_error_is_unwrapped(self):
+        from capability_intelligence.server_views import _unwrap_payload
+
+        envelope = {
+            "status": "ok",
+            "data": {"data": {"status": "ok", "host": "x", "load_avg": []}},
+            "meta": {"latency_ms": 5},
+            "error": None,
+        }
+        payload = _unwrap_payload(envelope)
+        assert payload.get("host") == "x"
+
+    def test_envelope_success_data_nested_is_unwrapped(self):
+        from capability_intelligence.server_views import _unwrap_payload
+
+        envelope = {"success": True, "data": {"data": {"host": "y"}}}
+        assert _unwrap_payload(envelope).get("host") == "y"
+
+    def test_business_payload_with_data_key_not_unwrapped(self):
+        from capability_intelligence.server_views import _unwrap_payload
+
+        # payload de negócio com campo `data` + chaves de negócio → NÃO é
+        # envelope de transporte, não desenrola.
+        payload = {"status": "running", "name": "container-x", "data": {"memo": "keep"}}
+        assert _unwrap_payload(payload) == payload
+
+    def test_deep_bounded(self):
+        from capability_intelligence.server_views import _unwrap_payload, _MAX_UNWRAP_DEPTH
+
+        deep: dict = {"host": "z"}
+        node = deep
+        for _ in range(_MAX_UNWRAP_DEPTH + 3):
+            node["data"] = {"host": "z"}
+            node = node["data"]
+        # bounded: não entra em loop infinito e retorna um dict determinístico
+        result = _unwrap_payload({"success": True, "data": deep})
+        assert isinstance(result, dict)

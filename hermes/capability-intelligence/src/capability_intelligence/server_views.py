@@ -25,7 +25,24 @@ PORTS = "prosperfy_vps_verificar_portas"
 # bastante para o shape real observado no Homolog (success → data → data →
 # payload), baixo o bastante para nunca descer estruturas de negócio
 # profundas de forma cega.
-_MAX_UNWRAP_DEPTH = 4
+_MAX_UNWRAP_DEPTH = 6
+
+# Chaves que caracterizam um ENVELOPE DE TRANSPORTE (resposta de tool do
+# servidor). Um dict é tratado como envelope quando tem uma chave `data` que
+# é dict E TODAS as demais chaves estão neste conjunto. Isso evita unwrap
+# cego de payload de negócio que tenha um campo `data` legítimo junto de
+# chaves de negócio (ex.: {status, name, image, data} de um container).
+_ENVELOPE_KEYS = frozenset({"success", "status", "meta", "error"})
+
+
+def _is_transport_envelope(value: dict[str, Any]) -> bool:
+    """Determinístico: é envelope de transporte se tem `data` (dict) e o resto
+    das chaves pertencem ao conjunto de envelope conhecido. {status,data,meta,
+    error} é envelope; {status,name,image,data} (container) NÃO é."""
+    if "data" not in value or not isinstance(value.get("data"), dict):
+        return False
+    other = set(value.keys()) - {"data"}
+    return other <= _ENVELOPE_KEYS
 
 
 def _unwrap_payload(value: dict[str, Any]) -> dict[str, Any]:
@@ -33,30 +50,25 @@ def _unwrap_payload(value: dict[str, Any]) -> dict[str, Any]:
     Desce o envelope de transporte conhecido de forma LIMITADA e
     determinística.
 
-    O Cognitive/ProsperfySkill retorna por tool um envelope que varia em
-    profundidade de `data`:
+    O Cognitive/ProsperfySkill real retorna por tool um envelope aninhado
+    que varia em profundidade e forma:
 
       DEV (mock):        {success, data: {payload...}}
-      Homolog (real):    {success, data: {data: {payload...}}}
+      Homolog real:      {success, data: {status, data: {data: {payload}},
+                                          meta, error}}
 
-    Desce apenas envelopes PUROS — dict cujo conjunto de chaves é exatamente
-    {success, data} ou {data} — até encontrar o dict com as chaves de negócio
-    (status/host/containers/ports/etc.). NUNCA remove uma chave `data` que
-    seja parte legítima do payload final (dict com outras chaves além de um
-    envelope puro). Limitado a `_MAX_UNWRAP_DEPTH` para não percorrer
-    estruturas de negócio profundas.
+    Desce APENAS envelopes de transporte reconhecidos por `_is_transport_envelope`
+    (NUNCA unwrap cego de qualquer chave `data`), até o dict que não é mais
+    envelope — o payload de negócio. Limitado a `_MAX_UNWRAP_DEPTH`.
     """
     current = value
     depth = 0
-    while depth < _MAX_UNWRAP_DEPTH:
-        keys = set(current.keys())
-        if keys == {"data"} or keys == {"success", "data"}:
-            inner = current.get("data")
-            if isinstance(inner, dict):
-                current = inner
-                depth += 1
-                continue
-        break
+    while depth < _MAX_UNWRAP_DEPTH and _is_transport_envelope(current):
+        inner = current.get("data")
+        if not isinstance(inner, dict):
+            break
+        current = inner
+        depth += 1
     return current
 
 
