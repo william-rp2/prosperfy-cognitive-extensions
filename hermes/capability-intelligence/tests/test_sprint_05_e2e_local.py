@@ -376,3 +376,63 @@ def test_infra_inspect_fanout_three_tools_reaches_adapter():
     for _, args in counting.calls:
         assert "host" in args
         assert "type" not in args
+
+
+# ─── Empty-success: fail-closed (3ª falha: success com payload vazio) ─────
+#
+# Reproduz o sintoma do Homolog: gateway retorna completed + data={} (ou sem as
+# tools obrigatórias) e o Hermes ANTES aceitava como sucesso silencioso (visão
+# vazia degraded). Contrato de infra.inspect: panorama + containers são
+# obrigatórias. 3 tools esperadas + 0 resultados válidos = FAILED (não success).
+
+class FakeEmptyAdapter:
+    """Simula o gateway retornando completed com payload vazio (cenário do
+    Homolog que o Gate reportou como SUCCESS COM PAYLOAD VAZIO)."""
+
+    def __init__(self, data: dict | None = None) -> None:
+        self._data = {} if data is None else data
+
+    async def execute(self, request):
+        from capability_intelligence.models import ExecutionReference
+        return ExecutionReference(ref="empty-exec")
+
+    async def get_result(self, ref):
+        from capability_intelligence.models import CapabilityResult, ResultMetadata
+        return CapabilityResult(
+            success=True, data=self._data, metadata=ResultMetadata(),
+        )
+
+
+def test_empty_success_fails_closed():
+    """ANTES: success + data={} → visão vazia sem erro (bug).
+    DEPOIS: 3 tools esperadas + 0 resultados válidos → RuntimeError (fail-closed)."""
+    from capability_intelligence.infra_service import InfraService
+
+    service = InfraService(FakeEmptyAdapter(data={}))
+    with pytest.raises(RuntimeError, match="obrigatórias"):
+        __import__("asyncio").run(service.servers_status())
+
+
+def test_partial_results_without_obligatory_tools_fails_closed():
+    """Só panorama presente (sem containers obrigatória) → não é success."""
+    from capability_intelligence.infra_service import InfraService
+
+    service = InfraService(FakeEmptyAdapter(data={"prosperfy_vps_panorama": {"status": "ok"}}))
+    with pytest.raises(RuntimeError, match="obrigatórias"):
+        __import__("asyncio").run(service.servers_status())
+
+
+def test_full_three_tools_still_success():
+    """DEPOIS: 3 tools (panorama+containers obrigatórias + portas opcional) →
+    success normal, sem regressão no caminho feliz."""
+    from capability_intelligence.infra_service import InfraService
+    from capability_intelligence.server_views import PANORAMA, CONTAINERS, PORTS
+
+    data = {
+        PANORAMA: {"status": "ok", "host": "srv", "uptime_seconds": 1000},
+        CONTAINERS: {"containers": [{"name": "a", "status": "running"}]},
+        PORTS: {"ports": {"80": "open"}},
+    }
+    service = InfraService(FakeEmptyAdapter(data=data))
+    view = __import__("asyncio").run(service.servers_status())
+    assert view["normalized"]["container_count"] == 1

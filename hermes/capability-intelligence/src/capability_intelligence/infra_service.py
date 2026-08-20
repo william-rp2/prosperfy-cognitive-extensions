@@ -26,7 +26,11 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from .server_views import build_server_status_view
+from .server_views import (
+    CONTAINERS,
+    PANORAMA,
+    build_server_status_view,
+)
 from .transport.cognitive_api_adapter import CognitiveApiAdapter
 
 DEFAULT_CAPABILITY = "infra.inspect"
@@ -71,8 +75,9 @@ class InfraService:
         pedido ao Cognitive — a resolução dele (→ host) acontece no Cognitive.
 
         Falha fechada: se a execução falhar no Cognitive (DENY, 401, erro de
-        transporte, resource não resolvido, status failed), levanta exceção —
-        não há fallback para caminho legado.
+        transporte, resource não resolvido, status failed) OU retornar sucesso
+        sem os dados das tools obrigatórias (empty-success), levanta exceção —
+        nunca reporta success vazio; não há fallback para caminho legado.
         """
         selector = resource or _resolve_default_resource()
         ref = await self._adapter.execute(
@@ -81,7 +86,22 @@ class InfraService:
         result = await self._adapter.get_result(ref)
         if not result.success:
             raise RuntimeError(result.error or "Execução de infra.inspect falhou")
-        return build_server_status_view(result.data or {})
+
+        data = result.data or {}
+        if not self._has_required_tools(data):
+            raise RuntimeError(
+                "infra.inspect retornou success sem as tools obrigatórias "
+                f"({PANORAMA}, {CONTAINERS}) — fail-closed: nenhum resultado "
+                "válido para reportar como sucesso"
+            )
+        return build_server_status_view(data)
+
+    @staticmethod
+    def _has_required_tools(data: dict[str, Any]) -> bool:
+        """Contrato de infra.inspect: panorama e containers são obrigatórias
+        (required: true no YAML); portas é opcional (required: false). Sem as
+        obrigatórias, não há resultado válido — empty-success é rejeitado."""
+        return PANORAMA in data and CONTAINERS in data
 
     @staticmethod
     def _execution_request(capability: str, resource: str):
