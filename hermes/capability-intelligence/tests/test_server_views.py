@@ -103,3 +103,96 @@ class TestDeterminism:
         view = build_server_status_view(FULL_RAW)
         assert len(view["normalized"]["containers"]) == 2
         assert view["normalized"]["container_running_count"] == 2
+
+
+# ─── Shape REAL do Homolog (3ª falha — normalization contract mismatch) ──
+#
+# O Cognitive/ProsperfySkill real retorna por tool um envelope aninhado
+# success → data → data → payload. server_views ANTES removia só um nível de
+# data, normalizando para vazio. Este shape preserva apenas a estrutura
+# (sem IP/secrets/headers) para provar o contrato.
+
+REAL_HOMOLOG_RAW = {
+    PANORAMA: {
+        "success": True,
+        "data": {
+            "data": {"status": "ok", "host": "real-vps", "uptime_seconds": 7200,
+                     "load_avg": [0.2, 0.3, 0.4]},
+        },
+    },
+    CONTAINERS: {
+        "success": True,
+        "data": {
+            "data": {"containers": [
+                {"name": "cognitive-api", "status": "running", "image": "prosperfy/cognitive:latest"},
+                {"name": "postgres", "status": "running", "image": "postgres:16"},
+            ]},
+        },
+    },
+    PORTS: {
+        "success": True,
+        "data": {
+            "data": {"ports": {"80": "open", "5432": "open"}},
+        },
+    },
+}
+
+
+class TestRealHomologNestedShape:
+    def test_normalizes_real_homolog_nested_tool_payload(self):
+        view = build_server_status_view(REAL_HOMOLOG_RAW)
+        norm = view["normalized"]
+        assert norm["host"] == "real-vps"
+        assert norm["uptime_human"] == "2h"
+        assert norm["container_count"] == 2
+        assert norm["container_running_count"] == 2
+        assert norm["ports_open_count"] == 2
+        assert norm["ports_total_count"] == 2
+        assert norm["degraded"] is False
+        assert "2 containers: 2 rodando." in view["summary"]
+        assert "2 de 2 portas abertas." in view["summary"]
+
+    def test_business_data_key_is_preserved(self):
+        """O unwrap NÃO remove/desce um campo 'data' que é parte do payload
+        FINAL (dict com outras chaves) — só desce envelopes puros
+        ({success,data} / {data}). Um container com campo `data` legítimo
+        permanece intacto no raw preservado da visão."""
+        from capability_intelligence.server_views import _unwrap_payload
+
+        container = {"name": "a", "status": "running", "data": {"memo": "x"}}
+        # payload final com outras chaves + data → não é envelope, não desce.
+        assert _unwrap_payload(container) == container
+
+        raw = dict(REAL_HOMOLOG_RAW)
+        raw[CONTAINERS] = {
+            "success": True,
+            "data": {
+                "data": {
+                    "containers": [container],
+                },
+            },
+        }
+        view = build_server_status_view(raw)
+        # O raw preservado mantém o container com seu campo `data` legítimo.
+        assert view["raw"][CONTAINERS]["data"]["data"]["containers"][0]["data"] == {"memo": "x"}
+
+    def test_mixed_dev_and_real_shapes_normalized(self):
+        """Suporta shape DEV (success→data) e Homolog (success→data→data) na
+        mesma visão — cada tool normaliza independentemente."""
+        raw = dict(REAL_HOMOLOG_RAW)
+        # panorama no shape DEV (1 nível), containers/ports no shape real (2 níveis)
+        raw[PANORAMA] = {"success": True, "data": {"status": "ok", "host": "dev-host",
+                                                    "uptime_seconds": 60, "load_avg": []}}
+        view = build_server_status_view(raw)
+        assert view["normalized"]["host"] == "dev-host"
+        assert view["normalized"]["container_count"] == 2
+        assert view["normalized"]["ports_open_count"] == 2
+
+    def test_real_shape_with_optional_ports_absent(self):
+        """Contrato: panorama+containers obrigatórias, portas opcional — shape
+        real sem portas ainda normaliza (degraded, sem erro)."""
+        raw = {PANORAMA: REAL_HOMOLOG_RAW[PANORAMA], CONTAINERS: REAL_HOMOLOG_RAW[CONTAINERS]}
+        view = build_server_status_view(raw)
+        assert view["normalized"]["container_count"] == 2
+        assert view["normalized"]["degraded"] is True
+        assert "2 containers: 2 rodando." in view["summary"]

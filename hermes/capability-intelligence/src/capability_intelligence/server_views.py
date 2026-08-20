@@ -21,21 +21,60 @@ PANORAMA = "prosperfy_vps_panorama"
 CONTAINERS = "prosperfy_vps_listar_containers"
 PORTS = "prosperfy_vps_verificar_portas"
 
+# Limite de profundidade do unwrap do envelope {success, data}. Alto o
+# bastante para o shape real observado no Homolog (success → data → data →
+# payload), baixo o bastante para nunca descer estruturas de negócio
+# profundas de forma cega.
+_MAX_UNWRAP_DEPTH = 4
+
+
+def _unwrap_payload(value: dict[str, Any]) -> dict[str, Any]:
+    """
+    Desce o envelope de transporte conhecido de forma LIMITADA e
+    determinística.
+
+    O Cognitive/ProsperfySkill retorna por tool um envelope que varia em
+    profundidade de `data`:
+
+      DEV (mock):        {success, data: {payload...}}
+      Homolog (real):    {success, data: {data: {payload...}}}
+
+    Desce apenas envelopes PUROS — dict cujo conjunto de chaves é exatamente
+    {success, data} ou {data} — até encontrar o dict com as chaves de negócio
+    (status/host/containers/ports/etc.). NUNCA remove uma chave `data` que
+    seja parte legítima do payload final (dict com outras chaves além de um
+    envelope puro). Limitado a `_MAX_UNWRAP_DEPTH` para não percorrer
+    estruturas de negócio profundas.
+    """
+    current = value
+    depth = 0
+    while depth < _MAX_UNWRAP_DEPTH:
+        keys = set(current.keys())
+        if keys == {"data"} or keys == {"success", "data"}:
+            inner = current.get("data")
+            if isinstance(inner, dict):
+                current = inner
+                depth += 1
+                continue
+        break
+    return current
+
 
 def _tool_payload(raw: dict[str, Any], tool: str) -> dict[str, Any] | None:
     value = raw.get(tool)
-    if isinstance(value, dict) and value.get("status") == "ok":
-        return value
-    if isinstance(value, dict) and value.get("error"):
+    if not isinstance(value, dict):
         return None
-    if isinstance(value, dict) and "success" in value and value.get("success") is True:
-        data = value.get("data")
-        if isinstance(data, dict):
-            return data
+    # Envelope de erro da aplicação — tool falhou (fail-closed, não sucesso).
+    if value.get("success") is False or value.get("status") == "error":
         return None
-    if isinstance(value, dict):
-        return value
-    return None
+    # Descida limitada do envelope success/data (suporta DEV e Homolog real).
+    payload = _unwrap_payload(value)
+    if payload.get("status") == "error" or payload.get("error"):
+        return None
+    # Envelope success sem payload interno → não é um resultado válido.
+    if "success" in value and not payload:
+        return None
+    return payload
 
 
 def _uptime_human(uptime_seconds: Any) -> str:
