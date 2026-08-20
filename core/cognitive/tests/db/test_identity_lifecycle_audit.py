@@ -142,8 +142,12 @@ class TestCrossTenantReadIsolation:
             await repo.register(tenant_a_id, "actor-a", cred_a)
             await repo.register(tenant_b_id, "actor-b", cred_b)
 
-            await set_tenant_local(app_conn, tenant_a_id)
-            rows = await app_conn.fetch("SELECT * FROM identity_events")
+            # set_config(..., is_local=true) só tem efeito dentro de uma
+            # transação; fora dela é no-op silencioso (mesmo padrão de
+            # test_rls_cross_tenant.py / test_rls_gate.py).
+            async with app_conn.transaction():
+                await set_tenant_local(app_conn, tenant_a_id)
+                rows = await app_conn.fetch("SELECT * FROM identity_events")
             seen_tenants = {str(r["tenant_id"]) for r in rows}
             assert seen_tenants == {tenant_a_id}
             assert tenant_b_id not in seen_tenants
@@ -171,8 +175,9 @@ class TestCrossTenantReadIsolation:
             await repo.register(tenant_a_id, "actor-a", cred_a)
             await repo.register(tenant_b_id, "actor-b", cred_b)
 
-            await set_tenant_local(worker_conn, tenant_b_id)
-            rows = await worker_conn.fetch("SELECT * FROM identity_events")
+            async with worker_conn.transaction():
+                await set_tenant_local(worker_conn, tenant_b_id)
+                rows = await worker_conn.fetch("SELECT * FROM identity_events")
             seen_tenants = {str(r["tenant_id"]) for r in rows}
             assert seen_tenants == {tenant_b_id}
             assert tenant_a_id not in seen_tenants
