@@ -28,6 +28,7 @@ from capability_intelligence.policy_engine import (
     policy_requires_approval,
 )
 from capability_intelligence.resolver import Resolver
+from capability_intelligence.infra_service import InfraService
 from capability_intelligence.transport.adapters.mcp_adapter import MCPAdapter
 from capability_intelligence.models import (
     AuthorizationRequest,
@@ -74,6 +75,11 @@ Subcomandos:
   /capability gaps                Lacunas detectadas
   /capability feedback <id>       Histórico de uma Capability
   /capability run <intent> <domain> [context JSON]
+
+/servidores — Vertical Infra/Servidores via Cognitive
+  Responde "Como estão meus servidores?" (status consolidado da VPS) delegando
+  ao Cognitive: Hermes → Cognitive → Policy/Resource Resolver → ProsperfySkill
+  → VPS. Uso: /servidores [resource]
 """
 
 
@@ -146,10 +152,41 @@ def _handle_slash(raw: str) -> Optional[str]:
     return f"Subcomando desconhecido: {sub}\n\n{_HELP}"
 
 
+def _handle_servidores(raw: str) -> str:
+    """'Como estão meus servidores?' — caminho NOVO via Cognitive.
+
+    Usa InfraService (CognitiveApiAdapter → Cognitive API → infra.inspect →
+    ProsperfySkill MCP → VPS → server_views). Nenhum fallback para o caminho
+    legado MCP direto: falha fecha (propaga exceção) se o Cognitive não
+    completar.
+    """
+    import asyncio
+
+    args = raw.strip().split()
+    resource = args[1] if len(args) >= 2 else "prosperfy-main"
+    try:
+        service = InfraService.from_env()
+        view = asyncio.run(service.servers_status(resource=resource))
+    except Exception as exc:  # noqa: BLE001 — plugin surface: reporta falha fechada
+        logger.error("servidores via Cognitive falhou: %s", exc)
+        return f"❌ Não foi possível consultar os servidores via Cognitive: {exc}"
+    norm = view["normalized"]
+    header = (
+        f"🖥️ Servidores [{norm.get('host') or '?'}]"
+        f" — {'ATENÇÃO: degradado' if norm.get('degraded') else 'OK'}\n"
+    )
+    return header + view["summary"]
+
+
 def register(ctx) -> None:
     ctx.register_command(
         "capability",
         handler=_handle_slash,
         description="Capability Intelligence — consome Capabilities da plataforma Prosperfy Skills.",
+    )
+    ctx.register_command(
+        "servidores",
+        handler=_handle_servidores,
+        description="Vertical Infra/Servidores via Cognitive — 'Como estão meus servidores?'.",
     )
     logger.info("Capability Intelligence plugin v%s registrado", ci_version)

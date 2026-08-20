@@ -42,6 +42,7 @@ from capability_intelligence.models import (  # noqa: E402
     ExecutionRequest,
     IntentQuery,
 )
+from capability_intelligence.infra_service import InfraService  # noqa: E402
 from capability_intelligence.server_views import build_server_status_view  # noqa: E402
 from capability_intelligence.transport.cognitive_api_adapter import CognitiveApiAdapter  # noqa: E402
 
@@ -160,3 +161,63 @@ async def test_unknown_credential_401_fails_closed():
             capability_id="infra.inspect", params={"resource": "prosperfy-main"},
         ))
     assert "401" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_infra_service_uses_cognitive_path():
+    """O caminho REAL do Hermes ('Como estão meus servidores?') passa pelo
+    Cognitive: InfraService → CognitiveApiAdapter → Cognitive API (gateway
+    in-memory aqui, mock da ProsperfySkill). Nenhum MCPAdapter legado é usado
+    — LEGACY_INFRA_PATH_USED=NO."""
+    service = InfraService(make_adapter())
+    view = await service.servers_status()
+
+    assert view["capability_id"] == "infra.inspect"
+    norm = view["normalized"]
+    assert norm["host"] == "mock-host"
+    assert norm["container_count"] == 2
+    assert norm["ports_open_count"] == 3
+    assert "2 containers: 2 rodando." in view["summary"]
+
+
+@pytest.mark.asyncio
+async def test_infra_service_deny_fails_closed_no_legacy_fallback():
+    """Tenant sem grant → Cognitive responde DENY → InfraService levanta
+    RuntimeError. NUNCA cai no caminho legado MCP direto (fail closed)."""
+    service = InfraService(make_adapter(
+        credential="sprint05-denied-secret",
+        tenant="sprint05-denied-tenant",
+        actor="sprint05-denied-actor",
+    ))
+    with pytest.raises(RuntimeError) as exc_info:
+        await service.servers_status()
+    assert "não possui grant" in str(exc_info.value)
+
+
+def test_plugin_servidores_command_via_cognitive():
+    """Prova o comando /servidores do plugin (superfície do Hermes real)
+    atravessando o Cognitive e devolvendo o resumo PT-BR.
+
+    Handler do plugin é síncrono (chama asyncio.run internamente), então o
+    teste roda fora de event loop.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    from capability_intelligence import infra_service
+
+    plugin_path = Path(__file__).resolve().parents[1] / "plugin" / "__init__.py"
+    spec = importlib.util.spec_from_file_location("hermes_plugin", plugin_path)
+    plugin_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(plugin_mod)
+
+    real_from_env = infra_service.InfraService.from_env
+    infra_service.InfraService.from_env = lambda: InfraService(make_adapter())
+    try:
+        out = plugin_mod._handle_servidores("prosperfy-main")
+    finally:
+        infra_service.InfraService.from_env = real_from_env
+
+    assert "mock-host" in out
+    assert "2 containers: 2 rodando." in out
+    assert "OK" in out
