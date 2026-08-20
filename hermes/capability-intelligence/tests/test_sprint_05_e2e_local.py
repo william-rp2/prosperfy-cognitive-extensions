@@ -318,3 +318,61 @@ def test_resource_selector_configurable_via_env():
 
     os.environ.pop("COGNITIVE_RESOURCE_KEY", None)
     assert _resolve_default_resource() == "prosperfy-main"
+
+
+# ─── Traço do caminho resource → tool selection → adapter (2ª falha) ──────
+#
+# Prova que, com RESOURCE_FOUND=YES e GRANT_FOUND=YES, o orchestrator chega à
+# seleção de tools e invoca o adapter EXATAMENTE 3 vezes (fan-out do contrato
+# infra.inspect: panorama + containers + portas — NÃO é um único request).
+# Se o Gate reporta MCP não confirmado com resource resolvido, a divergência
+# NÃO está neste trecho (código) — está no runtime real (LIVE_MCP/credential/
+# host do resource), que este teste isola por exclusão.
+
+class CountingSkillsAdapter:
+    """Envolve o MockSkillsAdapter e conta invocações + registra os args
+    (host) recebidos — sem tocar em nada do Cognitive."""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self.calls: list[tuple[str, dict]] = []
+
+    async def invoke_tool(self, tool_name, arguments, tenant_id, correlation_id):
+        self.calls.append((tool_name, dict(arguments)))
+        return await self._inner.invoke_tool(
+            tool_name, arguments, tenant_id, correlation_id,
+        )
+
+    async def health(self) -> bool:
+        return await self._inner.health()
+
+
+def test_infra_inspect_fanout_three_tools_reaches_adapter():
+    """RESOURCE_FOUND=YES + GRANT_FOUND=YES → orchestrator chega à seleção de
+    tools e invoca o adapter 3x (panorama/containers/portas). O host resolvido
+    é repassado ao adapter (sanitizado: apenas host, sem tipo/secret)."""
+    from cognitive.adapters.prosperfy_skills.mock import MockSkillsAdapter
+
+    counting = CountingSkillsAdapter(MockSkillsAdapter())
+    original = APP.state.orchestrator._adapter
+    APP.state.orchestrator._adapter = counting
+    try:
+        adapter = make_adapter()
+        ref = __import__("asyncio").run(adapter.execute(ExecutionRequest(
+            capability_id="infra.inspect", params={"resource": "prosperfy-main"},
+        )))
+        result = __import__("asyncio").run(adapter.get_result(ref))
+    finally:
+        APP.state.orchestrator._adapter = original
+
+    assert result.success is True
+    called_tools = [name for name, _ in counting.calls]
+    assert called_tools == [
+        "prosperfy_vps_panorama",
+        "prosperfy_vps_listar_containers",
+        "prosperfy_vps_verificar_portas",
+    ]
+    # O host resolvido do tenant_resources chega ao adapter (sem 'type').
+    for _, args in counting.calls:
+        assert "host" in args
+        assert "type" not in args

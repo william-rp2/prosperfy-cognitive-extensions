@@ -203,7 +203,45 @@ Rode em sequência, todos contra Homolog:
    > um host — o selector é só o resource lógico; o host vem do
    > `tenant_resources` no Cognitive.
 
-2. **Pré-condições do runner** (falha fechada sem `COGNITIVE_LIVE_MCP=1` e
+2. **Preflight de runtime e host do resource (2ª falha).** No retry anterior,
+   `RESOURCE_FOUND=YES` e `GRANT_FOUND=YES`, mas `MCP_CALLS_CONFIRMED=NO` e
+   `REAL_VPS_DATA=NO` com `REQUEST_LATENCY_MS≈12s`. O trace DEV
+   (`test_infra_inspect_fanout_three_tools_reaches_adapter`) prova que, com
+   resource resolvido, o orchestrator seleciona as 3 tools e chama o adapter —
+   **não há bug de código** nesse trecho. As duas causas operacionais a
+   eliminar ANTES de executar o slice:
+
+   a. **`COGNITIVE_LIVE_MCP` efetivamente ativo no PROCESSO da API.** Mudar o
+      EnvironmentFile não altera um processo já em memória. Confirme que o
+      serviço foi reiniciado/recarregado após o env temporário e que o
+      processo novo lê `COGNITIVE_LIVE_MCP=1`:
+      ```bash
+      # no host da API — nunca imprima secrets
+      systemctl show <servico> -p ActiveState -p EnvironmentFile  # nome do serviço real
+      # confirme que o processo em execução foi iniciado APÓS a edição do env
+      systemctl restart <servico>   # quando o Gate autorizar
+      ```
+      `PROCESS_LIVE_MCP=1` é condição necessária: com `0`, o gateway usa
+      `MockSkillsAdapter` e a resposta seria `completed` com dados mock
+      (host `mock-host`, latência baixa) — não é o que o retry reportou.
+
+   b. **`resolved_params.host` do resource alcançável.** O MCP tenta conectar
+      em `tenant_resources.resolved_params.host`. Se o contexto sintético foi
+      re-bootstrapado SEM `--resource-host`, o host fica
+      `synthetic-e2e-placeholder.invalid` (placeholder do
+      `sprint_0_3_synthetic_context.py`) → conexão falha em ~10-12s →
+      `status=failed`, `REAL_VPS_DATA=NO`. O bootstrap do contexto sintético
+      para este Gate DEVE provisionar `homolog-synthetic-vps` com o host REAL
+      da VPS:
+      ```bash
+      python scripts/sprint_0_3_synthetic_context.py bootstrap-homolog-context \
+          --resource-host <host-real-da-vps>
+      ```
+      Confirme (sem imprimir DSN/secret) que `resolved_params` contém um host
+      alcançável e não o placeholder. Se o contexto 0.3 original ainda existir
+      em Homolog com host real, reutilize-o; NUNCA rode o slice com placeholder.
+
+3. **Pré-condições do runner** (falha fechada sem `COGNITIVE_LIVE_MCP=1` e
    sem URL homolog allowlistada):
    ```bash
    export COGNITIVE_LIVE_MCP=1
@@ -216,12 +254,12 @@ Rode em sequência, todos contra Homolog:
    `GATE_REFUSED` antes de qualquer chamada HTTP (validar isso ANTES de
    exportar a variável).
 
-3. **Valide o summary**: host real da VPS, uptime, contagem de containers e
+4. **Valide o summary**: host real da VPS, uptime, contagem de containers e
    portas coerentes com o estado real. Confirme visualmente que o summary
    está em PT-BR e que nenhuma credencial ou `Authorization` aparece em
    qualquer stdout/stderr.
 
-4. **Trilha de auditoria** — via script ad hoc de uma linha (não crie
+5. **Trilha de auditoria** — via script ad hoc de uma linha (não crie
    script novo permanente), verifique que a execução deixou `audit_events`
    com o tenant/actor/capability/correlation corretos e sem secret em
    `inputs_redacted` (mesma técnica da Seção 11 do Gate 0.3):
@@ -242,7 +280,7 @@ Rode em sequência, todos contra Homolog:
    Esperado: pelo menos 1 linha para o tenant do slice, `outcome=COMPLETED`,
    `capability_id=infra.inspect`.
 
-5. **LLM_CALLS=0** — fato de código, não medido em runtime: a composição da
+6. **LLM_CALLS=0** — fato de código, não medido em runtime: a composição da
    capability é determinística (sequência de tools do YAML) e
    `server_views` é função pura. Nenhum chamado LLM existe no caminho.
 
