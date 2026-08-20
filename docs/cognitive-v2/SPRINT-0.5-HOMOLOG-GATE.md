@@ -160,11 +160,11 @@ cd hermes/capability-intelligence
 python -m pytest tests -q
 ```
 
-Esperado: **zero failures**. Baseline pós-sprint: 302 passed, 1 skipped
-(skip pré-existente) — inclui os 27 testes novos: 23 unit
-(`test_cognitive_api_adapter.py` + `test_server_views.py`) e 4 DEV E2E do
-slice (`test_sprint_05_e2e_local.py`). Qualquer teste que passava antes e
-agora falha é STOP (Seção 16).
+Esperado: **zero failures**. Baseline pós-sprint: 308 passed, 1 skipped
+(skip pré-existente) — inclui os 30 testes novos: 23 unit
+(`test_cognitive_api_adapter.py` + `test_server_views.py`) e 7 DEV E2E do
+slice (`test_sprint_05_e2e_local.py`, incl. reprodução do FAIL de resource do
+Homolog). Qualquer teste que passava antes e agora falha é STOP (Seção 16).
 
 ---
 
@@ -189,6 +189,19 @@ Rode em sequência, todos contra Homolog:
    --tenant-id <gate-test-tenant-uuid> --actor-id sprint05-actor
    --profile owner-core` e exporte `COGNITIVE_GATEWAY_CREDENTIAL`,
    `COGNITIVE_TENANT_ID`, `COGNITIVE_ACTOR_ID`.
+
+   > **Resource selector (obrigatório).** O resource provisionado no Homolog
+   > pelo bootstrap 0.3 tem resource_key `homolog-synthetic-vps` — NÃO
+   > `prosperfy-main`. O `InfraService`/runner usa por default o selector de
+   > DEV (`prosperfy-main`), que **não existe** no Homolog → Resource Resolver
+   > falha (status=failed, REAL_VPS_DATA=NO). Defina explicitamente o selector
+   > correto em **todo** o smoke test abaixo:
+   > ```bash
+   > export COGNITIVE_RESOURCE_KEY=homolog-synthetic-vps
+   > ```
+   > (ou passe `--resource homolog-synthetic-vps` no runner). Nunca hardcode
+   > um host — o selector é só o resource lógico; o host vem do
+   > `tenant_resources` no Cognitive.
 
 2. **Pré-condições do runner** (falha fechada sem `COGNITIVE_LIVE_MCP=1` e
    sem URL homolog allowlistada):

@@ -23,13 +23,25 @@ direto (o que garantiria LEGACY_INFRA_PATH_USED=NO).
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from .server_views import build_server_status_view
 from .transport.cognitive_api_adapter import CognitiveApiAdapter
 
 DEFAULT_CAPABILITY = "infra.inspect"
-DEFAULT_RESOURCE = "prosperfy-main"
+# Resource lógico do slice. Em DEV/in-memory o gateway registra "prosperfy-main"
+# automaticamente (gateway/app.py). Em Homolog o resource é provisionado pelo
+# bootstrap (ex.: "homolog-synthetic-vps" — Sprint 0.3) — por isso o selector
+# é configurável via env COGNITIVE_RESOURCE_KEY, nunca hardcoded. O Hermes NÃO
+# resolve resource (isso é do Cognitive) — apenas escolhe QUAL recurso lógico
+# pedir. Default preserva o DEV; Homolog aponta o resource provisionado.
+_ENV_RESOURCE_KEY = "COGNITIVE_RESOURCE_KEY"
+_DEV_DEFAULT_RESOURCE = "prosperfy-main"
+
+
+def _resolve_default_resource() -> str:
+    return os.getenv(_ENV_RESOURCE_KEY, _DEV_DEFAULT_RESOURCE)
 
 
 class InfraService:
@@ -46,7 +58,7 @@ class InfraService:
 
     async def servers_status(
         self,
-        resource: str = DEFAULT_RESOURCE,
+        resource: str | None = None,
         capability: str = DEFAULT_CAPABILITY,
     ) -> dict[str, Any]:
         """Executa `infra.inspect` via Cognitive e consolida em uma visão.
@@ -54,14 +66,17 @@ class InfraService:
         Retorna a saída de `build_server_status_view`:
         {capability_id, raw, normalized, summary}.
 
+        `resource` opcional: se omitido, usa `COGNITIVE_RESOURCE_KEY` (env) ou
+        o default de DEV "prosperfy-main". O selector é só o resource lógico
+        pedido ao Cognitive — a resolução dele (→ host) acontece no Cognitive.
+
         Falha fechada: se a execução falhar no Cognitive (DENY, 401, erro de
-        transporte, status failed), levanta exceção — não há fallback para
-        caminho legado.
+        transporte, resource não resolvido, status failed), levanta exceção —
+        não há fallback para caminho legado.
         """
+        selector = resource or _resolve_default_resource()
         ref = await self._adapter.execute(
-            # ExecutionRequest é tipado em models; usamos o atributo direto
-            # para manter o serviço fino e sem acoplar ao Pipeline legado.
-            self._execution_request(capability, resource),
+            self._execution_request(capability, selector),
         )
         result = await self._adapter.get_result(ref)
         if not result.success:

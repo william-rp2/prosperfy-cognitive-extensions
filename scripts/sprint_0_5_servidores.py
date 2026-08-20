@@ -58,8 +58,15 @@ DEV_DEFAULT_URL = "http://127.0.0.1:8000"
 DEV_DEFAULT_CREDENTIAL = "dev-secret"
 DEV_DEFAULT_TENANT = "prosperfy"
 DEV_DEFAULT_ACTOR = "william"
-DEFAULT_RESOURCE = "prosperfy-main"
+# Resource lógico do slice. DEV/in-memory usa "prosperfy-main"; Homolog aponta
+# o resource provisionado pelo bootstrap (ex.: "homolog-synthetic-vps") via
+# env COGNITIVE_RESOURCE_KEY — nunca hardcoded, nunca um host concreto.
+_DEV_DEFAULT_RESOURCE = "prosperfy-main"
 DEFAULT_CAPABILITY = "infra.inspect"
+
+
+def _default_resource() -> str:
+    return os.getenv("COGNITIVE_RESOURCE_KEY", _DEV_DEFAULT_RESOURCE)
 
 
 def _require_live_mcp_for_homolog() -> None:
@@ -134,7 +141,7 @@ def main() -> int:
     parser.add_argument("--credential", default="", help="Service identity credential (nunca logada).")
     parser.add_argument("--tenant-id", default="", help="X-Tenant-Id (ADR-V2-002).")
     parser.add_argument("--actor-id", default="", help="X-Actor-Id (ADR-V2-002).")
-    parser.add_argument("--resource", default=DEFAULT_RESOURCE, help="Resource lógico tenant-scoped.")
+    parser.add_argument("--resource", default=_default_resource(), help="Resource lógico tenant-scoped.")
     parser.add_argument("--capability", default=DEFAULT_CAPABILITY, help="Capability a executar.")
     parser.add_argument("--correlation-id-out", default="", help="Arquivo p/ gravar o correlation id.")
     parser.add_argument("--raw", action="store_true", help="Incluir o payload raw no output.")

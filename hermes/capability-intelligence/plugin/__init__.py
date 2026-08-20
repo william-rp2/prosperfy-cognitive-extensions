@@ -163,7 +163,7 @@ def _handle_servidores(raw: str) -> str:
     import asyncio
 
     args = raw.strip().split()
-    resource = args[1] if len(args) >= 2 else "prosperfy-main"
+    resource = args[1] if len(args) >= 2 else None
     try:
         service = InfraService.from_env()
         view = asyncio.run(service.servers_status(resource=resource))

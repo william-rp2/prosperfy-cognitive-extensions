@@ -35,6 +35,7 @@ import httpx  # noqa: E402
 import pytest  # noqa: E402
 
 from cognitive.contracts.audit import AuditOutcome  # noqa: E402
+from cognitive.contracts.tenancy import CapabilityGrant  # noqa: E402
 from cognitive.gateway.app import create_app  # noqa: E402
 
 from capability_intelligence.models import (  # noqa: E402
@@ -221,3 +222,99 @@ def test_plugin_servidores_command_via_cognitive():
     assert "mock-host" in out
     assert "2 containers: 2 rodando." in out
     assert "OK" in out
+
+
+# ─── Reprodução da falha funcional do Homolog (Sprint 0.5 RETURN_TO_DEV) ──
+#
+# No Homolog (database mode) o tenant_resource provisionado pelo bootstrap 0.3
+# tem resource_key "homolog-synthetic-vps" — NÃO "prosperfy-main". O
+# InfraService (pré-fix) hardcodava "prosperfy-main" como selector → Resource
+# Resolver não encontrava → status=failed → REAL_VPS_DATA=NO.
+#
+# O app "homolog-like" abaixo simula esse estado: só o resource
+# "homolog-synthetic-vps" existe para o tenant (nada de "prosperfy-main").
+
+HOMOLOG_APP = create_app()
+
+HOMOLOG_APP.state.identity_resolver.register_static(
+    "sprint05-homolog-secret", "sprint05-homolog-tenant", "sprint05-homolog-actor", "owner-core",
+)
+HOMOLOG_APP.state.registry.register_grant(CapabilityGrant(
+    tenant_id="sprint05-homolog-tenant",
+    profile="owner-core",
+    capability_id="infra.inspect",
+))
+# Só o resource do bootstrap 0.3 existe — sem "prosperfy-main".
+HOMOLOG_APP.state.resource_resolver.register(
+    "sprint05-homolog-tenant", "homolog-synthetic-vps",
+    {"host": "mock-vps-homolog.test", "type": "vps"},
+)
+
+
+def make_homolog_adapter() -> CognitiveApiAdapter:
+    return CognitiveApiAdapter(
+        base_url="http://testserver",
+        credential="sprint05-homolog-secret",
+        tenant_id="sprint05-homolog-tenant",
+        actor_id="sprint05-homolog-actor",
+        transport=httpx.ASGITransport(app=HOMOLOG_APP),
+    )
+
+
+def test_homolog_failure_reproduced_with_wrong_selector():
+    """REPRODUÇÃO: InfraService com resource selector que NÃO existe no
+    tenant (equivalente ao pré-fix "prosperfy-main" no Homolog) falha fechado
+    com erro de resource — MCP nunca é chamado, sem dados reais."""
+    from capability_intelligence import infra_service
+
+    real_env = os.environ.get("COGNITIVE_RESOURCE_KEY")
+    os.environ.pop("COGNITIVE_RESOURCE_KEY", None)  # default = prosperfy-main
+    service = InfraService(make_homolog_adapter())
+    try:
+        with pytest.raises(RuntimeError) as exc_info:
+            import asyncio
+            asyncio.run(service.servers_status())  # sem selector → default DEV
+    finally:
+        if real_env is not None:
+            os.environ["COGNITIVE_RESOURCE_KEY"] = real_env
+    assert "não encontrado" in str(exc_info.value).lower() or "resource" in str(exc_info.value).lower()
+
+
+def test_homolog_passes_with_correct_selector():
+    """FIX: InfraService com o selector correto ("homolog-synthetic-vps",
+    provisionado no Homolog) atravessa o Cognitive e produz dados reais
+    (mock) — PANORAMA/CONTAINERS/PORTS/NORMALIZED/SUMMARY."""
+    service = InfraService(make_homolog_adapter())
+    import asyncio
+
+    view = asyncio.run(service.servers_status(resource="homolog-synthetic-vps"))
+
+    norm = view["normalized"]
+    # MockSkillsAdapter retorna o panorama com host "mock-host"; os três
+    # contratos das tools são preenchidos.
+    assert "prosperfy_vps_panorama" in view["raw"]
+    assert "prosperfy_vps_listar_containers" in view["raw"]
+    assert "prosperfy_vps_verificar_portas" in view["raw"]
+    assert norm["container_count"] == 2
+    assert norm["ports_open_count"] == 3
+    assert "2 containers: 2 rodando." in view["summary"]
+
+
+def test_resource_selector_configurable_via_env():
+    """FIX: o selector default é configurável via COGNITIVE_RESOURCE_KEY —
+    Homolog aponta o resource provisionado sem mudar código nem hardcodar
+    host. Sem a env, o default DEV "prosperfy-main" continua valendo."""
+    from capability_intelligence.infra_service import _resolve_default_resource
+
+    old = os.environ.get("COGNITIVE_RESOURCE_KEY")
+    os.environ["COGNITIVE_RESOURCE_KEY"] = "homolog-synthetic-vps"
+    try:
+        assert _resolve_default_resource() == "homolog-synthetic-vps"
+    finally:
+        if old is None:
+            os.environ.pop("COGNITIVE_RESOURCE_KEY", None)
+        else:
+            os.environ["COGNITIVE_RESOURCE_KEY"] = old
+
+    os.environ.pop("COGNITIVE_RESOURCE_KEY", None)
+    assert _resolve_default_resource() == "prosperfy-main"
