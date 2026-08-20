@@ -339,6 +339,17 @@ async def seeded_tenants(admin_conn: asyncpg.Connection) -> dict[str, str]:
         "tenant-b": str(tenant_b["id"]),
     }
     yield result
+    # Sprint 0.4 hotfix: identity_events (migration 003) referencia tenants e
+    # service_identities SEM ON DELETE CASCADE. register()/deactivate()/rotate()
+    # gravam eventos vinculados aos tenants sintéticos deste fixture; sem remover
+    # esses eventos primeiro, o DELETE dos tenants viola a FK (ForeignKeyViolation)
+    # e o teardown falha. Escopo mínimo: só linhas dos tenants criados aqui —
+    # nunca dados reais ou de outro tenant.
+    await admin_conn.execute(
+        "DELETE FROM identity_events WHERE tenant_id IN "
+        "(SELECT id FROM tenants WHERE slug = ANY($1::text[]))",
+        list(GATE_TENANT_SLUGS),
+    )
     await admin_conn.execute(
         "DELETE FROM tenants WHERE slug = ANY($1::text[])",
         list(GATE_TENANT_SLUGS),
