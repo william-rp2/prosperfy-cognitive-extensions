@@ -136,6 +136,120 @@ outside this worktree's reach — flagging for the Lead Dev / infra owner.
 - Never expose the Homolog test bearer credential via a build-time `VITE_*`
   var — see CONSOLE-001 above
 
+## MCP_PROSPERFYSKILLS_API_KEY — Provisioning Contract
+
+`MCP_PROSPERFYSKILLS_API_KEY` is the secret `ProsperfySkillsAdapter`
+(`core/cognitive/cognitive/adapters/prosperfy_skills/client.py`) sends as the
+`Authorization: Bearer` header to `skills.prosperfy.com.br` when
+`COGNITIVE_LIVE_MCP=1`. This section documents how it must be provisioned on
+the VPS and where it must never appear. No secret was provisioned and no
+Production system was touched while writing this — the steps below are for
+the VPS operator to carry out later.
+
+### Where to provision it
+
+- Provision via a systemd **`EnvironmentFile=`** pointing at a file with
+  permissions **`0600`**, owned by (and readable only by) the service user
+  that runs the Cognitive API process. This repo has no `.service` unit
+  checked in yet, so this is the recommended generic pattern to follow when
+  the unit is created — not a description of an existing file.
+  ```ini
+  # /etc/prosperfy/cognitive-api.env — mode 0600, owner: cognitive-api service user
+  MCP_PROSPERFYSKILLS_API_KEY=<value from secret store>
+  ```
+  ```ini
+  # systemd unit
+  [Service]
+  EnvironmentFile=/etc/prosperfy/cognitive-api.env
+  ```
+- **Never** a `.env` file inside the git-tracked repo (`apps/cognitive-console/.env*`
+  or any `core/cognitive/.env*`) — those are for non-secret, buildable config only,
+  and Console `.env` files are bundled into the browser at build time.
+- **Never** baked into a Docker image layer (`ENV MCP_PROSPERFYSKILLS_API_KEY=...`
+  in a `Dockerfile`, or `ARG`/`COPY` of a file containing it) — image layers are
+  cacheable/inspectable artifacts.
+- **Never** passed as a plain CLI argument or inline env prefix
+  (`MCP_PROSPERFYSKILLS_API_KEY=xxx uvicorn ...`) — both are visible to any
+  local user via `ps`/`/proc/<pid>/cmdline`/`/proc/<pid>/environ`.
+
+### Where it must NEVER appear
+
+- Frontend / Console bundle (`apps/cognitive-console/`) — never as a
+  `VITE_*` variable. Vite exposes every `VITE_`-prefixed variable to the
+  browser bundle; this key has no `VITE_` counterpart and none should ever
+  be added. Audited: `apps/cognitive-console/.env.example`,
+  `src/config/env.ts`, `src/vite-env.d.ts` — confirmed clean.
+- OpenAPI schema/docs (`/openapi.json`, `/docs`, `/redoc`) — the key is never
+  part of any request/response model.
+- `GET /health` or `GET /v1/status` response bodies
+  (`core/cognitive/cognitive/gateway/routes/health.py`,
+  `.../routes/status.py`) — audited: neither route reads or exposes this
+  variable, not even as a boolean. `status.py` only reports
+  `db_configured` (unrelated DB DSNs). No new field was added for this key
+  — the codebase's existing surface is already clean and the smallest safe
+  choice is to add nothing.
+- Audit events (`core/cognitive/cognitive/audit/`) — `AuditEvent.inputs_redacted`
+  passes through `audit/redaction.py`'s `redact()`, which always strips any
+  field named `api_key`, `secret`, `token`, `credential`, or `bearer`
+  (`_ALWAYS_REDACT`), independent of configuration. `result_summary` in
+  `execution/orchestrator.py` only ever carries `{"reason": ...}` or
+  `{"tool_calls": ..., "error": ...}` — the orchestrator never reads
+  `os.environ` or adapter internals directly.
+- Telemetry records (`core/cognitive/cognitive/telemetry/recorder.py`) —
+  `TelemetryRecord` is a fixed dataclass (tenant/actor/capability/correlation
+  id, latency, tool_calls, token/cost estimates); it has no field capable of
+  carrying the key.
+- Exception messages — `ProsperfySkillsAdapter.invoke_tool()` lets
+  `httpx.HTTPStatusError`/`httpx.HTTPError` propagate unmodified.
+  `httpx.HTTPStatusError.__str__()` renders only method, URL, and status
+  text (verified: `"Client error '401 Unauthorized' for url '...'\nFor more
+  information check: ..."`) — it never includes request headers, so the
+  `Authorization: Bearer <key>` value cannot leak through
+  `str(exc)`/`logger.exception(...)` anywhere in `client.py`,
+  `gateway/app.py`, or `execution/orchestrator.py`.
+- Application logs — `client.py`'s `_headers()` builds the Authorization
+  header inline per-request and is never logged; `invoke_tool()`'s debug log
+  line only includes `tool_name`/`tenant`/`correlation_id`.
+
+### Fail-closed contract (implemented this session)
+
+`core/cognitive/cognitive/gateway/app.py` now runs an eager, startup-time
+check in `_build_services()`, **before** `ProsperfySkillsAdapter()` is
+constructed:
+
+- `COGNITIVE_LIVE_MCP=1` and `MCP_PROSPERFYSKILLS_API_KEY` unset, empty, or
+  whitespace-only ⇒ `_require_live_mcp_secret()` raises:
+
+  ```
+  RuntimeError: COGNITIVE_LIVE_MCP=1 exige MCP_PROSPERFYSKILLS_API_KEY configurada
+  (env var ausente, vazia ou somente espaços). Configure o secret via
+  EnvironmentFile do systemd (0600, service user) antes de iniciar o
+  gateway — ver docs/cognitive-v2/COGNITIVE-DEPLOY-READINESS.md.
+  ```
+
+  This exception is **uncaught** — it propagates out of `_build_services()`,
+  out of `create_app()`, and out of the module-level `app = create_app()` in
+  `gateway/app.py`, which fails the entire process before `uvicorn` ever
+  binds a port. There is no code path where this becomes a logged warning
+  that the process survives.
+
+- `COGNITIVE_LIVE_MCP=1` and the key present (non-empty after `.strip()`) ⇒
+  no exception; `ProsperfySkillsAdapter()` is constructed normally.
+
+- `COGNITIVE_LIVE_MCP=0` (or unset — the default) ⇒ this check does not run
+  at all; `MockSkillsAdapter()` is used and no real MCP connection is ever
+  attempted, regardless of whether `MCP_PROSPERFYSKILLS_API_KEY` is set.
+  (Confirmed by reading the existing `_build_services()` branch — this was
+  already true before this session's change, unmodified here.)
+
+This is defense in depth alongside the existing, unmodified late check in
+`ProsperfySkillsAdapter.invoke_tool()` (`client.py`), which still raises
+`RuntimeError("MCP_PROSPERFYSKILLS_API_KEY não configurada")` if the key is
+missing at call time — covering the unusual case where an operator unsets
+the env var after startup without restarting the process.
+
+Test coverage: `core/cognitive/tests/unit/test_mcp_secret_contract.py`.
+
 ## Gate (post-deploy validation)
 
 ```bash

@@ -121,8 +121,8 @@ class TestInspectMigrationClassification:
     # o estado real pré-002 — onde os DOIS ÚLTIMOS sinais (herdados de 001)
     # já são True e os três primeiros False.
     SIGNAL_MARKERS = {
-        "function_exists": "EXISTS (SELECT 1 FROM pg_proc",
-        "function_owner_is_cognitive_admin": "pg_get_userbyid(proowner)",
+        "function_exists": "IS NOT NULL AS v",
+        "function_owner_is_not_app_or_worker": "pg_has_role('cognitive_app'",
         "public_has_execute_on_function": "has_function_privilege('public'",
         "cognitive_app_has_direct_select_on_table": "has_table_privilege",
         "old_tenant_isolation_policy_exists": "pg_policies",
@@ -137,10 +137,15 @@ class TestInspectMigrationClassification:
         return fake_fetchval
 
     async def test_tracked_is_always_applied(self, monkeypatch):
+        """_migrations.version grava o STEM COMPLETO (ver
+        apply_one_migration) — o fake precisa refletir isso, não o
+        prefixo curto "002" (esse era exatamente o bug de normalização
+        corrigido em resolve_migration_version/inspect_migration: comparar
+        "002" cru contra o stem completo sempre dava tracked=False)."""
         conn = FakeConn()
 
         async def fake_get_applied(_conn):
-            return {"002": "abc123"}
+            return {"002_service_identities_lookup_least_privilege": "abc123"}
 
         monkeypatch.setattr(runner, "get_applied", fake_get_applied)
         verdict = await runner.inspect_migration(conn, "002")
@@ -160,7 +165,7 @@ class TestInspectMigrationClassification:
         monkeypatch.setattr(runner, "get_applied", fake_get_applied)
         monkeypatch.setattr(conn, "fetchval", self._fetchval_returning({
             "function_exists": False,
-            "function_owner_is_cognitive_admin": False,
+            "function_owner_is_not_app_or_worker": False,
             "public_has_execute_on_function": False,
             "cognitive_app_has_direct_select_on_table": True,
             "old_tenant_isolation_policy_exists": True,
@@ -177,7 +182,7 @@ class TestInspectMigrationClassification:
         monkeypatch.setattr(runner, "get_applied", fake_get_applied)
         monkeypatch.setattr(conn, "fetchval", self._fetchval_returning({
             "function_exists": True,
-            "function_owner_is_cognitive_admin": True,
+            "function_owner_is_not_app_or_worker": True,
             "public_has_execute_on_function": False,
             "cognitive_app_has_direct_select_on_table": False,
             "old_tenant_isolation_policy_exists": False,
@@ -186,9 +191,14 @@ class TestInspectMigrationClassification:
         assert verdict == "APPLIED_BUT_UNTRACKED"
 
     async def test_genuinely_mixed_signals_is_partial(self, monkeypatch):
-        """Reproduz o cenário real do Gate: CREATE FUNCTION rodou (function_exists
-        True) mas ALTER OWNER falhou antes do resto (owner ainda False) —
-        não bate com CLEAN nem com APPLIED."""
+        """Combinação sintética de sinais que não bate com nenhum fingerprint
+        conhecido — cobertura de robustez da classificação PARTIAL. Não é
+        mais um cenário alcançável pela migration 002 atual (que não tem
+        mais ALTER OWNER, e roda como uma única transação atômica — uma
+        falha no meio reverte tudo, não deixa resíduo parcial); documenta
+        um estado histórico (versão anterior do runner/migration) e serve
+        de cinto-de-segurança caso a suposição de atomicidade do Postgres
+        falhe por algum motivo não previsto."""
         conn = FakeConn()
 
         async def fake_get_applied(_conn):
@@ -197,7 +207,7 @@ class TestInspectMigrationClassification:
         monkeypatch.setattr(runner, "get_applied", fake_get_applied)
         monkeypatch.setattr(conn, "fetchval", self._fetchval_returning({
             "function_exists": True,
-            "function_owner_is_cognitive_admin": False,
+            "function_owner_is_not_app_or_worker": False,
             "public_has_execute_on_function": True,  # default do Postgres pra função nova
             "cognitive_app_has_direct_select_on_table": True,
             "old_tenant_isolation_policy_exists": True,
@@ -205,7 +215,13 @@ class TestInspectMigrationClassification:
         verdict = await runner.inspect_migration(conn, "002")
         assert verdict == "PARTIAL"
 
-    async def test_unknown_version_without_fingerprint_falls_back_to_tracking(self, monkeypatch):
+    async def test_unrecognized_version_is_invalid(self, monkeypatch):
+        """"999_nonexistent" não bate com nenhum arquivo real em MIGRATIONS
+        — desde a correção de normalização (resolve_migration_version),
+        isso é INVALID_VERSION (fail-closed), não mais um fallback
+        silencioso pra UNKNOWN. UNKNOWN continua reservado pra uma
+        migration REAL sem fingerprint cadastrado (ex: 000/001) e não
+        rastreada — ver test_inspect_normalization.py."""
         conn = FakeConn()
 
         async def fake_get_applied(_conn):
@@ -213,4 +229,4 @@ class TestInspectMigrationClassification:
 
         monkeypatch.setattr(runner, "get_applied", fake_get_applied)
         verdict = await runner.inspect_migration(conn, "999_nonexistent")
-        assert verdict == "UNKNOWN"
+        assert verdict == "INVALID_VERSION"

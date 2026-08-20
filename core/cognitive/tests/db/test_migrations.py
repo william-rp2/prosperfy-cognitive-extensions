@@ -72,6 +72,7 @@ async def get_tables(conn: asyncpg.Connection) -> set[str]:
 
 
 class TestMigrationReproducibility:
+    @pytest.mark.safe_remote
     async def test_apply_all_creates_expected_tables(self, admin_conn, allow_destructive_migrations):
         if not allow_destructive_migrations:
             tables = await get_tables(admin_conn)
@@ -90,6 +91,7 @@ class TestMigrationReproducibility:
         assert "tenants" in tables
         assert "audit_events" in tables
 
+    @pytest.mark.ephemeral_only
     async def test_rollback_removes_all_tables(self, admin_conn, allow_destructive_migrations):
         if not allow_destructive_migrations:
             pytest.skip("destructive rollback disabled on remote homolog")
@@ -98,6 +100,7 @@ class TestMigrationReproducibility:
         tables = await get_tables(admin_conn)
         assert "tenants" not in tables
 
+    @pytest.mark.safe_remote
     async def test_migration_checksums_match_files(self, admin_conn):
         rows = await admin_conn.fetch("SELECT version, checksum FROM _migrations ORDER BY version")
         if not rows:

@@ -31,6 +31,29 @@ from .metadata import api_version, deployment_environment
 logger = logging.getLogger(__name__)
 
 
+def _require_live_mcp_secret() -> None:
+    """
+    Fail-closed eager check: COGNITIVE_LIVE_MCP=1 exige MCP_PROSPERFYSKILLS_API_KEY.
+
+    Executa ANTES de construir o ProsperfySkillsAdapter — recusa a inicialização
+    do gateway inteiro (nunca um warning silencioso). Defense in depth: o check
+    tardio em ProsperfySkillsAdapter.invoke_tool() (client.py) permanece intacto
+    para o caso de a env var ser removida após o startup sem restart do processo.
+
+    Nunca interpola os.environ nem qualquer valor parcial/malformado na mensagem
+    — não há valor a vazar (a variável está ausente/vazia), mas a mensagem também
+    não deve revelar se algo foi tentado.
+    """
+    if os.getenv("MCP_PROSPERFYSKILLS_API_KEY", "").strip():
+        return
+    raise RuntimeError(
+        "COGNITIVE_LIVE_MCP=1 exige MCP_PROSPERFYSKILLS_API_KEY configurada "
+        "(env var ausente, vazia ou somente espaços). Configure o secret via "
+        "EnvironmentFile do systemd (0600, service user) antes de iniciar o "
+        "gateway — ver docs/cognitive-v2/COGNITIVE-DEPLOY-READINESS.md."
+    )
+
+
 def _build_services(app: FastAPI) -> None:
     """Constrói e injeta todos os serviços no app.state."""
     require_database_config()
@@ -42,6 +65,7 @@ def _build_services(app: FastAPI) -> None:
 
     live_mcp = os.getenv("COGNITIVE_LIVE_MCP", "0") == "1"
     if live_mcp:
+        _require_live_mcp_secret()
         logger.info("COGNITIVE_LIVE_MCP=1 — usando ProsperfySkillsAdapter real")
         skills_adapter = ProsperfySkillsAdapter()
     else:
@@ -52,8 +76,16 @@ def _build_services(app: FastAPI) -> None:
         from ..db.repositories.audit_repo import PostgresAuditWriter
         from ..db.repositories.identity_repo import ServiceIdentityRepository
         from ..db.repositories.resource_repo import TenantResourceRepository
+        from ..db.repositories.telemetry_repo import PostgresTelemetryRecorder
+        from ..db.repositories.tenancy_repo import GrantRepository
+        from ..registry.grant_resolver import PostgresGrantResolver
 
         audit_writer = PostgresAuditWriter()
+        # Sprint 0.3 (fechamento E2E): antes deste fix, telemetry_recorder
+        # era fiado incondicionalmente como InMemoryTelemetryRecorder mais
+        # abaixo (fora deste if/else) — cost_telemetry nunca recebia linha
+        # nenhuma em database mode, só audit_events persistia de verdade.
+        telemetry_recorder = PostgresTelemetryRecorder()
         identity_resolver = IdentityResolver(
             identity_repo=ServiceIdentityRepository(),
             database_mode=True,
@@ -63,11 +95,18 @@ def _build_services(app: FastAPI) -> None:
         # antes do adapter. Sem isso, ExecutionOrchestrator recebia
         # resource_resolver=None e "resource" lógico ia cru pro adapter.
         resource_resolver = ResourceResolver(resource_repo)
+        # Sprint 0.3 RETURN_TO_DEV (Item A): em database mode a resolução de
+        # grant passa a consultar capability_grants via GrantRepository (RLS
+        # por tenant_transaction). Sem este wiring, grants persistidos eram
+        # ignorados → todo tenant em database mode levava DENY [no_grant].
+        grant_resolver = PostgresGrantResolver(repo=GrantRepository())
         logger.info("Runtime: database mode (Postgres)")
     else:
         audit_writer = InMemoryAuditWriter()
+        telemetry_recorder = InMemoryTelemetryRecorder()
         identity_resolver = IdentityResolver(identity_repo=None, database_mode=False)
         resource_resolver = InMemoryResourceResolver()
+        grant_resolver = None
         dev_tenant = os.getenv("COGNITIVE_DEV_TENANT_ID", "prosperfy")
         resource_resolver.register(
             dev_tenant, "prosperfy-main",
@@ -79,8 +118,6 @@ def _build_services(app: FastAPI) -> None:
         identity_resolver.register_static(dev_credential, dev_tenant, dev_actor, "owner-core")
         logger.info("Runtime: in_memory mode")
 
-    telemetry_recorder = InMemoryTelemetryRecorder()
-
     orchestrator = ExecutionOrchestrator(
         registry=registry,
         policy_engine=policy_engine,
@@ -88,6 +125,7 @@ def _build_services(app: FastAPI) -> None:
         audit_writer=audit_writer,
         telemetry_recorder=telemetry_recorder,
         resource_resolver=resource_resolver,
+        grant_resolver=grant_resolver,
     )
 
     if is_in_memory_mode():

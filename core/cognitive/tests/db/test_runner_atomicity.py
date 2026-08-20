@@ -47,6 +47,7 @@ async def _applied_test(conn: asyncpg.Connection) -> dict[str, str]:
 
 
 class TestMigrationAtomicityRealPostgres:
+    @pytest.mark.ephemeral_only
     async def test_full_valid_migration_commits_sql_and_tracking_together(
         self, clean_schema, tmp_path
     ):
@@ -75,6 +76,7 @@ class TestMigrationAtomicityRealPostgres:
         applied = await _applied_test(conn)
         assert applied["900_valid"] == runner.file_checksum(sql_file)
 
+    @pytest.mark.ephemeral_only
     async def test_statement_failure_midway_leaves_zero_trace(self, clean_schema, tmp_path):
         """statement 1 = CREATE TABLE, statement 2 = INSERT, statement 3 =
         erro proposital -> nem a tabela, nem o insert, nem o tracking
@@ -108,6 +110,7 @@ class TestMigrationAtomicityRealPostgres:
         applied = await _applied_test(conn)
         assert "901_broken" not in applied
 
+    @pytest.mark.ephemeral_only
     async def test_retry_after_failed_attempt_succeeds_cleanly(self, clean_schema, tmp_path):
         """Reproduz o cenário real do Gate: primeira tentativa falha (SQL
         malformado), estado fica limpo (provado acima); uma segunda
@@ -147,24 +150,32 @@ class TestMigrationAtomicityRealPostgres:
         applied = await _applied_test(conn)
         assert "902_retry" in applied
 
-    async def test_privilege_error_midway_rolls_back_everything(
-        self, clean_schema, tmp_path, seeded_tenants
+    @pytest.mark.ephemeral_only
+    async def test_multi_object_ddl_failure_midway_rolls_back_everything(
+        self, clean_schema, tmp_path
     ):
-        """Reproduz o erro real do Gate: um statement de privilégio
-        (ALTER ... OWNER TO uma role da qual current_user não é membro)
-        falha no meio do arquivo — tudo antes dele reverte junto."""
+        """Originalmente este teste disparava o erro via `ALTER FUNCTION
+        ... OWNER TO cognitive_worker`, assumindo que current_user não seria
+        membro dessa role. No Postgres gerenciado da Homolog (Supabase) essa
+        premissa se mostrou falsa — o ALTER OWNER simplesmente teve sucesso,
+        quebrando a injeção de falha do teste. Trocado por um erro de SQL
+        puro (divisão por zero), determinístico e portável entre qualquer
+        Postgres, independente de configuração de roles/ownership. Mantém a
+        mesma prova: quando o statement de erro atinge um lote que já criou
+        TABELA e FUNCTION, nenhum dos dois objetos, nem o tracking row,
+        sobrevive ao rollback."""
         conn = clean_schema
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS _migrations_test_atomicity (
                 version TEXT PRIMARY KEY, checksum TEXT NOT NULL
             )
         """)
-        sql_file = tmp_path / "903_privilege_fail.sql"
+        sql_file = tmp_path / "903_multi_object_fail.sql"
         sql_file.write_text(
             "CREATE TABLE runner_atomicity_probe (a int); "
             "CREATE OR REPLACE FUNCTION runner_atomicity_probe_fn() RETURNS VOID "
             "LANGUAGE sql AS $$ SELECT 1 $$; "
-            "ALTER FUNCTION runner_atomicity_probe_fn() OWNER TO cognitive_worker;",
+            "SELECT 1/0;",
             encoding="utf-8",
         )
 
@@ -173,7 +184,7 @@ class TestMigrationAtomicityRealPostgres:
                 await conn.execute(sql_file.read_text(encoding="utf-8"))
                 await conn.execute(
                     "INSERT INTO _migrations_test_atomicity(version, checksum) VALUES($1, $2)",
-                    "903_privilege_fail", runner.file_checksum(sql_file),
+                    "903_multi_object_fail", runner.file_checksum(sql_file),
                 )
 
         table_exists = await conn.fetchval(
@@ -184,6 +195,8 @@ class TestMigrationAtomicityRealPostgres:
         )
         assert table_exists is False
         assert function_exists is False
+        applied = await _applied_test(conn)
+        assert "903_multi_object_fail" not in applied
         await conn.execute("DROP FUNCTION IF EXISTS runner_atomicity_probe_fn()")
 
 
@@ -191,6 +204,7 @@ class TestRunnerUpIntegration:
     """Via runner.run_up() de verdade (não reimplementado no teste) —
     prova idempotência de skip e fail-closed de checksum."""
 
+    @pytest.mark.ephemeral_only
     async def test_already_applied_migration_is_skipped_idempotently(
         self, clean_schema, tmp_path, monkeypatch
     ):
@@ -207,6 +221,7 @@ class TestRunnerUpIntegration:
         assert count == 1
         await conn.execute("DELETE FROM _migrations WHERE version = $1", "904_idempotent")
 
+    @pytest.mark.ephemeral_only
     async def test_checksum_mismatch_fails_closed(self, clean_schema, tmp_path, monkeypatch, capsys):
         conn = clean_schema
         sql_file = tmp_path / "905_checksum.sql"

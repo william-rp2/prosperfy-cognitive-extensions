@@ -126,15 +126,21 @@ class GrantRepository:
         profile: str,
         capability_id: str,
     ) -> CapabilityGrant | None:
-        """Resolve grant. RLS garante cross-tenant isolation no banco."""
+        """Resolve grant. RLS é o controle primário de cross-tenant isolation;
+        a cláusula tenant_id = $3 é belt-and-braces (defense-in-depth) caso a
+        policy RLS falte/desabilite num deploy — rejeição via DB, não só na
+        Policy."""
         async with tenant_transaction(tenant_id) as conn:
             row = await conn.fetchrow(
                 """
                 SELECT tenant_id, profile, capability_id, policy_override
                 FROM capability_grants
-                WHERE profile = $1 AND capability_id = $2 AND active = true
+                WHERE tenant_id = $3
+                  AND profile = $1
+                  AND capability_id = $2
+                  AND active = true
                 """,
-                profile, capability_id,
+                profile, capability_id, uuid.UUID(tenant_id),
             )
         if not row:
             return None

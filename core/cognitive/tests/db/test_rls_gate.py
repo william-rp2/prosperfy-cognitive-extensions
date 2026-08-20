@@ -14,7 +14,22 @@ from .conftest import db_integration_available, set_tenant_local, skip_reason
 pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.skipif(not db_integration_available(), reason=skip_reason()),
+    pytest.mark.safe_remote,
 ]
+
+
+async def _discover_privileged_roles(admin_conn: asyncpg.Connection) -> list[str]:
+    """Catalog-based discovery of roles with elevated privilege.
+
+    Doesn't assume a fixed role name (e.g. `postgres`) exists on managed
+    Postgres like Supabase — instead asks the catalog which roles actually
+    have BYPASSRLS or SUPERUSER, whatever they happen to be named on this
+    environment.
+    """
+    rows = await admin_conn.fetch(
+        "SELECT rolname FROM pg_roles WHERE rolbypassrls = true OR rolsuper = true"
+    )
+    return [row["rolname"] for row in rows]
 
 
 class TestConnectionReuse:
@@ -152,6 +167,62 @@ class TestRolePrivileges:
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             await app_conn.execute("SET ROLE cognitive_admin")
 
-    async def test_app_cannot_set_bypassrls(self, app_conn):
+    async def test_app_is_not_member_of_any_privileged_role(self, app_conn, admin_conn):
+        """Fixed for Homolog: the old version hardcoded `SET ROLE postgres`
+        and caught the exception — Supabase's managed Postgres doesn't
+        necessarily expose a role literally named `postgres` to escalate
+        into, so the test never proved anything there.
+
+        The PRIMARY, definitive assertion here is catalog-based and doesn't
+        depend on attempting-and-catching an exception: discover every role
+        that actually has elevated privilege (BYPASSRLS or SUPERUSER) via
+        pg_roles, then confirm cognitive_app has MEMBER membership in none
+        of them. That holds regardless of what those roles are named.
+
+        The SET ROLE attempt against the first discovered privileged role is
+        kept as a SECONDARY, defense-in-depth check — bonus evidence, not
+        the test's only evidence. If no privileged role is discovered
+        (shouldn't happen, since migration 000 always creates
+        cognitive_admin with BYPASSRLS), the attempt is skipped rather than
+        failing artificially against an empty list.
+        """
+        privileged_roles = await _discover_privileged_roles(admin_conn)
+
+        for rolname in privileged_roles:
+            is_member = await admin_conn.fetchval(
+                "SELECT pg_has_role('cognitive_app', $1, 'MEMBER')", rolname
+            )
+            assert is_member is False, (
+                f"cognitive_app must not be a member of privileged role {rolname!r}"
+            )
+
+        if not privileged_roles:
+            pytest.skip(
+                "no BYPASSRLS/SUPERUSER role discovered in pg_roles — "
+                "nothing to defensively attempt SET ROLE against"
+            )
+
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
-            await app_conn.execute("SET ROLE postgres")
+            await app_conn.execute(f"SET ROLE {privileged_roles[0]}")
+
+    async def test_worker_is_not_member_of_any_privileged_role(self, worker_conn, admin_conn):
+        """Same as test_app_is_not_member_of_any_privileged_role, for
+        cognitive_worker — see that test's docstring for the rationale."""
+        privileged_roles = await _discover_privileged_roles(admin_conn)
+
+        for rolname in privileged_roles:
+            is_member = await admin_conn.fetchval(
+                "SELECT pg_has_role('cognitive_worker', $1, 'MEMBER')", rolname
+            )
+            assert is_member is False, (
+                f"cognitive_worker must not be a member of privileged role {rolname!r}"
+            )
+
+        if not privileged_roles:
+            pytest.skip(
+                "no BYPASSRLS/SUPERUSER role discovered in pg_roles — "
+                "nothing to defensively attempt SET ROLE against"
+            )
+
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await worker_conn.execute(f"SET ROLE {privileged_roles[0]}")

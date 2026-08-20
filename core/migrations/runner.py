@@ -2,7 +2,10 @@
 migrations/runner.py — Migration runner minimalista para o Cognitive Core.
 
 Sem Alembic — dependência pesada desnecessária para Sprint 0.2.
-Conecta como cognitive_admin (BYPASSRLS) para criar/destruir schema.
+Conecta via COGNITIVE_DB_ADMIN_URL — a identidade admin do ambiente
+(`postgres` no Supabase, `cognitive_admin` no docker-compose.dev.yml
+local) para criar/destruir schema. Migrations nunca assumem que essa
+identidade tem um nome fixo (ver SEC-003 em 002_*.sql).
 
 Contrato de atomicidade (Sprint 0.3, hotfix pós-Gate):
   Cada migration = UMA unidade atômica = (executar o arquivo SQL inteiro +
@@ -30,6 +33,20 @@ Uso:
   python runner.py --verify           # checksum de cada migration aplicada
   python runner.py --inspect 002      # diagnóstico de estado residual (CLEAN/PARTIAL/APPLIED)
                                        # antes de reaplicar uma migration que falhou no meio
+                                       # aceita prefixo curto ("002") ou stem completo
+  python runner.py --diagnose         # raio-x READ-ONLY do banco inteiro (000/001/002 +
+                                       # _migrations) — usar quando _migrations não é confiável
+  python runner.py --recover-tracking # ÚNICO comando que escreve — reconstrói só a linha de
+                                       # tracking em _migrations, e só quando o diagnóstico
+                                       # provar TRACKING_MISSING_ONLY (schema intacto, tracking
+                                       # ausente)
+
+Incidente Sprint 0.3 (VPS/Homolog Gate): um teste destrutivo derrubou a
+tabela `_migrations` depois de 000/001/002 terem sido aplicadas com
+sucesso em Homolog. `--diagnose`/`--recover-tracking` existem pra esse
+cenário — determinar o estado REAL do schema sem depender de
+`_migrations`, e reconstruir só o tracking quando o schema já está
+comprovadamente intacto.
 """
 
 from __future__ import annotations
@@ -40,18 +57,25 @@ import hashlib
 import logging
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime, timezone
 
 import asyncpg
 
-# Redaction for safe logging (host only)
+# Redaction for safe logging (host only) + verificação de target Homolog
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "cognitive"))
 try:
     from cognitive.gate.redaction import safe_connection_target
 except ImportError:
     def safe_connection_target(dsn: str) -> str:
         return dsn.split("@")[-1] if "@" in dsn else "unknown"
+
+try:
+    from cognitive.config.db_target import verify_homolog_admin_dsn
+except ImportError:
+    def verify_homolog_admin_dsn(dsn: str) -> tuple[bool, str]:
+        return False, "cognitive.config.db_target indisponível"
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger("migrations")
@@ -190,13 +214,24 @@ INSPECTION_QUERIES: dict[str, list[tuple[str, str]]] = {
     "002": [
         (
             "function_exists",
-            "SELECT EXISTS (SELECT 1 FROM pg_proc WHERE proname = "
-            "'resolve_service_identity_by_credential_hash') AS v",
+            # to_regprocedure() (não o cast ::regprocedure) retorna NULL em vez
+            # de lançar erro quando a função não existe — importante porque
+            # este sinal PRECISA resolver limpo (False) no estado CLEAN, sem
+            # logar um "falhou ao consultar" falso-positivo.
+            "SELECT to_regprocedure('resolve_service_identity_by_credential_hash(text)') "
+            "IS NOT NULL AS v",
         ),
         (
-            "function_owner_is_cognitive_admin",
-            "SELECT COALESCE((SELECT pg_get_userbyid(proowner) = 'cognitive_admin' "
-            "FROM pg_proc WHERE proname = 'resolve_service_identity_by_credential_hash'), false) AS v",
+            "function_owner_is_not_app_or_worker",
+            # Checa por MEMBERSHIP (pg_has_role), não só por nome do owner —
+            # cobre tanto "owner se chama cognitive_app/worker" quanto
+            # "app/worker de alguma forma ganharam membership no owner real"
+            # (hoje nunca acontece, ver 000/001, mas o sinal deve detectar
+            # se algum dia acontecer, não só comparar string).
+            "SELECT COALESCE((SELECT NOT pg_has_role('cognitive_app', proowner, 'MEMBER') "
+            "AND NOT pg_has_role('cognitive_worker', proowner, 'MEMBER') "
+            "FROM pg_proc WHERE oid = to_regprocedure("
+            "'resolve_service_identity_by_credential_hash(text)')), false) AS v",
         ),
         (
             "public_has_execute_on_function",
@@ -220,7 +255,7 @@ INSPECTION_QUERIES: dict[str, list[tuple[str, str]]] = {
 EXPECTED_CLEAN: dict[str, dict[str, bool]] = {
     "002": {
         "function_exists": False,
-        "function_owner_is_cognitive_admin": False,
+        "function_owner_is_not_app_or_worker": False,
         "public_has_execute_on_function": False,
         "cognitive_app_has_direct_select_on_table": True,
         "old_tenant_isolation_policy_exists": True,
@@ -233,12 +268,28 @@ EXPECTED_CLEAN: dict[str, dict[str, bool]] = {
 EXPECTED_APPLIED: dict[str, dict[str, bool]] = {
     "002": {
         "function_exists": True,
-        "function_owner_is_cognitive_admin": True,
+        "function_owner_is_not_app_or_worker": True,
         "public_has_execute_on_function": False,
         "cognitive_app_has_direct_select_on_table": False,
         "old_tenant_isolation_policy_exists": False,
     },
 }
+
+
+def resolve_migration_version(query: str) -> str:
+    """Resolves a short numeric prefix or full stem to the canonical full
+    stem matching a file in MIGRATIONS. Exact match wins; otherwise unique
+    prefix match; otherwise raises ValueError (fail-closed — never guess)."""
+    query = query.strip()
+    exact = [stem for stem, _ in MIGRATIONS if stem == query]
+    if exact:
+        return exact[0]
+    prefix_matches = [stem for stem, _ in MIGRATIONS if stem.startswith(query)]
+    if len(prefix_matches) == 1:
+        return prefix_matches[0]
+    if not prefix_matches:
+        raise ValueError(f"versão de migration desconhecida: {query!r}")
+    raise ValueError(f"prefixo ambíguo {query!r}: bate com {prefix_matches}")
 
 
 async def inspect_migration(conn: asyncpg.Connection, version: str) -> str:
@@ -248,6 +299,13 @@ async def inspect_migration(conn: asyncpg.Connection, version: str) -> str:
     a evidência pra decidir. Versões sem fingerprint cadastrado avisam e
     caem pra só reportar o status via `_migrations`.
 
+    `version` aceita tanto o prefixo curto ("002") quanto o stem completo
+    do arquivo ("002_service_identities_lookup_least_privilege") — ver
+    `resolve_migration_version()`. `_migrations.version` sempre grava o
+    stem completo (ver `apply_one_migration()`); comparar um prefixo curto
+    cru contra essa coluna (bug histórico corrigido aqui) sempre dava
+    tracked=False mesmo quando a migration estava de fato rastreada.
+
     Com o runner atômico (cada migration = uma transação), um estado
     "rodou até a metade e ficou assim" não deveria mais acontecer daqui pra
     frente — isso serve principalmente pra diagnosticar incidentes
@@ -255,31 +313,52 @@ async def inspect_migration(conn: asyncpg.Connection, version: str) -> str:
     como cinto-de-segurança caso a suposição de atomicidade do Postgres
     falhe por algum motivo não previsto.
     """
+    try:
+        canonical = resolve_migration_version(version)
+    except ValueError as exc:
+        print(f"\n=== Inspect: migration {version!r} ===")
+        print(f"  ERROR: {exc}")
+        print("  VERDICT: INVALID_VERSION")
+        print()
+        return "INVALID_VERSION"
+
     await ensure_migrations_table(conn)
     applied = await get_applied(conn)
-    tracked = version in applied
+    tracked = canonical in applied
 
-    print(f"\n=== Inspect: migration {version} ===")
+    print(f"\n=== Inspect: migration {canonical} ===")
     print(f"  tracked in _migrations: {tracked}")
 
-    queries = INSPECTION_QUERIES.get(version)
+    # INSPECTION_QUERIES/EXPECTED_CLEAN/EXPECTED_APPLIED continuam
+    # indexados pelo prefixo curto (ex: "002") por legibilidade — deriva
+    # do stem canônico já resolvido acima.
+    short_key = canonical.split("_", 1)[0]
+    queries = INSPECTION_QUERIES.get(short_key)
     if not queries:
-        print(f"  (sem fingerprint cadastrado para {version} — só o tracking acima é verificado)")
+        print(f"  (sem fingerprint cadastrado para {short_key} — só o tracking acima é verificado)")
         print()
         return "APPLIED" if tracked else "UNKNOWN"
 
-    signals: dict[str, bool] = {}
+    signals: dict[str, bool | None] = {}
     for name, query in queries:
         try:
             value = await conn.fetchval(query)
         except Exception as exc:
-            logger.warning("inspect(%s): sinal '%s' falhou ao consultar: %s", version, name, exc)
-            value = None
-        signals[name] = bool(value)
+            logger.warning("inspect(%s): sinal '%s' falhou ao consultar: %s", canonical, name, exc)
+            signals[name] = None
+            print(f"  {name}: None (query falhou — ver log)")
+            continue
+        # Nunca coagir a bool() incondicionalmente: bool(None) == False
+        # coincidiria silenciosamente com o valor "seguro" esperado por
+        # sinais sensíveis (ex.: PUBLIC sem EXECUTE), mascarando uma
+        # falha de consulta como "confirmado seguro". None nunca bate
+        # igualdade com um EXPECTED_CLEAN/EXPECTED_APPLIED (só têm
+        # True/False) — cai em PARTIAL corretamente (fail-closed).
+        signals[name] = value if value is None else bool(value)
         print(f"  {name}: {value}")
 
-    expected_clean = EXPECTED_CLEAN.get(version)
-    expected_applied = EXPECTED_APPLIED.get(version)
+    expected_clean = EXPECTED_CLEAN.get(short_key)
+    expected_applied = EXPECTED_APPLIED.get(short_key)
 
     if tracked:
         verdict = "APPLIED"
@@ -313,6 +392,289 @@ async def inspect_migration(conn: asyncpg.Connection, version: str) -> str:
     return verdict
 
 
+# ─── Diagnose / Recover-tracking: raio-x READ-ONLY do banco + reconstrução ──
+# do tracking (hotfix pós-incidente Homolog: um teste destrutivo derrubou
+# `_migrations` depois de 000/001/002 terem sido aplicadas com sucesso).
+#
+# `--diagnose` NUNCA escreve — só SELECT (mesmo estilo de INSPECTION_QUERIES
+# acima, reaproveitado verbatim para 002). `--recover-tracking` é o ÚNICO
+# comando com um write path neste hotfix, e só age quando o diagnóstico
+# provar TRACKING_MISSING_ONLY (schema/roles/RLS de 000/001/002
+# comprovadamente intactos, só falta a linha de tracking) — nunca "perto o
+# suficiente".
+
+DIAGNOSE_TABLES_000 = [
+    "tenants", "tenant_members", "tenant_resources",
+    "credential_refs", "tenant_integrations", "capability_grants",
+]
+
+DIAGNOSE_QUERIES_000: list[tuple[str, str]] = (
+    [
+        (f"table_{t}_exists", f"SELECT to_regclass('public.{t}') IS NOT NULL AS v")
+        for t in DIAGNOSE_TABLES_000
+    ]
+    + [
+        (
+            "role_cognitive_admin_bypassrls",
+            "SELECT COALESCE((SELECT rolbypassrls FROM pg_roles "
+            "WHERE rolname = 'cognitive_admin'), false) AS v",
+        ),
+        (
+            "role_cognitive_app_exists",
+            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cognitive_app') AS v",
+        ),
+        (
+            "role_cognitive_worker_exists",
+            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cognitive_worker') AS v",
+        ),
+    ]
+    + [
+        (
+            f"rls_{t}_enabled",
+            "SELECT COALESCE((SELECT relrowsecurity FROM pg_class "
+            f"WHERE oid = to_regclass('public.{t}')), false) AS v",
+        )
+        for t in DIAGNOSE_TABLES_000
+    ]
+)
+
+EXPECTED_PRESENT_000: dict[str, bool] = {name: True for name, _ in DIAGNOSE_QUERIES_000}
+
+DIAGNOSE_TABLES_001 = [
+    "service_identities", "audit_events", "execution_traces", "cost_telemetry",
+]
+
+DIAGNOSE_QUERIES_001: list[tuple[str, str]] = (
+    [
+        (f"table_{t}_exists", f"SELECT to_regclass('public.{t}') IS NOT NULL AS v")
+        for t in DIAGNOSE_TABLES_001
+    ]
+    + [
+        (
+            f"rls_{t}_enabled",
+            "SELECT COALESCE((SELECT relrowsecurity FROM pg_class "
+            f"WHERE oid = to_regclass('public.{t}')), false) AS v",
+        )
+        for t in DIAGNOSE_TABLES_001
+    ]
+)
+
+EXPECTED_PRESENT_001: dict[str, bool] = {name: True for name, _ in DIAGNOSE_QUERIES_001}
+
+
+async def migrations_table_exists(conn: asyncpg.Connection) -> bool:
+    """Checagem READ-ONLY de existência de `_migrations` — nunca chamar
+    `ensure_migrations_table()` (CREATE TABLE IF NOT EXISTS, um write) a
+    partir de `--diagnose`."""
+    return bool(await conn.fetchval("SELECT to_regclass('public._migrations') IS NOT NULL AS v"))
+
+
+async def collect_signals(
+    conn: asyncpg.Connection, queries: list[tuple[str, str]]
+) -> dict[str, bool | None]:
+    """
+    Retorna True/False para sucesso, None para falha de consulta —
+    NUNCA coage None para False. `bool(None) == False` colidiria
+    silenciosamente com o valor esperado de sinais sensíveis (ex.: 002
+    "PUBLIC sem EXECUTE" espera False no estado saudável), mascarando um
+    erro de query como "confirmado seguro". Um None em qualquer sinal
+    garante que nenhum EXPECTED_* (só contém True/False) bate por
+    igualdade, então `classify_diagnosis`/`inspect_migration` caem em
+    UNKNOWN_UNSAFE_STATE/PARTIAL — fail-closed, nunca fail-open.
+    """
+    signals: dict[str, bool | None] = {}
+    for name, query in queries:
+        try:
+            value = await conn.fetchval(query)
+        except Exception as exc:
+            logger.warning("diagnose: sinal '%s' falhou ao consultar: %s", name, exc)
+            signals[name] = None
+            continue
+        signals[name] = value if value is None else bool(value)
+    return signals
+
+
+@dataclass(frozen=True)
+class DiagnosisResult:
+    verdict: str
+    # bool = sinal coletado com sucesso; None = a query falhou (ver
+    # collect_signals) — nunca coagido a False, pra não mascarar erro de
+    # consulta como "confirmado seguro".
+    signals_000: dict[str, bool | None]
+    signals_001: dict[str, bool | None]
+    signals_002: dict[str, bool | None]
+    # "000"/"001"/"002" -> True (tracked, checksum bate) / False (tracked,
+    # checksum não bate) / None (nenhuma linha de tracking pra essa versão)
+    tracked: dict[str, bool | None]
+
+
+def classify_diagnosis(
+    signals_000: dict[str, bool | None],
+    signals_001: dict[str, bool | None],
+    signals_002: dict[str, bool | None],
+    tracked: dict[str, bool | None],
+) -> str:
+    """
+    Lógica pura de classificação — sem I/O, testável sem Postgres real
+    (mesmo padrão de `inspect_migration`: separa "consulta o banco" de
+    "decide o veredito" a partir de sinais já coletados).
+    """
+    present_000 = signals_000 == EXPECTED_PRESENT_000
+    present_001 = signals_001 == EXPECTED_PRESENT_001
+    present_002 = signals_002 == EXPECTED_APPLIED["002"]
+    clean_002 = signals_002 == EXPECTED_CLEAN["002"]
+    absent_001 = bool(signals_001) and all(v is False for v in signals_001.values())
+
+    if present_000 and present_001 and present_002:
+        if all(tracked.get(k) is True for k in ("000", "001", "002")):
+            return "HEALTHY"
+        if all(tracked.get(k) is None for k in ("000", "001", "002")):
+            return "TRACKING_MISSING_ONLY"
+        # Schema 100% intacto mas tracking num estado misto (algumas linhas
+        # batem, outras faltam ou têm checksum divergente) — não é nem
+        # "tudo rastreado certo" nem "tracking totalmente ausente".
+        # Fail-closed: não é seguro pro --recover-tracking agir sozinho.
+        return "UNKNOWN_UNSAFE_STATE"
+
+    if present_000 and present_001 and clean_002:
+        # 002 nunca rodou — estado normal, esperado, seguro (não é
+        # corrupção). Independe do estado de tracking: se 002 nunca rodou,
+        # não deveria mesmo estar rastreada.
+        return "MIGRATION_002_MISSING"
+
+    if present_000 and not present_001 and not absent_001:
+        # 000 completo, mas 001 nem totalmente ausente nem totalmente
+        # presente — estado genuinamente ambíguo dentro do foundation
+        # schema.
+        return "SCHEMA_PARTIAL"
+
+    return "UNKNOWN_UNSAFE_STATE"
+
+
+async def diagnose_database(conn: asyncpg.Connection) -> DiagnosisResult:
+    """
+    Raio-x READ-ONLY do estado real do banco — usado quando `_migrations`
+    não é confiável (ex: dropada por engano). Só SELECT: nenhum
+    CREATE/ALTER/DROP/INSERT/UPDATE/DELETE roda aqui, nem sequer
+    `ensure_migrations_table()` (que faz CREATE TABLE IF NOT EXISTS).
+    """
+    signals_000 = await collect_signals(conn, DIAGNOSE_QUERIES_000)
+    signals_001 = await collect_signals(conn, DIAGNOSE_QUERIES_001)
+    signals_002 = await collect_signals(conn, INSPECTION_QUERIES["002"])
+
+    if await migrations_table_exists(conn):
+        applied = await get_applied(conn)
+    else:
+        applied = {}
+
+    tracked: dict[str, bool | None] = {}
+    for short in ("000", "001", "002"):
+        canonical = resolve_migration_version(short)
+        path = dict(MIGRATIONS)[canonical]
+        expected_checksum = file_checksum(path)
+        if canonical not in applied:
+            tracked[short] = None
+        elif applied[canonical] == expected_checksum:
+            tracked[short] = True
+        else:
+            tracked[short] = False
+
+    verdict = classify_diagnosis(signals_000, signals_001, signals_002, tracked)
+    return DiagnosisResult(
+        verdict=verdict,
+        signals_000=signals_000,
+        signals_001=signals_001,
+        signals_002=signals_002,
+        tracked=tracked,
+    )
+
+
+def print_diagnosis_report(result: DiagnosisResult) -> None:
+    print("\n=== Diagnose: estado real do banco (independente de _migrations) ===")
+
+    print("\n--- 000_foundation_tenancy ---")
+    for name, value in result.signals_000.items():
+        print(f"  {name}: {value}")
+
+    print("\n--- 001_capability_registry_audit ---")
+    for name, value in result.signals_001.items():
+        print(f"  {name}: {value}")
+
+    print("\n--- 002_service_identities_lookup_least_privilege ---")
+    for name, value in result.signals_002.items():
+        print(f"  {name}: {value}")
+
+    print("\n--- _migrations tracking ---")
+    status_label = {True: "MATCH", False: "CHECKSUM MISMATCH", None: "ABSENT"}
+    for short, status in result.tracked.items():
+        print(f"  {short}: {status_label[status]}")
+
+    print(f"\nVERDICT: {result.verdict}")
+    print()
+
+
+async def run_diagnose(conn: asyncpg.Connection) -> DiagnosisResult:
+    result = await diagnose_database(conn)
+    print_diagnosis_report(result)
+    return result
+
+
+async def run_recover_tracking(conn: asyncpg.Connection, db_url: str) -> None:
+    """
+    ÚNICO comando deste hotfix com um write path — e mesmo assim escreve
+    exclusivamente em `_migrations`. Nunca toca tabela, role, policy ou
+    função de negócio.
+
+    1. Guarda de alvo: recusa qualquer DSN que não verifique como o project
+       ref Homolog (mesmo helper usado por conftest.py/verify_target.py —
+       nunca reimplementado aqui).
+    2. Roda `diagnose_database()` (read-only) internamente.
+    3. Só escreve se o veredito for EXATAMENTE TRACKING_MISSING_ONLY —
+       "perto o suficiente" não conta; qualquer outro veredito recusa e sai
+       com exit 1 sem tentar nenhum write.
+    4. Escreve dentro de UMA transação explícita, mesmo contrato de
+       atomicidade do resto deste arquivo: CREATE TABLE IF NOT EXISTS
+       (reaproveita `ensure_migrations_table`, idempotente) + 3 INSERTs
+       (ON CONFLICT DO NOTHING, idempotente) com checksum sempre derivado
+       do arquivo em disco agora — nunca aceito como input do operador.
+    """
+    ok, reason = verify_homolog_admin_dsn(db_url)
+    if not ok:
+        print(f"RECOVERY REFUSED — DSN não verifica como Homolog: {reason}")
+        sys.exit(1)
+
+    result = await diagnose_database(conn)
+    print_diagnosis_report(result)
+
+    if result.verdict == "HEALTHY":
+        print("RECOVERY SKIPPED — banco já está HEALTHY, nenhuma ação necessária.")
+        return
+
+    if result.verdict != "TRACKING_MISSING_ONLY":
+        print(
+            "RECOVERY REFUSED — verdict não é TRACKING_MISSING_ONLY, revisão humana necessária"
+        )
+        sys.exit(1)
+
+    inserted: list[tuple[str, str]] = []
+    async with conn.transaction():
+        await ensure_migrations_table(conn)
+        for short in ("000", "001", "002"):
+            canonical = resolve_migration_version(short)
+            path = dict(MIGRATIONS)[canonical]
+            checksum = file_checksum(path)
+            await conn.execute(
+                "INSERT INTO _migrations(version, checksum) VALUES($1, $2) "
+                "ON CONFLICT (version) DO NOTHING",
+                canonical, checksum,
+            )
+            inserted.append((canonical, checksum))
+
+    for canonical, checksum in inserted:
+        print(f"  inserted: {canonical} (checksum={checksum})")
+    print("RECOVERY COMPLETE")
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Cognitive migration runner")
     group = parser.add_mutually_exclusive_group(required=True)
@@ -323,7 +685,14 @@ async def main() -> None:
     group.add_argument("--status", action="store_true", help="Mostrar estado atual")
     group.add_argument("--verify", action="store_true", help="Verificar checksums de migrations aplicadas")
     group.add_argument("--inspect", metavar="VERSION",
-                       help="Diagnosticar estado residual de uma migration antes de reaplicar")
+                       help="Diagnosticar estado residual de uma migration antes de reaplicar "
+                            "(aceita prefixo curto ou stem completo)")
+    group.add_argument("--diagnose", action="store_true",
+                       help="Raio-x READ-ONLY do banco inteiro (000/001/002 + _migrations) — "
+                            "usar quando _migrations não é confiável")
+    group.add_argument("--recover-tracking", action="store_true",
+                       help="ÚNICO comando que escreve — reconstrói a linha de tracking em "
+                            "_migrations, só quando o diagnóstico provar TRACKING_MISSING_ONLY")
 
     args = parser.parse_args()
 
@@ -352,8 +721,14 @@ async def main() -> None:
             logger.info("Todos os checksums conferem (%d migrations aplicadas).", len(applied))
         elif args.inspect is not None:
             verdict = await inspect_migration(conn, args.inspect)
-            if verdict == "PARTIAL":
+            if verdict in ("PARTIAL", "INVALID_VERSION"):
                 sys.exit(1)
+        elif args.diagnose:
+            result = await run_diagnose(conn)
+            if result.verdict not in ("HEALTHY", "TRACKING_MISSING_ONLY", "MIGRATION_002_MISSING"):
+                sys.exit(1)
+        elif args.recover_tracking:
+            await run_recover_tracking(conn, db_url)
         elif args.up is not None:
             target = args.up or None
             await run_up(conn, target)

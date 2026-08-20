@@ -23,11 +23,24 @@ from ..contracts.capability import ExecutionRequest, SkillsAdapterPort
 from ..contracts.gateway import CapabilityExecuteResponse, GatewayStatus
 from ..contracts.policy import PolicyDecision
 from ..contracts.tenancy import ActorContext
+from ..gate.redaction import sanitize_exception
 from ..policy.engine import PolicyEngine
 from ..registry.registry import InMemoryCapabilityRegistry
+from ..registry.grant_resolver import GrantResolverPort, RegistryGrantResolver
 from ..telemetry.recorder import InMemoryTelemetryRecorder, TelemetryRecord
 
 logger = logging.getLogger(__name__)
+
+# Chaves de metadados que podem existir em resolved_params (ex.: "type" — o
+# tipo do recurso, espelhando a coluna tenant_resources.resource_type) mas
+# NUNCA são argumentos das tools MCP. O servidor ProsperfySkill (FastMCP)
+# valida arguments contra o schema da tool e rejeita chaves extras
+# (ValidationError "Unexpected keyword argument" -> CallToolResult.isError=True
+# -> "erro de protocolo MCP" no adapter). Sprint 0.3 HOTFIX: o orquestrador
+# remove metadados antes de repassar resolved_params como tool args, porque o
+# shape de resolved_params (livre no JSONB) não é o contrato de entrada das
+# tools.
+_RESOURCE_METADATA_NOT_TOOL_ARG_KEYS = frozenset({"type"})
 
 
 class ExecutionOrchestrator:
@@ -45,6 +58,7 @@ class ExecutionOrchestrator:
         audit_writer: InMemoryAuditWriter,
         telemetry_recorder: InMemoryTelemetryRecorder,
         resource_resolver: Any | None = None,
+        grant_resolver: GrantResolverPort | None = None,
     ) -> None:
         self._registry = registry
         self._policy = policy_engine
@@ -55,13 +69,22 @@ class ExecutionOrchestrator:
         # adapter. None é permitido (capabilities sem resource, ou runtime que
         # ainda não fia um resolver) — nesse caso params fluem sem resolução.
         self._resource_resolver = resource_resolver
+        # Sprint 0.3 RETURN_TO_DEV (Item A): resolução de grant agora é feita
+        # por um GrantResolverPort. Em database mode o gateway injeta
+        # PostgresGrantResolver (RLS/capability_grants); sem injetação cai em
+        # RegistryGrantResolver (in-memory, retrocompat Sprint 0.1).
+        self._grant_resolver = grant_resolver or RegistryGrantResolver(registry)
         # Idempotency-Key (Sprint 0.3): cache in-process, chave
-        # (tenant_id, capability_id, idempotency_key) -> resposta já concluída.
-        # Só COMPLETED é cacheado (DENY/CONFIRM não — policy pode mudar; CONFIRM
-        # precisa do fluxo de aprovação de novo). In-process apenas: não
-        # sobrevive restart nem é compartilhado entre instâncias — dedup
-        # cross-processo exigiria store em banco (fora de escopo do Sprint 0.3).
-        self._idempotency_cache: dict[tuple[str, str, str], CapabilityExecuteResponse] = {}
+        # (tenant_id, profile, capability_id, idempotency_key) -> resposta já
+        # concluída. O profile faz parte da chave: a decisão de grant é feita
+        # por (tenant, profile, capability) — um actor de perfil inferior
+        # reenviando a mesma chave não pode herdar o COMPLETED de um perfil
+        # com grant (revisão adversarial, Sprint 0.3 closure). Só COMPLETED é
+        # cacheado (DENY/CONFIRM não — policy pode mudar; CONFIRM precisa do
+        # fluxo de aprovação de novo). In-process apenas: não sobrevive
+        # restart nem é compartilhado entre instâncias — dedup cross-processo
+        # exigiria store em banco (fora de escopo do Sprint 0.3).
+        self._idempotency_cache: dict[tuple[str, str, str, str], CapabilityExecuteResponse] = {}
 
     async def execute(
         self,
@@ -80,7 +103,13 @@ class ExecutionOrchestrator:
         start_ms = time.monotonic()
 
         # ─── STEP 0: IDEMPOTENCY-KEY cache lookup ───────────────────────
-        cache_key = (ctx.tenant_id, capability_id, idempotency_key) if idempotency_key else None
+        # A chave inclui ctx.profile: um actor de perfil diferente (grant
+        # distinto) nunca reusa o COMPLETED de outro perfil — senão o DENY de
+        # um perfil sem grant seria contornado pela resposta cacheada.
+        cache_key = (
+            (ctx.tenant_id, ctx.profile, capability_id, idempotency_key)
+            if idempotency_key else None
+        )
         if cache_key is not None and cache_key in self._idempotency_cache:
             return self._idempotency_cache[cache_key]
 
@@ -95,7 +124,10 @@ class ExecutionOrchestrator:
             )
 
         # ─── STEP 2: GRANT resolution ────────────────────────────────────
-        grant = self._registry.resolve_grant(
+        # Sprint 0.3 RETURN_TO_DEV (Item A): consulta agora passa pelo
+        # GrantResolverPort (async) — database mode lê capability_grants via
+        # RLS; fail-closed em erro de DB (resolve_grant retorna None → DENY).
+        grant = await self._grant_resolver.resolve_grant(
             tenant_id=ctx.tenant_id,
             profile=ctx.profile,
             capability_id=capability_id,
@@ -134,7 +166,7 @@ class ExecutionOrchestrator:
                 execution_id=execution_id,
             )
             audit_id = await self._audit.record(audit_event)
-            self._record_telemetry(ctx, capability_id, duration_ms, tool_calls=0)
+            await self._record_telemetry(ctx, capability_id, duration_ms, tool_calls=0)
             return CapabilityExecuteResponse(
                 execution_id=execution_id,
                 correlation_id=ctx.correlation_id,
@@ -173,7 +205,7 @@ class ExecutionOrchestrator:
                     execution_id=execution_id,
                 )
                 audit_id = await self._audit.record(audit_event)
-                self._record_telemetry(ctx, capability_id, duration_ms, tool_calls=0)
+                await self._record_telemetry(ctx, capability_id, duration_ms, tool_calls=0)
                 return CapabilityExecuteResponse(
                     execution_id=execution_id,
                     correlation_id=ctx.correlation_id,
@@ -204,7 +236,7 @@ class ExecutionOrchestrator:
                 execution_id=execution_id,
             )
             audit_id = await self._audit.record(audit_event)
-            self._record_telemetry(ctx, capability_id, duration_ms, tool_calls=0)
+            await self._record_telemetry(ctx, capability_id, duration_ms, tool_calls=0)
             return CapabilityExecuteResponse(
                 execution_id=execution_id,
                 correlation_id=ctx.correlation_id,
@@ -228,7 +260,7 @@ class ExecutionOrchestrator:
                 execution_id=execution_id,
             )
             audit_id = await self._audit.record(audit_event)
-            self._record_telemetry(ctx, capability_id, duration_ms, tool_calls=0)
+            await self._record_telemetry(ctx, capability_id, duration_ms, tool_calls=0)
             # CONFIRM: NÃO invoca o adapter (ADR-V2-004)
             return CapabilityExecuteResponse(
                 execution_id=execution_id,
@@ -252,10 +284,15 @@ class ExecutionOrchestrator:
                 correlation_id=ctx.correlation_id,
             )
         except Exception as exc:
-            logger.exception(
-                "Capability execution failed cap=%s tenant=%s", capability_id, ctx.tenant_id
+            # Sprint 0.3 RETURN_TO_DEV (Item B): nunca loga o traceback bruto
+            # (a mensagem da exceção pode embutir segredo, ex.: erro de header
+            # do transporte MCP com prefixo do Bearer) — loga versão
+            # sanitizada e registra o mesmo valor no response/audit.
+            error = sanitize_exception(exc)
+            logger.error(
+                "Capability execution failed cap=%s tenant=%s error=%s",
+                capability_id, ctx.tenant_id, error,
             )
-            error = str(exc)
             outcome = AuditOutcome.FAILED
 
         duration_ms = int((time.monotonic() - start_ms) * 1000)
@@ -274,7 +311,7 @@ class ExecutionOrchestrator:
             execution_id=execution_id,
         )
         audit_id = await self._audit.record(audit_event)
-        self._record_telemetry(ctx, capability_id, duration_ms, tool_calls)
+        await self._record_telemetry(ctx, capability_id, duration_ms, tool_calls)
 
         if outcome == AuditOutcome.FAILED:
             return CapabilityExecuteResponse(
@@ -346,7 +383,16 @@ class ExecutionOrchestrator:
                         "resource foi resolvido (params sem 'resource', ou "
                         "resource_resolver não configurado neste orchestrator)."
                     )
-                tool_args: dict[str, Any] = dict(resolved)
+                # Sprint 0.3 HOTFIX: resolved_params pode carregar metadados do
+                # recurso (ex.: 'type') além das chaves de conexão concretas.
+                # Metadados não são argumentos de tool MCP — o servidor FastMCP
+                # rejeita 'Unexpected keyword argument' (isError=True). Só
+                # repassa chaves de conexão concretas como tool args.
+                tool_args: dict[str, Any] = {
+                    k: v
+                    for k, v in resolved.items()
+                    if k not in _RESOURCE_METADATA_NOT_TOOL_ARG_KEYS
+                }
             else:
                 tool_args = dict(client_args)
 
@@ -361,26 +407,48 @@ class ExecutionOrchestrator:
                 call_count += 1
             except Exception as exc:
                 if required:
+                    # `from None`: sem __cause__ cru (se a exception original
+                    # embutir segredo, não fica encadeado p/ vazar num repr/
+                    # traceback posterior).
                     raise RuntimeError(
-                        f"Tool '{tool_name}' obrigatória falhou: {exc}"
-                    ) from exc
-                logger.warning("Tool opcional '%s' falhou: %s", tool_name, exc)
-                results[tool_name] = {"error": str(exc)}
+                        f"Tool '{tool_name}' obrigatória falhou: "
+                        f"{sanitize_exception(exc)}"
+                    ) from None
+                logger.warning(
+                    "Tool opcional '%s' falhou: %s", tool_name, sanitize_exception(exc),
+                )
+                results[tool_name] = {"error": sanitize_exception(exc)}
 
         return call_count, results
 
-    def _record_telemetry(
+    async def _record_telemetry(
         self,
         ctx: ActorContext,
         capability_id: str,
         duration_ms: int,
         tool_calls: int,
     ) -> None:
-        self._telemetry.record(TelemetryRecord(
-            tenant_id=ctx.tenant_id,
-            actor_id=ctx.actor_id,
-            capability_id=capability_id,
-            correlation_id=ctx.correlation_id,
-            latency_ms=duration_ms,
-            tool_calls=tool_calls,
-        ))
+        """
+        Best-effort — nunca deixa uma falha de telemetry (ex.: blip de rede
+        no PostgresTelemetryRecorder) derrubar uma resposta que já foi
+        auditada (audit_events já commitado antes de cada chamada a este
+        método) ou, no caminho de sucesso, pular o cache de idempotência
+        (que só é populado DEPOIS deste método retornar). Telemetry é
+        observabilidade (não é o requisito de auditoria R13) — uma falha
+        aqui nunca deve virar 500 pro caller nem reexecutar a capability
+        num retry por causa de uma linha de métrica perdida.
+        """
+        try:
+            await self._telemetry.record(TelemetryRecord(
+                tenant_id=ctx.tenant_id,
+                actor_id=ctx.actor_id,
+                capability_id=capability_id,
+                correlation_id=ctx.correlation_id,
+                latency_ms=duration_ms,
+                tool_calls=tool_calls,
+            ))
+        except Exception:
+            logger.exception(
+                "Telemetry record falhou (non-fatal) tenant=%s cap=%s",
+                ctx.tenant_id, capability_id,
+            )
