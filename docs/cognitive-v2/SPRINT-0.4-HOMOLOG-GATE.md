@@ -24,10 +24,13 @@ identidade ao Hermes." Duas entregas integradas nesta branch:
 ## 1. Checkpoint esperado
 
 - Branch: `dev/sprint-0.4`
-- Commit: `9c5113a` (Lead Dev integration commit — merge de
-  `dev/sprint-0.4-db-identity` + `dev/sprint-0.4-cli-gate` em
-  `dev/sprint-0.4`, mais o fix do teste de guard do `rotate()` que a
-  integração revelou como obsoleto). **Confirme** `git log -1 --format=%H`
+- Commit: `e15b7a8` (merge que integra a baseline FINAL da Sprint 0.3 —
+  checkpoint `2be672127f413649479afbc4640498ed2b4ec130` — em
+  `dev/sprint-0.4`, preservando a implementação do Sprint 0.4: migration 003
+  `identity_events`, `ServiceIdentityRepository.rotate()`, CLI
+  `manage_service_identity.py` e respectivos testes). O valor foi preenchido
+  após o commit final de dev, no padrão do projeto (ver histórico de
+  `97b2996` preenchendo `9c5113a`). **Confirme** `git log -1 --format=%H`
   no checkout da
   VPS bate exatamente com o valor publicado pelo Lead Dev antes de prosseguir.
 
