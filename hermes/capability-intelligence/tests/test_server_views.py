@@ -255,3 +255,155 @@ class TestTransportEnvelopeRecognition:
         # bounded: não entra em loop infinito e retorna um dict determinístico
         result = _unwrap_payload({"success": True, "data": deep})
         assert isinstance(result, dict)
+
+
+# ─── CONTRATOS REAIS do ProsperfySkill (capturados no Homolog) ─────────────
+#
+# $: {data, success} → $.data: {data, error, meta, status} → $.data.data: payload.
+# BUSINESS_PAYLOAD_PATH = $.data.data. Os mocks DEV não refletiam estes campos.
+
+REAL_PANORAMA_PAYLOAD = {
+    "disco": "40% usado",
+    "host": "vps-prod-01",
+    "hostname": "vps-prod-01",
+    "kernel": "6.8.0-45-generic",
+    "load_average": "0.45, 0.52, 0.61",
+    "memoria": "3.2G/7.7G",
+    "so": "Ubuntu 24.04",
+    "top_processos": ["nginx", "postgres"],
+    "uptime": "3 days, 04:12",
+}
+
+REAL_CONTAINER = {
+    "Command": "/entrypoint.sh",
+    "CreatedAt": "2026-07-01",
+    "HealthStatus": "healthy",
+    "ID": "abc123",
+    "Image": "prosperfy/cognitive:latest",
+    "Labels": {},
+    "LocalVolumes": "0",
+    "Mounts": [],
+    "Names": ["/cognitive-api"],
+    "Networks": "bridge",
+    "Platform": "linux",
+    "Ports": "0.0.0.0:8800->8800/tcp",
+    "RunningFor": "3 days",
+    "Size": "N/A (virtual 850MB)",
+    "State": "running",
+    "Status": "Up 3 days",
+}
+
+REAL_CONTAINERS_PAYLOAD = {
+    "containers": [REAL_CONTAINER],
+    "host": "vps-prod-01",
+    "incluir_parados": True,
+    "total": 1,
+}
+
+REAL_PORTS_PAYLOAD = {
+    "comando": "nc -z 127.0.0.1 8800",
+    "duracao_ms": 12,
+    "exit_status": 0,
+    "host": "127.0.0.1",
+    "porta": "8800",
+    "stderr": "",
+    "stdout": "",
+    "sucesso": True,
+}
+
+
+def _wrap(tool: str, payload: dict) -> dict:
+    """Envelope real comum: $:{data,success} → data:{data,error,meta,status}."""
+    return {
+        "success": True,
+        "data": {
+            "status": "ok",
+            "data": payload,
+            "meta": {"latency_ms": 12},
+            "error": None,
+        },
+    }
+
+
+class TestRealContracts:
+    def test_real_panorama_contract_normalized(self):
+        """Panorama real: uptime/load_average são strings e são preservados
+        sem conversão inventada. host presente."""
+        raw = {PANORAMA: _wrap(PANORAMA, REAL_PANORAMA_PAYLOAD)}
+        view = build_server_status_view(raw)
+        norm = view["normalized"]
+        assert norm["host"] == "vps-prod-01"
+        assert norm["uptime"] == "3 days, 04:12"
+        assert norm["uptime_human"] == "3 days, 04:12"  # string real preservada
+        assert norm["load_avg"] == "0.45, 0.52, 0.61"
+        assert "Servidor vps-prod-01 está online" in view["summary"]
+
+    def test_real_containers_contract_normalized(self):
+        """Containers reais usam Names/State/Status/Image (docker) — mapeados
+        para name/state/status/image, sem depender de lowercase inexistente."""
+        raw = {CONTAINERS: _wrap(CONTAINERS, REAL_CONTAINERS_PAYLOAD)}
+        view = build_server_status_view(raw)
+        norm = view["normalized"]
+        assert norm["container_count"] == 1
+        assert norm["container_running_count"] == 1
+        c = norm["containers"][0]
+        assert c["name"] == "cognitive-api"  # Names → name (strip '/')
+        assert c["state"] == "running"
+        assert c["status"] == "Up 3 days"
+        assert c["image"] == "prosperfy/cognitive:latest"
+        assert c["health_status"] == "healthy"
+        assert norm["container_broken"] == []
+        assert "1 containers: 1 rodando." in view["summary"]
+
+    def test_real_containers_contract_down_detected(self):
+        """Container real parado (State=exited) → broken detectado."""
+        down = dict(REAL_CONTAINER)
+        down["State"] = "exited"
+        down["Status"] = "Exited (0) 2 days ago"
+        raw = {CONTAINERS: _wrap(CONTAINERS, {"containers": [down], "total": 1})}
+        view = build_server_status_view(raw)
+        assert view["normalized"]["container_broken"] == ["cognitive-api"]
+        assert view["normalized"]["degraded"] is True
+
+    def test_real_ports_contract_normalized(self):
+        """Ports reais: {porta, sucesso, exit_status} — não é mapa ports.
+        Normalizado para port/success/exit_status; NÃO expõe comando no summary."""
+        raw = {PORTS: _wrap(PORTS, REAL_PORTS_PAYLOAD)}
+        view = build_server_status_view(raw)
+        norm = view["normalized"]
+        assert norm["ports_total_count"] == 1
+        assert norm["ports_open_count"] == 1  # sucesso=True
+        assert norm["ports"][0]["port"] == "8800"
+        assert norm["ports"][0]["success"] is True
+        assert norm["ports"][0]["exit_status"] == 0
+        assert "1 de 1 portas abertas." in view["summary"]
+        assert "nc -z" not in view["summary"]  # não expõe comando interno
+
+    def test_real_ports_contract_closed_detected(self):
+        """Ports real com sucesso=False → não conta como aberta."""
+        p = dict(REAL_PORTS_PAYLOAD)
+        p["sucesso"] = False
+        p["exit_status"] = 1
+        raw = {PORTS: _wrap(PORTS, p)}
+        view = build_server_status_view(raw)
+        assert view["normalized"]["ports_open_count"] == 0
+        assert view["normalized"]["ports_total_count"] == 1
+        assert "Nenhuma porta aberta." in view["summary"]
+
+    def test_real_three_tool_contract_builds_server_summary(self):
+        """Três payloads reais juntos: raw → normalized → summary completo."""
+        raw = {
+            PANORAMA: _wrap(PANORAMA, REAL_PANORAMA_PAYLOAD),
+            CONTAINERS: _wrap(CONTAINERS, REAL_CONTAINERS_PAYLOAD),
+            PORTS: _wrap(PORTS, REAL_PORTS_PAYLOAD),
+        }
+        view = build_server_status_view(raw)
+        norm = view["normalized"]
+        assert norm["host"] == "vps-prod-01"
+        assert norm["container_count"] == 1
+        assert norm["ports_total_count"] == 1
+        summary = view["summary"]
+        assert "Servidor vps-prod-01 está online" in summary  # SERVER_STATUS
+        assert "1 containers: 1 rodando." in summary             # CONTAINER_STATUS
+        assert "1 de 1 portas abertas." in summary               # PORT_STATUS
+        assert norm["degraded"] is False

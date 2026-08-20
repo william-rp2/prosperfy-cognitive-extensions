@@ -107,6 +107,94 @@ def _uptime_human(uptime_seconds: Any) -> str:
     return " ".join(parts) or "menos de 1m"
 
 
+# ─── Aliases defensivos (contrato REAL do ProsperfySkill primeiro, legado
+# DEV/mock como fallback). Sem framework/schema — só normalização de poucos
+# campos conhecidos. NUNCA inventa conversão numérica para strings reais
+# (ex.: uptime/load_average reais são strings e são preservados como estão)._
+
+def _pick(*values: Any) -> Any:
+    """Primeiro valor não-None."""
+    for v in values:
+        if v is not None:
+            return v
+    return None
+
+
+def _container_name(item: dict[str, Any]) -> Any:
+    """REAL: Names (lista docker, ex. ['/name']). LEGADO: name (string)."""
+    names = item.get("Names")
+    if isinstance(names, list):
+        for n in names:
+            if isinstance(n, str) and n.strip():
+                return n.lstrip("/").strip()
+    if isinstance(names, str) and names.strip():
+        return names.lstrip("/").strip()
+    return item.get("name")
+
+
+def _container_state(item: dict[str, Any]) -> Any:
+    """REAL: State (docker, ex. 'running'). LEGADO: status (mock)."""
+    return _pick(item.get("State"), item.get("state"), item.get("status"))
+
+
+def _container_status(item: dict[str, Any]) -> Any:
+    """REAL: Status (docker, ex. 'Up 2 hours'/'Exited (0)'). LEGADO: status."""
+    return _pick(item.get("Status"), item.get("status"))
+
+
+def _container_image(item: dict[str, Any]) -> Any:
+    """REAL: Image. LEGADO: image."""
+    return _pick(item.get("Image"), item.get("image"))
+
+
+def _container_is_running(item: dict[str, Any]) -> bool:
+    state = item.get("State")
+    if isinstance(state, str):
+        return state.lower() == "running"
+    status = item.get("status")
+    if isinstance(status, str):
+        low = status.lower()
+        return low == "running" or low.startswith("up")
+    return False
+
+
+def _normalize_ports(ports_raw: dict[str, Any] | None) -> tuple[list[dict[str, Any]] | None, bool]:
+    """
+    Normaliza o resultado da tool de portas.
+
+    Contrato LEGADO (mock): mapa {ports: {porta: estado}} → 1 item por porta.
+    Contrato REAL (ProsperfySkill): verificação única {porta, sucesso,
+    exit_status, stdout, stderr, ...} → 1 item.
+
+    Retorna (lista_normalizada, malformed). malformed=True quando a tool está
+    presente mas o payload não é nenhum dos formatos conhecidos → fail-closed
+    (não vira sucesso válido silencioso).
+    """
+    if ports_raw is None:
+        return None, False
+    mapping = ports_raw.get("ports")
+    if isinstance(mapping, dict):
+        items = [
+            {
+                "port": str(port),
+                "state": str(state),
+                "success": str(state).lower() == "open",
+            }
+            for port, state in mapping.items()
+        ]
+        return items, False
+    if "porta" in ports_raw or "port" in ports_raw:
+        porta = _pick(ports_raw.get("porta"), ports_raw.get("port"))
+        success = ports_raw.get("sucesso")
+        return [{
+            "port": str(porta),
+            "state": "open" if success is True else str(ports_raw.get("exit_status") or "closed"),
+            "success": success is True,
+            "exit_status": ports_raw.get("exit_status"),
+        }], False
+    return [], True
+
+
 def build_server_status_view(
     raw: dict[str, Any],
     capability_id: str = "infra.inspect",
@@ -126,44 +214,69 @@ def build_server_status_view(
         c for c in containers_raw.get("containers", [])
         if isinstance(c, dict)
     ] if containers_raw else []
-    port_mapping: dict[str, Any] = ports_raw.get("ports", {}) if ports_raw else {}
+    port_results, ports_malformed = _normalize_ports(ports_raw)
 
     broken_containers = [
         c for c in container_list
-        if str(c.get("status", "")).lower() != "running"
+        if not _container_is_running(c)
     ]
     open_ports = sorted(
-        (str(port) for port, state in port_mapping.items() if str(state).lower() == "open"),
+        (str(p["port"]) for p in port_results if p.get("success") is True),
         key=str,
-    )
-    total_ports = len(port_mapping)
+    ) if port_results else []
+    total_ports = len(port_results) if port_results else 0
     missing_optional = [
         name for name, payload in (
             (PORTS, ports_raw),
         )
         if payload is None
     ]
-    degraded = bool(broken_containers or (total_ports and len(open_ports) < total_ports) or missing_optional)
+    degraded = bool(
+        broken_containers
+        or (total_ports and len(open_ports) < total_ports)
+        or missing_optional
+        or ports_malformed
+    )
+
+    # Panorama: contrato real (host/uptime/load_average) + legado
+    # (uptime_seconds/load_avg). uptime/load_average reais são strings e são
+    # preservados sem conversão inventada.
+    panorama_host = panorama.get("host") if panorama else None
+    uptime_seconds = panorama.get("uptime_seconds") if panorama else None
+    uptime_str = panorama.get("uptime") if panorama else None
+    load_average = _pick(
+        panorama.get("load_avg") if panorama else None,
+        panorama.get("load_average") if panorama else None,
+    )
 
     normalized: dict[str, Any] = {
-        "host": panorama.get("host") if panorama else None,
-        "uptime_seconds": panorama.get("uptime_seconds") if panorama else None,
-        "uptime_human": _uptime_human(panorama.get("uptime_seconds")) if panorama else None,
-        "load_avg": list(panorama.get("load_avg", [])) if panorama else [],
+        "host": panorama_host,
+        "uptime_seconds": uptime_seconds,
+        "uptime": uptime_str,
+        "uptime_human": (
+            _uptime_human(uptime_seconds)
+            if uptime_seconds is not None
+            else (uptime_str if uptime_str else None)
+        ),
+        "load_avg": list(load_average) if isinstance(load_average, (list, tuple)) else load_average,
         "containers": [
-            {"name": c.get("name"), "status": c.get("status"), "image": c.get("image")}
+            {
+                "name": _container_name(c),
+                "status": _container_status(c),
+                "state": _container_state(c),
+                "image": _container_image(c),
+                "health_status": _pick(c.get("HealthStatus"), c.get("health_status")),
+            }
             for c in container_list
         ],
         "container_count": len(container_list),
-        "container_running_count": len(container_list) - len(broken_containers),
-        "container_broken": [c.get("name") for c in broken_containers],
-        "ports": [
-            {"port": str(port), "state": str(state)}
-            for port, state in sorted(port_mapping.items(), key=lambda kv: str(kv[0]))
-        ],
+        "container_running_count": sum(1 for c in container_list if _container_is_running(c)),
+        "container_broken": [_container_name(c) for c in broken_containers],
+        "ports": sorted(port_results or [], key=lambda p: str(p["port"])),
         "ports_open": open_ports,
         "ports_open_count": len(open_ports),
         "ports_total_count": total_ports,
+        "ports_malformed": ports_malformed,
         "degraded": degraded,
     }
 
@@ -172,7 +285,7 @@ def build_server_status_view(
         uptime = normalized["uptime_human"]
         summary.append(
             f"Servidor {normalized['host']} está online"
-            + (f" (uptime {uptime})" if uptime != "desconhecido" else "")
+            + (f" (uptime {uptime})" if uptime else "")
             + "."
         )
     else:
@@ -187,7 +300,7 @@ def build_server_status_view(
     elif containers_raw is None:
         summary.append("Não foi possível listar os containers.")
 
-    if port_mapping:
+    if port_results:
         if normalized["ports_open_count"] == 0:
             summary.append("Nenhuma porta aberta.")
         else:
@@ -195,7 +308,7 @@ def build_server_status_view(
                 f"{normalized['ports_open_count']} de {normalized['ports_total_count']} "
                 "portas abertas."
             )
-    elif ports_raw is None and total_ports == 0:
+    elif ports_raw is None:
         summary.append("Verificação de portas não retornou dados.")
 
     if degraded:
@@ -204,6 +317,8 @@ def build_server_status_view(
             detail.append(f"container '{name}' fora de running")
         if missing_optional:
             detail.append("tool de portas indisponível")
+        if ports_malformed:
+            detail.append("payload de portas malformado")
         summary.append("Atenção: " + "; ".join(detail) + ".")
     else:
         summary.append("Todos os serviços e portas verificados estão OK.")
