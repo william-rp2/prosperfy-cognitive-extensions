@@ -104,6 +104,39 @@ async def test_resource_is_resolved_to_concrete_params_before_adapter():
 
 
 @pytest.mark.asyncio
+async def test_resource_metadata_type_not_forwarded_to_mcp_tools():
+    """
+    Sprint 0.3 HOTFIX (erro de protocolo MCP no live gate): resolved_params
+    carrega 'type' (metadado do recurso, espelho da coluna resource_type),
+    que NÃO é argumento das tools VPS do ProsperfySkill. Servidor FastMCP
+    rejeita chave fora do schema ('Unexpected keyword argument') com
+    CallToolResult.isError=True — virando o 'erro de protocolo MCP' do
+    adapter. O orquestrador deve filtrar metadados antes de chamar o adapter.
+    """
+    adapter = _RecordingAdapter()
+    orchestrator = _build_orchestrator(adapter)
+
+    result = await orchestrator.execute(
+        ctx=_ctx(),
+        capability_id="infra.inspect",
+        params={"resource": "prosperfy-main"},
+    )
+
+    assert result.status.value == "completed"
+    assert len(adapter.calls) == 3
+    for tool_name, call_args in adapter.calls:
+        assert tool_name in (
+            "prosperfy_vps_panorama",
+            "prosperfy_vps_listar_containers",
+            "prosperfy_vps_verificar_portas",
+        )
+        assert "type" not in call_args
+        assert "resource" not in call_args
+        assert "_resolved_resource" not in call_args
+        assert call_args == {"host": "resolved-vps.prosperfy.com.br"}
+
+
+@pytest.mark.asyncio
 async def test_unknown_resource_fails_closed_without_calling_adapter():
     """Resource não cadastrado para o tenant -> FAILED, adapter nunca chamado."""
     adapter = _RecordingAdapter()

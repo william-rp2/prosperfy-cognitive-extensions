@@ -31,6 +31,17 @@ from ..telemetry.recorder import InMemoryTelemetryRecorder, TelemetryRecord
 
 logger = logging.getLogger(__name__)
 
+# Chaves de metadados que podem existir em resolved_params (ex.: "type" — o
+# tipo do recurso, espelhando a coluna tenant_resources.resource_type) mas
+# NUNCA são argumentos das tools MCP. O servidor ProsperfySkill (FastMCP)
+# valida arguments contra o schema da tool e rejeita chaves extras
+# (ValidationError "Unexpected keyword argument" -> CallToolResult.isError=True
+# -> "erro de protocolo MCP" no adapter). Sprint 0.3 HOTFIX: o orquestrador
+# remove metadados antes de repassar resolved_params como tool args, porque o
+# shape de resolved_params (livre no JSONB) não é o contrato de entrada das
+# tools.
+_RESOURCE_METADATA_NOT_TOOL_ARG_KEYS = frozenset({"type"})
+
 
 class ExecutionOrchestrator:
     """
@@ -372,7 +383,16 @@ class ExecutionOrchestrator:
                         "resource foi resolvido (params sem 'resource', ou "
                         "resource_resolver não configurado neste orchestrator)."
                     )
-                tool_args: dict[str, Any] = dict(resolved)
+                # Sprint 0.3 HOTFIX: resolved_params pode carregar metadados do
+                # recurso (ex.: 'type') além das chaves de conexão concretas.
+                # Metadados não são argumentos de tool MCP — o servidor FastMCP
+                # rejeita 'Unexpected keyword argument' (isError=True). Só
+                # repassa chaves de conexão concretas como tool args.
+                tool_args: dict[str, Any] = {
+                    k: v
+                    for k, v in resolved.items()
+                    if k not in _RESOURCE_METADATA_NOT_TOOL_ARG_KEYS
+                }
             else:
                 tool_args = dict(client_args)
 
