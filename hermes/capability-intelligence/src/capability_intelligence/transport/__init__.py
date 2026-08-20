@@ -5,4 +5,5 @@ transport/__init__.py — Camada de transporte do Capability Intelligence.
 Prosperfy Skills (MCP, REST, gRPC, CLI, SDK...).
 """
 
+from .cognitive_api_adapter import CognitiveApiAdapter
 from .protocol_adapter import ProtocolAdapter
