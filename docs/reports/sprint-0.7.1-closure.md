@@ -141,7 +141,32 @@ NEW_RESOURCES_REGISTERED=0.
 BASE_PROMPT_TOKENS / AUTO_INJECTED_CONTEXT_TOKENS / TOOL_SCHEMA_TOKENS / COMMANDS_SENT_TO_LLM /
 TOOLS_SENT_TO_LLM = UNKNOWN (exige runtime no host).
 
-## Final (atualizado)
+## FINAL RESUME (FASE D+E) — ACCESS GATE (§2) → STOP/BLOCKED
+
+Re-checagem de acesso (2026-08-21, sessão corrente):
+
+```
+COGNITIVE_HOMOLOG_ACCESS=NO
+HERMES_RUNTIME_ACCESS=NO
+PROSPERFYSKILL_MCP_ACCESS=YES (MCP direto re-autenticado; session OK)
+supabase_listar_contas → "Nenhum inventário de contas encontrado" (CLOUD_ACCOUNTS_PATH ausente) —
+  sem caminho de DB via MCP.
+SSH will@177.7.50.182 / 100.88.23.15 → Permission denied (publickey).
+```
+
+Decisão (regras da própria sprint):
+
+```
+FASE D — §2 exige COGNITIVE_HOMOLOG_ACCESS=YES; atual=NO → STOP.
+         §6: o único mecanismo canônico de registro (TenantResourceRepository.upsert/
+         bootstrap CLI) vive no host e exige shell; sem SSH e com prosperfy_vps_executar
+         PROIBIDO (§21) → CANONICAL_RESOURCE_REGISTRATION_AVAILABLE=NO → STOP antes de escrever.
+         NÃO foi improvisada escrita direta no DB.
+FASE E — §2: HERMES_RUNTIME_ACCESS != YES → BLOCKED.
+Nada foi mutado. Nenhuma write tool executada. Nenhum secret lido/exposto.
+```
+
+## Final
 
 ```
 SPRINT071_FINAL_CHECKPOINT=<após push>
