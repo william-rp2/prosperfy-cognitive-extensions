@@ -152,21 +152,25 @@ def _handle_slash(raw: str) -> Optional[str]:
     return f"Subcomando desconhecido: {sub}\n\n{_HELP}"
 
 
-def _handle_servidores(raw: str) -> str:
+async def _handle_servidores(raw: str) -> str:
     """'Como estão meus servidores?' — caminho NOVO via Cognitive.
 
     Usa InfraService (CognitiveApiAdapter → Cognitive API → infra.inspect →
     ProsperfySkill MCP → VPS → server_views). Nenhum fallback para o caminho
     legado MCP direto: falha fecha (propaga exceção) se o Cognitive não
     completar.
-    """
-    import asyncio
 
+    Assíncrono de propósito: o dispatcher do gateway (WhatsApp/web) roda no
+    event loop e AWAITA handlers que retornam coroutine — `asyncio.run()`
+    dentro de um handler síncrono explodiria com "cannot be called from a
+    running event loop". Em contextos síncronos (CLI/TUI) o runtime resolve
+    coroutines via resolve_plugin_command_result().
+    """
     args = raw.strip().split()
     resource = args[1] if len(args) >= 2 else None
     try:
         service = InfraService.from_env()
-        view = asyncio.run(service.servers_status(resource=resource))
+        view = await service.servers_status(resource=resource)
     except Exception as exc:  # noqa: BLE001 — plugin surface: reporta falha fechada
         logger.error("servidores via Cognitive falhou: %s", exc)
         return f"❌ Não foi possível consultar os servidores via Cognitive: {exc}"

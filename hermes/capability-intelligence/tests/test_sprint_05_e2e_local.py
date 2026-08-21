@@ -215,7 +215,7 @@ def test_plugin_servidores_command_via_cognitive():
     real_from_env = infra_service.InfraService.from_env
     infra_service.InfraService.from_env = lambda: InfraService(make_adapter())
     try:
-        out = plugin_mod._handle_servidores("prosperfy-main")
+        out = __import__("asyncio").run(plugin_mod._handle_servidores("prosperfy-main"))
     finally:
         infra_service.InfraService.from_env = real_from_env
 
