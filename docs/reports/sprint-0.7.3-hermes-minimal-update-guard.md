@@ -177,3 +177,58 @@ RECOMMENDED_NEXT_ACTION=1) wiring do cron gate no dispatch pré-LLM (integraçã
   2) ativação progressiva das capacidades V1 preservadas por sprints especializadas.
   Sem Sprint 0.8 / Infra Operations.
 ```
+
+## REAL UPSTREAM UPDATE VALIDATION (canary limpo — runtime intocado)
+
+### Descoberta (por que update anterior no-op)
+```
+RUNTIME = FORK DIVERGENTE da NousResearch/hermes-agent:
+  INSTALL_METHOD=git · CURRENT_BRANCH=main · CURRENT_HEAD=b54140f3
+  REMOTE_ORIGIN_URL=https://github.com/NousResearch/hermes-agent.git
+  ORIGIN_MAIN_SHA=b6bcb3e7 (apos git fetch origin main)
+  AHEAD_OF_ORIGIN_MAIN=44 · BEHIND_ORIGIN_MAIN=1 · MERGE_BASE=divergido
+  GIT_STATUS=dirty (60 arquivos; gateway/run.py ~451 linhas locais alem do slim)
+PREVIOUS_UPDATE_NOOP_CAUSE=DIVERGED_FORK_DIRTY_TREE (updater nao avanca merge de fork
+  divergente com working tree sujo; correto sob regras no reset/clean/stash)
+HERMES_CHECK_UPDATE_AVAILABLE=YES (mensagem) · REAL_UPDATE_AVAILABLE=YES (b6bcb3e7 != b54140f3)
+REAL_RUNTIME_UPDATE_VALIDATION=BLOCKED · RUNTIME_UPDATE_UNSAFE=YES · RUNTIME_LIVE_UNTOUCHED=YES
+```
+
+### Achado: slim.patch do repo estava CORRUPT
+```
+ops/hermes/update/slim.patch=CORRUPT (hunks truncados; "corrupt patch at line 31";
+  count mismatch old/new; git apply rejeita). verify_slim nunca aplica o patch -> nao detectava.
+SLIM_PATCH_REGENERATED=YES (patch novo gerado da base limpa b54140f3 + edits slim minimos;
+  run.py 2 sites include_default_mcp_servers=False + tools_config.py early-return set())
+SLIM_PATCH_VALID=YES (git apply --check PASS em worktree fresco b54140f3; 2054 bytes)
+```
+
+### CANARY REAL (2 worktrees temporarios; removidos apos teste)
+```
+CANARY_BASE_SHA=b54140f3
+  PATCH_APPLY_BASE=PASS
+  VERIFY_SLIM_BASE=PASS
+  NORMAL_CHAT_TOOL_COUNT_BASE=0 · NORMAL_CHAT_SCHEMA_BYTES_BASE=0
+  (SLIM_CONFIG/PATCH_RUN_PY/PATCH_TOOLS_CONFIG/NORMAL_CHAT/CAPABILITY_FAIL_CLOSED todos PASS)
+
+CANARY_TARGET_SHA=b6bcb3e7 (upstream limpo, sem patch, sem working tree do runtime)
+  PATCH_TARGET_STATE=CONFLICT (git apply --check falha: upstream mudou regioes dos hunks)
+  PATCH_APPLY_TARGET=SKIP_CONFLICT (NAO houve blind apply / fuzzy)
+  VERIFY_SLIM_TARGET=FAIL_CLOSED (upstream NAO tem suporte nativo: whatsapp=14, gateway=19,
+    api=... SCHEMA=48931 bytes; PATCH_RUN_PY_PRESENT=FAIL, PATCH_TOOLS_CONFIG=FAIL)
+  -> o patch Slim e REQUERIDO no upstream; b6bcb3e7 nao oferece 0-tools nativamente
+  -> UPDATE_GUARD_FAILS_CLOSED=PASS (guard detecta incompatibilidade, NAO aplica cego)
+
+CORRUPT_PATCH_DETECTED=PASS (git apply --check rejeita patch corrompido)
+UPDATE_ABORTED_ON_CORRUPT_PATCH=PASS (guard aborta antes de update)
+UPDATE_GUARD_CANARY_REAL=PASS (guard: detecta mudanca upstream, classifica patch state,
+  nunca aplica patch corrupto, nunca faz blind overwrite, chama verify_slim, falha fechado)
+CANARY_UPDATE_COMPATIBILITY=CONFLICT
+CANARY_CLEANUP=PASS (4 worktrees + 3 temp homes removidos; runtime b54140f3, gateway
+  PID 3313847 active, 60 dirty files pre-existentes intactos)
+
+RECOMMENDED_NEXT_ACTION (estrategia do fork decidida separadamente):
+  como o repo operacional e fork divergente (44 locais + dirty tree), update real exige
+  reconciliacao planejada (merge/rebase em ambiente controlado, nao no live); o guard ja
+  prova fail-closed; slim.patch regenerado e VALIDO p/ a base b54140f3.
+```

@@ -1,26 +1,30 @@
+diff --git a/gateway/run.py b/gateway/run.py
+index b70f12f8..8a6edb08 100644
 --- a/gateway/run.py
 +++ b/gateway/run.py
-@@ -15322,7 +15322,7 @@
+@@ -15138,7 +15138,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
              platform_key = _platform_config_key(source.platform)
  
              from hermes_cli.tools_config import _get_platform_tools
 -            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
 +            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key, include_default_mcp_servers=False))
              agent_cfg = user_config.get("agent") or {}
+             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
  
-             # ── Contact access: filter toolsets by policy ────────────────
-@@ -19654,7 +19654,7 @@
+@@ -19435,7 +19435,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
          platform_key = _platform_config_key(source.platform)
  
          from hermes_cli.tools_config import _get_platform_tools
 -        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
 +        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key, include_default_mcp_servers=False))
          agent_cfg_local = user_config.get("agent") or {}
+         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
  
-         # ── Contact access: filter toolsets by policy ────────────────────
+diff --git a/hermes_cli/tools_config.py b/hermes_cli/tools_config.py
+index 9c82d5a1..dc61959d 100644
 --- a/hermes_cli/tools_config.py
 +++ b/hermes_cli/tools_config.py
-@@ -1747,6 +1747,11 @@
+@@ -1747,6 +1747,10 @@ def _get_platform_tools(
      # YAML may parse bare numeric names (e.g. ``12306:``) as int.
      # Normalise to str so downstream sorted() never mixes types.
      toolset_names = [str(ts) for ts in toolset_names]
@@ -28,4 +32,6 @@
 +    # Nao recuperar kanban/feishu (recovery de platform-native) nem auto-adicionar plugins/MCP.
 +    if toolset_names == []:
 +        return set()
-+
+ 
+     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+     plugin_ts_keys = _get_plugin_toolset_keys()
