@@ -1,0 +1,73 @@
+--- hermes_cli/plugins.py
++++ hermes_cli/plugins.py
+@@ -2383,9 +2383,50 @@
+     return _ensure_plugins_discovered()._context_engine
+ 
+ 
++def _has_stale_plugin_registry(manager) -> bool:
++    """True when the in-process plugin registry no longer matches the config:
++    a plugin enabled (or disabled) after this process started is not reflected
++    in the cached discovery snapshot. Generic — no plugin name hardcoded.
++
++    Only plugins gated by ``plugins.enabled`` participate (user/standalone/
++    entry-point). Bundled backends/platforms and exclusive/model-provider
++    plugins are governed by other config and never count as stale.
++    """
++    enabled = _get_enabled_plugins()
++    disabled = _get_disabled_plugins()
++    for plugin_id, loaded in manager._plugins.items():
++        manifest = getattr(loaded, "manifest", None)
++        source = getattr(manifest, "source", "") or ""
++        kind = getattr(manifest, "kind", "") or ""
++        if kind in ("exclusive", "model-provider"):
++            continue
++        if source == "bundled" and kind in ("backend", "platform"):
++            continue
++        manifest_name = getattr(manifest, "name", "") or ""
++        should_be_enabled = (
++            enabled is not None
++            and plugin_id not in disabled
++            and manifest_name not in disabled
++            and (plugin_id in enabled or manifest_name in enabled)
++        )
++        if bool(getattr(loaded, "enabled", False)) != bool(should_be_enabled):
++            return True
++    return False
++
++
+ def get_plugin_command_handler(name: str) -> Optional[Callable]:
+-    """Return the handler for a plugin-registered slash command, or ``None``."""
+-    entry = _ensure_plugins_discovered()._plugin_commands.get(name)
++    """Return the handler for a plugin-registered slash command, or ``None``.
++
++    Refreshes discovery when the registry is stale (a plugin enabled/disabled
++    after this process started) so its commands resolve (or stop resolving)
++    without a restart. Built-in precedence is unaffected — built-ins are
++    checked before plugin commands by the dispatcher, and register_command()
++    rejects names that conflict with built-ins.
++    """
++    manager = _ensure_plugins_discovered()
++    if _has_stale_plugin_registry(manager):
++        manager = _ensure_plugins_discovered(force=True)
++    entry = manager._plugin_commands.get(name)
+     return entry["handler"] if entry else None
+ 
+ 
+@@ -2442,9 +2483,15 @@
+     """Return the full plugin commands dict (name → {handler, description, plugin}).
+ 
+     Triggers idempotent plugin discovery so callers can use plugin commands
+-    before any explicit discover_plugins() call.
++    before any explicit discover_plugins() call. Refreshes discovery when the
++    registry is stale (a plugin enabled/disabled after this process started)
++    so command listings (e.g. /commands) reflect the current config without a
++    restart.
+     """
+-    return _ensure_plugins_discovered()._plugin_commands
++    manager = _ensure_plugins_discovered()
++    if _has_stale_plugin_registry(manager):
++        manager = _ensure_plugins_discovered(force=True)
++    return manager._plugin_commands
+ 
+ 
+ def get_plugin_auxiliary_tasks() -> List[Dict[str, Any]]:
