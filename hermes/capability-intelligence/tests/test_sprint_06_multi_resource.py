@@ -208,3 +208,37 @@ def test_list_resources_no_grant_returns_empty():
     )
     keys = __import__("asyncio").run(adapter.list_resources("infra.inspect"))
     assert keys == []
+
+
+# ─── Security: no legacy fallback / no LLM no caminho multi-resource ────────
+
+
+def test_servidores_path_never_uses_legacy_mcp_adapter():
+    """LEGACY_INFRA_FALLBACK_USED=NO: o caminho multi-resource (adapter →
+    InfraService → server_views) não importa nem referencia o MCPAdapter
+    legado (transporte MCP direto)."""
+    import inspect
+
+    import capability_intelligence.transport.cognitive_api_adapter as adapter_mod
+    import capability_intelligence.server_views as views_mod
+    import capability_intelligence.infra_service as svc_mod
+
+    for mod in (adapter_mod, views_mod, svc_mod):
+        src = inspect.getsource(mod)
+        assert "MCPAdapter" not in src, f"{mod.__name__} referencia MCPAdapter"
+        assert "mcp_adapter" not in src, f"{mod.__name__} referencia mcp_adapter"
+
+
+def test_servidores_path_modules_have_no_llm_sdk_imports():
+    """Nenhum import de SDK LLM (openai/anthropic) nos módulos do caminho."""
+    import inspect
+
+    import capability_intelligence.transport.cognitive_api_adapter as adapter_mod
+    import capability_intelligence.server_views as views_mod
+    import capability_intelligence.infra_service as svc_mod
+
+    for mod in (adapter_mod, views_mod, svc_mod):
+        src = inspect.getsource(mod)
+        assert "import openai" not in src and "from openai" not in src
+        assert "import anthropic" not in src and "from anthropic" not in src
+        assert "import litellm" not in src

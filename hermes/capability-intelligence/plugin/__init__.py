@@ -76,10 +76,11 @@ Subcomandos:
   /capability feedback <id>       Histórico de uma Capability
   /capability run <intent> <domain> [context JSON]
 
-/servidores — Vertical Infra/Servidores via Cognitive
-  Responde "Como estão meus servidores?" (status consolidado da VPS) delegando
-  ao Cognitive: Hermes → Cognitive → Policy/Resource Resolver → ProsperfySkill
-  → VPS. Uso: /servidores [resource]
+/servidores — Vertical Infra/Servidores via Cognitive (multi-resource)
+  Responde "Como estão meus servidores?" (status consolidado de TODOS os
+  servidores autorizados da identidade) delegando ao Cognitive: Hermes →
+  Cognitive → descoberta de resources → infra.inspect por resource →
+  ProsperfySkill → VPS. Determinístico, sem LLM.
 """
 
 
