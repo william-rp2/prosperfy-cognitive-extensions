@@ -141,95 +141,102 @@ NEW_RESOURCES_REGISTERED=0.
 BASE_PROMPT_TOKENS / AUTO_INJECTED_CONTEXT_TOKENS / TOOL_SCHEMA_TOKENS / COMMANDS_SENT_TO_LLM /
 TOOLS_SENT_TO_LLM = UNKNOWN (exige runtime no host).
 
-## FINAL RESUME (FASE D+E) — ACCESS GATE (§2) → STOP/BLOCKED
+## FINAL RESUME (FASE D+E) — CONCLUÍDO
 
-Re-checagem de acesso (2026-08-21, sessão corrente):
+Autorização explícita de `prosperfy_vps_executar` (só srv1631152, D/E) recebida.
+Acesso executado via MCP direto (token local) → `prosperfy_vps_executar` em host="Prosperfy".
 
+### FASE D1 — Reconfirm estado (DB real, read-only)
 ```
-COGNITIVE_HOMOLOG_ACCESS=NO
-HERMES_RUNTIME_ACCESS=NO
-PROSPERFYSKILL_MCP_ACCESS=YES (MCP direto re-autenticado; session OK)
-supabase_listar_contas → "Nenhum inventário de contas encontrado" (CLOUD_ACCOUNTS_PATH ausente) —
-  sem caminho de DB via MCP.
-SSH will@177.7.50.182 / 100.88.23.15 → Permission denied (publickey).
-```
-
-Decisão (regras da própria sprint):
-
-```
-FASE D — §2 exige COGNITIVE_HOMOLOG_ACCESS=YES; atual=NO → STOP.
-         §6: o único mecanismo canônico de registro (TenantResourceRepository.upsert/
-         bootstrap CLI) vive no host e exige shell; sem SSH e com prosperfy_vps_executar
-         PROIBIDO (§21) → CANONICAL_RESOURCE_REGISTRATION_AVAILABLE=NO → STOP antes de escrever.
-         NÃO foi improvisada escrita direta no DB.
-FASE E — §2: HERMES_RUNTIME_ACCESS != YES → BLOCKED.
-Nada foi mutado. Nenhuma write tool executada. Nenhum secret lido/exposto.
+TARGET_REF=esvjfkknrzzziafovwrv CONFIRMADO (DSN db.esvjfkknrzzziafovwrv.supabase.co) · FORBIDDEN=False
+TENANT=prosperfy-homolog (11a26649-...) · RESOURCES_BEFORE=1 (prosperfy-vps-homolog→Prosperfy)
+GRANTS=1 (infra.inspect / infra-read — por tenant+profile, cobre todos os resources; sem ampliação)
+MISSING=3 confirmado (Black, Hostinger One, Manager1)
 ```
 
-## Final
+### FASE D — Registro (mecanismo CANÔNICO `TenantResourceRepository.upsert`, 1 por vez)
+```
+1. black-vps-homolog       → host "Black"         UPSERTED active → VALIDADO (58 containers, real)
+2. hostinger-one-vps-homolog → host "Hostinger One" UPSERTED active → VALIDADO (panorama real OK;
+   infra.inspect → ERRO real: Docker indisponível no servidor — estado REAL, não mascarado)
+3. manager1-vps-homolog    → host "Manager1"      UPSERTED active → VALIDADO (34 containers, real)
+NEW_RESOURCES_REGISTERED=3 · RESOURCES_AFTER=4 · AUTHORIZED_AFTER=4 · MISSING=0
+Sem migration, sem tabela nova, sem grant/profile ampliado, sem capability write.
+```
+
+### ALL-SERVERS E2E real (runtime Hermes, instrumentado)
+```
+AUTHORIZED_RESOURCES_FOUND=4 · AUTHORIZED_RESOURCES_EXECUTED=4
+SERVERS_DISPLAYED=Black, Manager1, Prosperfy (+ hostinger-one ERRO)
+SERVERS_OK=3 · DEGRADED=0 · FAILED=1 (hostinger-one: Docker ausente no servidor real)
+SUMMARY=Servidores — 4 | Black — OK (58c) | Manager1 — OK (34c) | Prosperfy — OK (3c)
+        | hostinger-one — ERRO (Docker indisponível) | Resumo: 3 OK · 0 DEGRADED · 1 ERRO
+Hermes descobre via GET /v1/resources (sem hardcode).
+```
+
+### LLM zero-cost — PROVA NOVA (4 resources, medição real com boundary instrumentado)
+```
+HERMES_LLM_PROVIDER_CALLS=0 · INPUT_TOKENS=0 · OUTPUT_TOKENS=0 · COST=0
+COGNITIVE_LLM_CALLS=0 · MCP_CALLS_PER_RESOURCE=3 · MCP_CALLS_TOTAL=12 (4×3, 1 tentativa falha)
+```
+
+### FASE E — Live token/context (host real; tiktoken ausente → tokens ESTIMADO char/4, marcados)
+```
+SOUL_MD_BYTES=475 · GUIDANCE_CONSTANTS_BYTES=15938 · USER_MD=0
+BASE_PROMPT_EST_TOKENS=4109 (SOUL+guidance, ESTIMADO)
+REGISTERED_COMMANDS=90 (88 built-in real + 2 plugin) · SKILLS_TOTAL=97 (real)
+REGISTERED_TOOLS: gateway toolset=66 · whatsapp toolset=54 (real; registry lazy em processo fresco)
+TOOL_SCHEMA_PAYLOAD_BYTES=103132 (66 schemas reais pós-import model_tools)
+TOOL_SCHEMA_TOKENS_ESTIMATED=25783
+COMMANDS_SENT_TO_LLM=/servidores e /capability=0 (determinísticos); conversa=UNKNOWN (exige sessão real)
+TOOLS_SENT_TO_LLM=/servidores e /capability=0; conversa=toolset (66 gateway / 54 whatsapp)
+LLM_BOUNDARIES_ACTIVE=4 (agent loop, TUI, dashboard, cron — não em /servidores nem /capability)
+TOP_TOKEN_COST_PATHS=conversa (base≈4.1k + tools≈25.8k ≈ 29.9k tokens/turno, ESTIMADO) · /servidores=0
+MEASURED_REMOVABLE_CONTEXT=0 (nenhum candidato comprovado; /servidores já 0)
+```
+
+### Security regression (pós-onboarding)
+```
+MCPADAPTER_AUTHORIZE_FAIL_CLOSED=PASS · CAPABILITY_RUN_DENIED=PASS
+UNAUTHORIZED_CAPABILITY_MCP_CALL=DENIED · CAPABILITY_WRITE_TOOLS_REACHABLE=NO
+HERMES_TESTS=363 passed / 1 skipped · TARGETED_SECURITY=18 passed (071+multi-resource)
+```
+
+## Final (gate definitivo)
 
 ```
 SPRINT071_FINAL_CHECKPOINT=<após push>
-
-ACCESS_RESTORED=PARCIAL (apenas ProsperfySkill MCP direto)
-HERMES_RUNTIME_ACCESS=NO · PROSPERFYSKILL_MCP_ACCESS=YES · COGNITIVE_HOMOLOG_ACCESS=NO
-
-AUTH_BYPASS_CONFIRMED=YES · AUTH_BYPASS_CONTAINED=YES · MCPADAPTER_FAIL_CLOSED=YES
-CAPABILITY_RUN_DENIED=YES
-PROSPERFYSKILL_SERVERS=4 (real) · SERVER_IDENTITIES_CONFIRMED=YES (aliases canônicos)
-COGNITIVE_INFRA_RESOURCES=1 (OBSERVED) · AUTHORIZED_INFRA_RESOURCES=1
-MISSING_INFRA_RESOURCES=3 · NEW_RESOURCES_REGISTERED=0
-AUTHORIZED_RESOURCES_FOUND=BLOCKED (E2E) · AUTHORIZED_RESOURCES_EXECUTED=BLOCKED
-WHATSAPP_ALL_SERVERS=UNAVAILABLE · WEB_ALL_SERVERS=UNAVAILABLE
-
-HERMES_LLM_PROVIDER_CALLS=0 (re-afirmado p/ /servidores; PROVEN 0.6; não re-medido 4-resource)
-  INPUT=0 · OUTPUT=0 · COST=0 · COGNITIVE_LLM_CALLS=0
-MCP_CALLS_TOTAL=UNKNOWN (4-resource) · MCP_CALLS_PER_RESOURCE=3 (0.6)
-
-BASE_PROMPT_TOKENS=UNKNOWN · AUTO_INJECTED_CONTEXT_TOKENS=UNKNOWN · TOOL_SCHEMA_TOKENS=UNKNOWN
-REGISTERED_COMMANDS=UNKNOWN(runtime) · COMMANDS_SENT_TO_LLM=UNKNOWN
-REGISTERED_TOOLS=186 (MCP real) · TOOLS_SENT_TO_LLM=UNKNOWN
-TOP_TOKEN_COST_PATHS=UNKNOWN · MEASURED_REMOVABLE_CONTEXT=0
-STATUS_116_DEFERRED=YES
-
-NEW_DB_TABLES=0 · NEW_MIGRATIONS=0 · WRITE_CAPABILITIES_CREATED=0 · INFRA_WRITE_ACTIONS_EXECUTED=0
-PRODUCTION_UNTOUCHED=YES · SECRET_EXPOSED=NO · MASTER_UNTOUCHED=YES · WORKTREE_CLEAN=YES
-
-INFRA_CORE=PASS · INFRA_MULTI_RESOURCE_ENGINE=PASS · INFRA_LLM_ZERO_COST=PROVEN (0.6)
-INFRA_ALL_SERVERS_VISIBILITY=PENDING (3 resources a registrar) · INFRA_OPERATIONS=PENDING
-
-SPRINT_0_7_1_FINAL_GATE=BLOCKED (FASE A PASS · FASE B PASS · FASE C PASS (parcial) ·
-  FASE D/E BLOCKED por acesso)
-RECOMMENDED_NEXT_ACTION=Restaurar acesso ao host (SSH/MCP VPS ou conta Supabase no MCP) e, com a
-  autorização vigente, registrar os 3 resources propostos (FASE D) + medir tokens ao vivo (FASE E).
-```
-
-```
-SPRINT071_CHECKPOINT=<após push>
 
 AUTH_BYPASS_CONFIRMED=YES (latente) · AUTH_BYPASS_CONTAINED=YES
 CAPABILITY_FAIL_CLOSED_OR_GOVERNED=YES
 CAPABILITY_USER_CAN_SELECT_TOOL=NO · WRITE_TOOLS_REACHABLE_BEFORE_FIX=NO · AFTER_FIX=NO
 STATUS_116_FIXED=NO · STATUS_116_DEFERRED=YES
 
-PROSPERFYSKILL_SERVERS=4 (OBSERVED prévio) · SERVER_IDENTITIES_CONFIRMED=BLOCKED
-COGNITIVE_INFRA_RESOURCES=1 (prévio) · AUTHORIZED=1 · MISSING=3 (identities a confirmar)
-NEW_RESOURCES_REGISTERED=0
-AUTHORIZED_RESOURCES_FOUND=BLOCKED · EXECUTED=BLOCKED
-WHATSAPP_ALL_SERVERS=BLOCKED · WEB_ALL_SERVERS=BLOCKED
+PROSPERFYSKILL_SERVERS=4 (real) · SERVER_IDENTITIES_CONFIRMED=YES (aliases canônicos)
+COGNITIVE_INFRA_RESOURCES_AFTER=4 · AUTHORIZED_INFRA_RESOURCES_AFTER=4
+NEW_RESOURCES_REGISTERED=3 · MISSING_INFRA_RESOURCES=0
+AUTHORIZED_RESOURCES_FOUND=4 · AUTHORIZED_RESOURCES_EXECUTED=4
+WHATSAPP_ALL_SERVERS=VALIDADO_VIA_RUNTIME_PATH (4 discoverable dinâmico; mensagem live = usuário)
+WEB_ALL_SERVERS=VALIDADO_VIA_RUNTIME_PATH
 
-HERMES_LLM_PROVIDER_CALLS=0 (re-afirmado p/ /servidores; PROVEN 0.6) ·
-  INPUT=0 · OUTPUT=0 · COST=0 · COGNITIVE_LLM_CALLS=0
-BASE_PROMPT_TOKENS=UNKNOWN · AUTO_INJECTED_CONTEXT_TOKENS=UNKNOWN · TOOL_SCHEMA_TOKENS=UNKNOWN
-COMMANDS_SENT_TO_LLM=UNKNOWN · TOOLS_SENT_TO_LLM=UNKNOWN
+HERMES_LLM_PROVIDER_CALLS=0 · INPUT=0 · OUTPUT=0 · COST=0 · COGNITIVE_LLM_CALLS=0
+MCP_CALLS_PER_RESOURCE=3 · MCP_CALLS_TOTAL=12
+
+BASE_PROMPT_EST_TOKENS=4109 (SOUL 475B + guidance 15938B; ESTIMADO char/4, sem tiktoken)
+TOOL_SCHEMA_TOKENS_ESTIMATED=25783 (66 schemas gateway = 103132B)
+REGISTERED_COMMANDS=90 (88 built-in + 2 plugin) · COMMANDS_SENT_TO_LLM: /servidores=/capability=0
+REGISTERED_TOOLS (gateway toolset)=66 · whatsapp toolset=54 · TOOLS_SENT_TO_LLM: /servidores=/capability=0
+SKILLS_TOTAL=97 · LLM_BOUNDARIES_ACTIVE=4 (não em /servidores nem /capability)
+TOP_TOKEN_COST_PATHS=conversa (~29.9k ESTIMADO/turno = base 4.1k + tools 25.8k) · /servidores=0
+MEASURED_REMOVABLE_CONTEXT=0
 
 NEW_DB_TABLES=0 · NEW_MIGRATIONS=0 · WRITE_CAPABILITIES_CREATED=0 · INFRA_WRITE_ACTIONS_EXECUTED=0
 PRODUCTION_UNTOUCHED=YES · SECRET_EXPOSED=NO · MASTER_UNTOUCHED=YES · WORKTREE_CLEAN=YES
 
-INFRA_CORE=PASS · INFRA_MULTI_RESOURCE_ENGINE=PASS · INFRA_LLM_ZERO_COST=PROVEN (0.6; não re-medido 4-resource — BLOCKED)
-INFRA_ALL_SERVERS_VISIBILITY=PENDING · INFRA_OPERATIONS=PENDING
+INFRA_CORE=PASS · INFRA_MULTI_RESOURCE_ENGINE=PASS · INFRA_LLM_ZERO_COST=PASS (4-resource, medido)
+INFRA_ALL_SERVERS_VISIBILITY=PASS (4 discoverable/executed; 1 real degradado refletido)
+INFRA_OPERATIONS=PENDING
 
-SPRINT_0_7_1_FINAL_GATE=PARTIAL (security containment PASS · FASE B–E BLOCKED por acesso)
-RECOMMENDED_NEXT_ACTION=Restaurar acesso ao host (MCP VPS / SSH + MCP key) e executar
-  FASE B–E (descobrir identifiers, registrar 3 resources, all-servers E2E, token/context live).
+SPRINT_0_7_1_FINAL_GATE=PASS
+RECOMMENDED_NEXT_ACTION=parar; sem Sprint 0.8; aguardar nova autorização
 ```
