@@ -87,6 +87,23 @@ class InMemoryResourceResolver:
     def register(self, tenant_id: str, resource_key: str, resolved_params: dict[str, Any]) -> None:
         self._resources[(tenant_id, resource_key)] = resolved_params
 
+    async def list_active(self, tenant_id: str) -> list[dict[str, Any]]:
+        """Lista resources ativos do tenant (espelho do repo DB, p/ in-memory).
+
+        Retorna dicts {resource_key, resource_type, resolved_params} para o
+        mesmo shape consumido pela rota de descoberta (GET /v1/resources).
+        Determinístico: ordenado por resource_key."""
+        rows = []
+        for (tid, rkey), params in sorted(self._resources.items()):
+            if tid != tenant_id:
+                continue
+            rows.append({
+                "resource_key": rkey,
+                "resource_type": str(params.get("type") or "unknown"),
+                "resolved_params": params,
+            })
+        return rows
+
     async def resolve(self, tenant_id: str, resource_key: str) -> dict[str, Any]:
         key = (tenant_id, resource_key)
         if key not in self._resources:

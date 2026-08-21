@@ -23,9 +23,10 @@ from ..execution.orchestrator import ExecutionOrchestrator
 from ..execution.resource_resolver import InMemoryResourceResolver, ResourceResolver
 from ..policy.engine import PolicyEngine
 from ..registry.registry import InMemoryCapabilityRegistry
+from ..registry.grant_resolver import RegistryGrantResolver
 from ..telemetry.recorder import InMemoryTelemetryRecorder
 from ..tenancy.identity_resolver import IdentityResolver
-from .routes import capabilities, health, status
+from .routes import capabilities, health, resources, status
 from .metadata import api_version, deployment_environment
 
 logger = logging.getLogger(__name__)
@@ -106,7 +107,10 @@ def _build_services(app: FastAPI) -> None:
         telemetry_recorder = InMemoryTelemetryRecorder()
         identity_resolver = IdentityResolver(identity_repo=None, database_mode=False)
         resource_resolver = InMemoryResourceResolver()
-        grant_resolver = None
+        # Mesmo resolvedor que o orchestrator usa por default em in-memory:
+        # exposto no app.state para a rota de descoberta aplicar a mesma
+        # elegibilidade por grant (sem grant → lista vazia).
+        grant_resolver = RegistryGrantResolver(registry)
         dev_tenant = os.getenv("COGNITIVE_DEV_TENANT_ID", "prosperfy")
         resource_resolver.register(
             dev_tenant, "prosperfy-main",
@@ -139,6 +143,7 @@ def _build_services(app: FastAPI) -> None:
 
     app.state.registry = registry
     app.state.orchestrator = orchestrator
+    app.state.grant_resolver = grant_resolver
     app.state.audit_writer = audit_writer
     app.state.telemetry_recorder = telemetry_recorder
     app.state.identity_resolver = identity_resolver
@@ -208,6 +213,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(status.router)
     app.include_router(capabilities.router)
+    app.include_router(resources.router)
 
     logger.info(
         "Prosperfy Cognitive API v%s env=%s capabilities=%d mode=%s",

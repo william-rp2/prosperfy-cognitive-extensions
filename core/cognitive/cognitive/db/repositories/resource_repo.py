@@ -65,6 +65,30 @@ class TenantResourceRepository:
             return None
         return _row_to_tenant_resource(row)
 
+    async def list_active(
+        self,
+        tenant_id: str,
+    ) -> list[TenantResourceRow]:
+        """Lista resources ATIVOS do tenant (RLS enforced).
+
+        Usado pela descoberta de resources (GET /v1/resources): o escopo de
+        tenant vem do RLS via ``tenant_transaction`` (SET LOCAL
+        app.current_tenant_id) — cross-tenant é impossível. A cláusula
+        ``tenant_id = $1`` é belt-and-braces (defense-in-depth, mesmo padrão
+        do GrantRepository.get_grant) caso a policy RLS falte num deploy.
+        Ordenado por resource_key para resposta determinística."""
+        async with tenant_transaction(tenant_id) as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, tenant_id, resource_key, resource_type, resolved_params, active
+                FROM tenant_resources
+                WHERE active = true AND tenant_id = $1
+                ORDER BY resource_key
+                """,
+                uuid.UUID(tenant_id),
+            )
+        return [_row_to_tenant_resource(r) for r in rows]
+
     async def upsert(
         self,
         tenant_id: str,
