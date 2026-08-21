@@ -94,3 +94,32 @@ listing OK, py_compile OK, suíte `tests/hermes_cli/test_plugins.py` +
    `/servidores` com capability-intelligence habilitado).
 
 NÃO declarado Human Acceptance PASS — teste final é do usuário.
+
+## Cutover EXECUTADO (2026-08-21)
+
+Contexto estável provisionado no Homolog (criado 03:14 UTC, validado read-only):
+- Tenant `prosperfy-homolog` (UUID 11a26649-91d0-4971-8d1f-2afc57f8b5ae) — STABLE (não sintético).
+- Service identity `hermes-homolog`, profile `infra-read`, ACTIVE (Sprint 0.4 lifecycle).
+- Grant único: `infra.inspect` (GRANT_COUNT=1 → EXTRA_GRANTS=NO).
+- Resource `prosperfy-vps-homolog` → resolved_params `{host: Prosperfy, type: vps}`.
+
+Env `~/.hermes/.env` (mode 600): 5 chaves COGNITIVE_* PRESENTES.
+
+Auth precheck (adapter Hermes → Homolog):
+- AUTH_INFRA_INSPECT=ALLOW · execute completa (3 tools) · UNGRANTED=DENY (404 fail-closed; DB GRANT_COUNT=1).
+
+Gateway restart `hermes-gateway.service` (user systemd): 3170904 → 3240842 → 3241916
+(final, active, NRestarts=0). Runtime patch + plugin fix ativos.
+
+**Bug real extra encontrado e corrigido no PLUGIN:** `_handle_servidores` usava
+`asyncio.run()` → no gateway async falhava ("asyncio.run() cannot be called from
+a running event loop", log real 00:19). Corrigido para `async def` + `await`
+(dispatcher do gateway aguarda coroutines). Commit `b1ee358`.
+
+**Achado (decisão do operador):** a API Homolog está com `COGNITIVE_LIVE_MCP=0`
+(Modo MOCK) — o caminho completo funciona (auth/policy/dispatch/env/handler) e
+retorna dados `mock-host`. Dados REAIS da VPS exigem `COGNITIVE_LIVE_MCP=1` no
+env da API (`api-runtime-sprint03.env`) + restart de `prosperfy-cognitive-homolog-api.service`
+(passo documentado do Gate; fora do escopo desta sessão).
+
+Veredito: READY_FOR_REAL_HUMAN_RETEST (teste final do usuário).
