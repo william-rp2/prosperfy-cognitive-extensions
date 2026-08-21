@@ -113,9 +113,21 @@ class MCPAdapter(ProtocolAdapter):
         return CatalogResult(matches=matches)
 
     async def authorize(self, request: AuthorizationRequest) -> AuthorizationResult:
-        """Autorizacão via plataforma."""
-        # Placeholder: MCP pode ter endpoint de autorizacão
-        return AuthorizationResult(authorized=True)
+        """Fail-closed (Sprint 0.7.1): este transport MCP DIRETO (legado) não
+        realiza autorização governada — o antigo placeholder devolvia
+        authorized=True sempre, o que permitiria chamar o MCP sem passar pelo
+        boundary de autorização do Cognitive se o pipeline fosse conectado.
+
+        Agora NEGA sempre: qualquer invocação via /capability (pipeline legado)
+        não alcança o MCP sem governança. Migração futura: rotear por Cognitive.
+        """
+        return AuthorizationResult(
+            authorized=False,
+            reason=(
+                "autorização não governada no transport MCP legado — "
+                "execute capabilities via Cognitive"
+            ),
+        )
 
     async def execute(self, request: ExecutionRequest) -> ExecutionReference:
         """Executa Capability via MCP."""

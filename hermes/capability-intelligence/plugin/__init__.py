@@ -8,7 +8,6 @@ O código-fonte oficial está em prosperfy-cognitive-extensions/hermes/capabilit
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import shlex
@@ -18,7 +17,6 @@ from capability_intelligence import __version__ as ci_version
 from capability_intelligence.pipeline import Pipeline
 from capability_intelligence.feedback_store import FeedbackStore
 from capability_intelligence.gap_proposal import GapProposalStore
-from capability_intelligence.models import Domain
 from capability_intelligence.executor import Executor
 from capability_intelligence.negotiator import Negotiator
 from capability_intelligence.interpreter import Interpreter
@@ -124,31 +122,13 @@ def _handle_slash(raw: str) -> Optional[str]:
     if sub == "run":
         if len(argv) < 2:
             return "Uso: /capability run <intent> <domain> [context JSON]"
-        intent = argv[1]
-        domain = Domain.OTHER
-        context = {}
-        if len(argv) >= 3:
-            try:
-                domain = Domain(argv[2])
-            except ValueError:
-                domain = Domain.OTHER
-        if len(argv) >= 4:
-            ctx_raw = argv[3]
-            try:
-                context = json.loads(ctx_raw)
-            except json.JSONDecodeError:
-                # shlex strips quotes, try to restore them
-                import re
-                fixed = re.sub(r'(\w+)(:)', r'"\1"\2', ctx_raw)
-                fixed = re.sub(r':([a-zA-Z][\w]*)', r':"\1"', fixed)
-                try:
-                    context = json.loads(fixed)
-                except json.JSONDecodeError:
-                    pass
+        # Fail-closed (Sprint 0.7.1): o pipeline legado executa via MCP DIRETO
+        # sem authorization governada. O subcomando NÃO executa nada — retorna
+        # negação explícita até a migração governada para Cognitive.
         return (
-            f"🧠 Pipeline: {intent} [{domain.value}]\n"
-            f"  Contexto: {json.dumps(context, ensure_ascii=False)}\n"
-            f"✅ CI v{ci_version} instalado."
+            "🧠 /capability run indisponível (fail-closed).\n"
+            "  Execução direta via MCP legado desabilitada — "
+            "use o Cognitive (ex.: /servidores) ou aguarde a migração governada."
         )
     return f"Subcomando desconhecido: {sub}\n\n{_HELP}"
 
