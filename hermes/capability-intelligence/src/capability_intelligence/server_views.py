@@ -231,11 +231,21 @@ def build_server_status_view(
         )
         if payload is None
     ]
+    # Tool presente mas com payload estruturalmente inválido/incompleto → NÃO
+    # é um resultado válido. Sem essas flags, panorama/containers malformed
+    # seriam retornados como visão não-degradada (success de status falso).
+    panorama_malformed = panorama is not None and not panorama.get("host")
+    containers_malformed = (
+        containers_raw is not None
+        and not isinstance(containers_raw.get("containers"), list)
+    )
     degraded = bool(
         broken_containers
         or (total_ports and len(open_ports) < total_ports)
         or missing_optional
         or ports_malformed
+        or panorama_malformed
+        or containers_malformed
     )
 
     # Panorama: contrato real (host/uptime/load_average) + legado

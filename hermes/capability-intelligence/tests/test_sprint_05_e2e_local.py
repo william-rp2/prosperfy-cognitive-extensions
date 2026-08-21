@@ -436,3 +436,67 @@ def test_full_three_tools_still_success():
     service = InfraService(FakeEmptyAdapter(data=data))
     view = __import__("asyncio").run(service.servers_status())
     assert view["normalized"]["container_count"] == 1
+
+
+# ─── Negativos do Gate: COGNITIVE_UNAVAILABLE + MCP_ERROR (fail-closed) ────
+#
+# Boundary real da Sprint 0.5: CognitiveApiAdapter → InfraService, com
+# transporte controlado (httpx.MockTransport) — sem rede, sem MCP real, sem
+# fallback para MCPAdapter legado.
+
+def _mock_transport(payload=None, raise_error=None):
+    def handler(request):
+        if raise_error is not None:
+            raise raise_error
+        return httpx.Response(200, json=payload)
+    return httpx.MockTransport(handler)
+
+
+def test_cognitive_unavailable_fails_closed_no_legacy_fallback():
+    """Cognitive indisponível (erro de transporte/5xx) → o adapter levanta
+    RuntimeError sanitizado (sem secret/header) e o InfraService propaga;
+    NÃO retorna visão; NÃO usa MCPAdapter legado (LEGACY_FALLBACK_USED=NO)."""
+    from capability_intelligence.infra_service import InfraService
+
+    adapter = CognitiveApiAdapter(
+        base_url="http://cognitive.test",
+        credential="unit-secret",
+        tenant_id="unit-tenant",
+        actor_id="unit-actor",
+        transport=_mock_transport(raise_error=httpx.ConnectError("boom")),
+    )
+    service = InfraService(adapter)
+    with pytest.raises(RuntimeError) as exc_info:
+        __import__("asyncio").run(service.servers_status())
+    assert "ConnectError" in str(exc_info.value) or "inacessível" in str(exc_info.value)
+    # sem secret/header cru no erro (sanitização do adapter real)
+    assert "unit-secret" not in str(exc_info.value)
+    assert "Bearer" not in str(exc_info.value)
+
+
+def test_mcp_error_fails_closed_no_legacy_fallback():
+    """Cognitive retorna status=failed com erro originado no MCP (que ecoa a
+    credencial, como um bug servidor) → o adapter real redige o erro e o
+    InfraService levanta; NENHUMA summary válida; sem fallback legado; sem
+    credencial crua exposta (SECRET_EXPOSED=NO)."""
+    from capability_intelligence.infra_service import InfraService
+
+    secret = "unit-super-secret-credential"
+    payload = {
+        "status": "failed",
+        "execution_id": "mcp-exec",
+        "error": f"ProsperfySkill tool 'x' falhou (erro de protocolo MCP) — {secret}",
+    }
+    adapter = CognitiveApiAdapter(
+        base_url="http://cognitive.test",
+        credential=secret,
+        tenant_id="unit-tenant",
+        actor_id="unit-actor",
+        transport=_mock_transport(payload=payload),
+    )
+    service = InfraService(adapter)
+    with pytest.raises(RuntimeError) as exc_info:
+        __import__("asyncio").run(service.servers_status())
+    # erro propagado de forma sanitizada (sem a credencial crua)
+    assert secret not in str(exc_info.value)
+    assert "MCP" in str(exc_info.value) or "falhou" in str(exc_info.value)

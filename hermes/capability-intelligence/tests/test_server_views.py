@@ -407,3 +407,52 @@ class TestRealContracts:
         assert "1 containers: 1 rodando." in summary             # CONTAINER_STATUS
         assert "1 de 1 portas abertas." in summary               # PORT_STATUS
         assert norm["degraded"] is False
+
+
+class TestMalformedRealPayloadFailClosed:
+    """Payload malformed de tool presente NÃO vira success silencioso: o
+    summary não inventa status/containers/portas positivos falsos e o view
+    sinaliza degradação (fail-closed)."""
+
+    def test_malformed_panorama_does_not_claim_online(self):
+        """Panorama presente mas sem host/uptime válidos → NÃO diz 'Servidor X
+        está online' (falha fechada), mesmo com containers/ports válidos."""
+        raw = {
+            PANORAMA: _wrap(PANORAMA, {"unexpected_key": "x"}),  # malformed
+            CONTAINERS: _wrap(CONTAINERS, REAL_CONTAINERS_PAYLOAD),
+            PORTS: _wrap(PORTS, REAL_PORTS_PAYLOAD),
+        }
+        view = build_server_status_view(raw)
+        assert view["normalized"]["host"] is None
+        assert "está online" not in view["summary"]
+        assert "Não foi possível obter o panorama" in view["summary"]
+        assert view["normalized"]["degraded"] is True
+
+    def test_malformed_containers_not_claim_running(self):
+        """Containers presente mas `containers` não é lista de dicts válidos →
+        NÃO diz 'N containers: N rodando' com dados falsos."""
+        raw = {
+            PANORAMA: _wrap(PANORAMA, REAL_PANORAMA_PAYLOAD),
+            CONTAINERS: _wrap(CONTAINERS, {"containers": "not-a-list"}),
+            PORTS: _wrap(PORTS, REAL_PORTS_PAYLOAD),
+        }
+        view = build_server_status_view(raw)
+        assert view["normalized"]["container_count"] == 0
+        # Não deve afirmar rodando com base em shape inválido.
+        assert not any(" rodando" in line for line in view["summary"].split("\n"))
+        assert view["normalized"]["degraded"] is True
+
+    def test_malformed_ports_not_claim_open(self):
+        """Ports presente mas não interpretável (nem mapa, nem porta/sucesso) →
+        malformed sinalizado; NÃO diz 'N de M portas abertas'."""
+        raw = {
+            PANORAMA: _wrap(PANORAMA, REAL_PANORAMA_PAYLOAD),
+            CONTAINERS: _wrap(CONTAINERS, REAL_CONTAINERS_PAYLOAD),
+            PORTS: _wrap(PORTS, {"comando": "x"}),  # sem porta/sucesso/ports
+        }
+        view = build_server_status_view(raw)
+        assert view["normalized"]["ports_malformed"] is True
+        assert view["normalized"]["ports_open_count"] == 0
+        assert "portas abertas." not in view["summary"]
+        assert "payload de portas malformado" in view["summary"]
+        assert view["normalized"]["degraded"] is True
