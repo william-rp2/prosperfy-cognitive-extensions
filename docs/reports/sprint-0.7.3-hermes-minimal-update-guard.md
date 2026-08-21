@@ -131,3 +131,49 @@ RECOMMENDED_NEXT_ACTION=1) implementar cron specialist (intent gate + toolset cr
 ```
 
 STOP. Nada mais iniciado nesta execução.
+## CLOSURE (Sprint 0.7.3 final)
+
+### Phase C — Cron specialist (gate + toolset + contract)
+```
+cron_router.py — gate determinístico (sem LLM classifier): /cron... · me lembre/lembre-me/crie um
+  lembrete/agende/programe + temporais (todo dia/semana/mês, daqui a X, amanhã às)
+  Negativos: conceituais ("o que é cron?") → NORMAL · NORMAL_CHAT_ROUTER_LLM_CALLS=0
+CRON_SPECIALIST_TOOL_COUNT=1 (cronjob) · CRON_SPECIALIST_SCHEMA_BYTES=7923
+CRON_NORMAL_CHAT_TOOL_COUNT=0 · CRON_TOOL_CARRIED_OVER=NO (teste C5)
+Contract tests C1–C5 + negativos → 19 passed · EXISTING_CRON_JOBS_PRESERVED=YES
+Nota honesta: gate/toolset/contrato prontos; wiring do dispatch pré-LLM no gateway = passo imediato.
+```
+
+### Phase D — Canary + Operational Update
+```
+UPDATE_GUARD_CANARY=PASS: HERMES_HOME temp sem platform_toolsets → verify NORMAL_CHAT_TOOLS=FAIL
+  (50/66/35), SCHEMA=FAIL (251013), SLIM_VERIFY=FAIL_CLOSED (BROKEN DETECTED) → restauração →
+  SLIM_VERIFY=PASS → ROLLBACK_PATH_PROVEN=YES · UPDATE_GUARD_FAILS_CLOSED=PASS
+OPERATIONAL UPDATE (autorizado §21, via fluxo do guard):
+  BEFORE_SHA=b54140f3 · AFTER_SHA=b54140f3 (UPSTREAM_UPDATE_AVAILABLE=YES no --check; update não
+  avançou commit; patches SOBREVIVERAM → PATCH_PRESENT)
+  verify_slim pós-update = PASS · /servidores pós-update = 4 resources, LLM 0/0/0/0 + cognitive 0, MCP 12
+  HERMES_GATEWAY_ACTIVE=YES (PID 3313847 · NRestarts=0) · UPDATE_ACCEPTED=YES · ROLLBACK_EXECUTED=NO
+SOURCE_PATCH_REQUIRED=YES · PATCH_RETIRE_CANDIDATE=NO
+```
+
+## Métricas finais (closure)
+```
+SPRINT073_FINAL_CHECKPOINT=<após push>
+NORMAL_CHAT_TOOL_COUNT=0 · SCHEMA_BYTES=0 · MINIMAL_OI≈4103 (ESTIMATED)
+CRON_SPECIALIST_AVAILABLE=YES · TOOL_COUNT=1 · SCHEMA_BYTES=7923 · CARRIED_OVER=NO
+ROUTER_LLM_CALLS=0 · EXISTING_CRON_JOBS_PRESERVED=YES · CRON_E2E=contract PASS (19)
+UPDATE_GUARD_CREATED=YES · DRY_RUN=PASS · CANARY=PASS · FAILS_CLOSED=PASS · ROLLBACK_PROVEN=YES
+UPSTREAM_UPDATE_AVAILABLE=YES · BEFORE_SHA=b54140f3 · AFTER_SHA=b54140f3
+OPERATIONAL_UPDATE_EXECUTED=YES · UPDATE_ACCEPTED=YES · ROLLBACK_EXECUTED=NO
+HERMES_GATEWAY_ACTIVE=YES · /SERVIDORES=PASS · LLM_CALLS=0 · RESOURCES 4/4
+CAPABILITY_FAIL_CLOSED=PASS · LEGACY_FALLBACK=NO/NO
+V1_ACTIVE_NORMAL=none · SPECIALIZED=cronjob · PRESERVED=9 · DISABLED=19
+BROWSER_HARNESS_FUTURE=YES · NATIVE_BROWSER=NO · DB_TABLES=0 · MIGRATIONS=0 · WRITE_CAPS=0
+PRODUCTION_UNTOUCHED=YES · SECRET_EXPOSED=NO · MASTER_UNTOUCHED=YES · WORKTREE_CLEAN=YES
+
+SPRINT_0_7_3_FINAL_GATE=PASS
+RECOMMENDED_NEXT_ACTION=1) wiring do cron gate no dispatch pré-LLM (integração imediata);
+  2) ativação progressiva das capacidades V1 preservadas por sprints especializadas.
+  Sem Sprint 0.8 / Infra Operations.
+```
