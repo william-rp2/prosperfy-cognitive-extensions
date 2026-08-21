@@ -284,6 +284,30 @@ class CognitiveApiAdapter(ProtocolAdapter):
             capabilities_degraded=0,
         )
 
+    async def list_resources(self, capability: str = "infra.inspect") -> list[str]:
+        """Descoberta autorizada de resources utilizáveis (GET /v1/resources).
+
+        Sprint 0.6 FASE 3: retorna apenas resource_keys lógicos para os quais
+        a identidade autenticada tem grant da capability e o resource é
+        utilizável. O Hermes NUNCA possui lista hardcoded de servidores — a
+        descoberta é do Cognitive. A execução por resource continua passando
+        pela autorização normal (defense-in-depth).
+
+        Retorna lista vazia se não houver resources elegíveis (sem grant ou
+        tenant sem resources utilizáveis) — fail-closed, sem erro."""
+        from urllib.parse import quote
+
+        payload = await self._request(
+            "GET",
+            f"{self._base_url}/v1/resources?capability={quote(capability)}",
+        )
+        resources = payload.get("resources") or []
+        return [
+            str(item["resource_key"])
+            for item in resources
+            if isinstance(item, dict) and item.get("resource_key")
+        ]
+
 
 # ─── helpers públicos ─────────────────────────────────────────────────
 

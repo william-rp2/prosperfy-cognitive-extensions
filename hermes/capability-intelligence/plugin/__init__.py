@@ -153,12 +153,13 @@ def _handle_slash(raw: str) -> Optional[str]:
 
 
 async def _handle_servidores(raw: str) -> str:
-    """'Como estão meus servidores?' — caminho NOVO via Cognitive.
+    """'Como estão meus servidores?' — caminho NOVO via Cognitive (multi-resource).
 
-    Usa InfraService (CognitiveApiAdapter → Cognitive API → infra.inspect →
-    ProsperfySkill MCP → VPS → server_views). Nenhum fallback para o caminho
-    legado MCP direto: falha fecha (propaga exceção) se o Cognitive não
-    completar.
+    Sprint 0.6 FASE 4: descobre via Cognitive TODOS os resources VPS
+    autorizados da identidade (GET /v1/resources) e executa infra.inspect por
+    resource (cada um passa pela autorização normal). Consolidação
+    determinística em build_servidores_view — SEM LLM. Hermes não possui
+    lista hardcoded de servidores.
 
     Assíncrono de propósito: o dispatcher do gateway (WhatsApp/web) roda no
     event loop e AWAITA handlers que retornam coroutine — `asyncio.run()`
@@ -166,18 +167,23 @@ async def _handle_servidores(raw: str) -> str:
     running event loop". Em contextos síncronos (CLI/TUI) o runtime resolve
     coroutines via resolve_plugin_command_result().
     """
-    args = raw.strip().split()
-    resource = args[1] if len(args) >= 2 else None
     try:
         service = InfraService.from_env()
-        view = await service.servers_status(resource=resource)
+        view = await service.servidores_status()
     except Exception as exc:  # noqa: BLE001 — plugin surface: reporta falha fechada
         logger.error("servidores via Cognitive falhou: %s", exc)
         return f"❌ Não foi possível consultar os servidores via Cognitive: {exc}"
     norm = view["normalized"]
+    if norm.get("failure_count") and not norm.get("resources"):
+        return (
+            f"🖥️ Servidores — erro na descoberta/execução\n"
+            f"  {view['summary']}"
+        )
     header = (
-        f"🖥️ Servidores [{norm.get('host') or '?'}]"
-        f" — {'ATENÇÃO: degradado' if norm.get('degraded') else 'OK'}\n"
+        f"🖥️ Servidores [{len(norm.get('resources') or [])}"
+        + (f" · {norm['failure_count']} erro(s)" if norm.get("failure_count") else "")
+        + f"]"
+        f" — {'ATENÇÃO' if norm.get('degraded_count') or norm.get('failure_count') else 'OK'}\n"
     )
     return header + view["summary"]
 

@@ -339,3 +339,72 @@ def build_server_status_view(
         "normalized": normalized,
         "summary": "\n".join(summary),
     }
+
+
+def build_servidores_view(
+    resource_views: list[dict[str, Any]],
+    failures: list[dict[str, Any]] | None = None,
+    capability_id: str = "infra.inspect",
+) -> dict[str, Any]:
+    """Consolida a visão multi-servidor (Sprint 0.6 FASE 4).
+
+    Transforma N visões individuais (build_server_status_view) + falhas por
+    resource em uma visão única determinística — SEM LLM.
+
+    Partial failure (fail-closed por resource): um resource com erro não
+    vira falso OK; é reportado como ERRO e NÃO impede mostrar os demais
+    resultados válidos.
+
+    Formato do summary (contrato aprovado):
+      Servidores — 3
+      Prosperfy — OK
+        <linhas da visão do resource>
+      ...
+      Resumo: 2 OK · 1 DEGRADED [· 1 ERRO]
+    """
+    failures = failures or []
+    ok = [v for v in resource_views if not v["normalized"].get("degraded")]
+    degraded = [v for v in resource_views if v["normalized"].get("degraded")]
+
+    resources_norm = [
+        {
+            "resource_key": v.get("resource_key"),
+            "host": v["normalized"].get("host"),
+            "degraded": bool(v["normalized"].get("degraded")),
+            "container_count": v["normalized"].get("container_count"),
+            "ports_open_count": v["normalized"].get("ports_open_count"),
+        }
+        for v in resource_views
+    ]
+
+    summary: list[str] = [f"Servidores — {len(resource_views) + len(failures)}"]
+    for v in resource_views:
+        norm = v["normalized"]
+        host = norm.get("host") or v.get("resource_key") or "?"
+        state = "DEGRADED" if norm.get("degraded") else "OK"
+        summary.append(f"{host} — {state}")
+        for line in v["summary"].split("\n"):
+            if line.startswith("Servidor "):
+                # A linha de status online vira o header do resource (dedup)
+                continue
+            summary.append("  " + line)
+    for f in failures:
+        summary.append(f"{f['resource_key']} — ERRO")
+        summary.append(f"  {f['error']}")
+
+    tail = f"Resumo: {len(ok)} OK · {len(degraded)} DEGRADED"
+    if failures:
+        tail += f" · {len(failures)} ERRO"
+    summary.append(tail)
+
+    return {
+        "capability_id": capability_id,
+        "normalized": {
+            "resources": resources_norm,
+            "failures": failures,
+            "ok_count": len(ok),
+            "degraded_count": len(degraded),
+            "failure_count": len(failures),
+        },
+        "summary": "\n".join(summary),
+    }

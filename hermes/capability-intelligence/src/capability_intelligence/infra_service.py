@@ -30,6 +30,7 @@ from .server_views import (
     CONTAINERS,
     PANORAMA,
     build_server_status_view,
+    build_servidores_view,
 )
 from .transport.cognitive_api_adapter import CognitiveApiAdapter
 
@@ -94,7 +95,38 @@ class InfraService:
                 f"({PANORAMA}, {CONTAINERS}) — fail-closed: nenhum resultado "
                 "válido para reportar como sucesso"
             )
-        return build_server_status_view(data)
+        view = build_server_status_view(data, capability_id=capability)
+        view["resource_key"] = selector
+        return view
+
+    async def servidores_status(self) -> dict[str, Any]:
+        """Consolida 'Como estão meus servidores?' — TODOS os resources VPS
+        autorizados do tenant (Sprint 0.6 FASE 4).
+
+        Hermes NÃO possui lista de servidores: descobre via Cognitive
+        (GET /v1/resources?capability=infra.inspect — resources elegíveis
+        para a identidade) e executa infra.inspect POR resource. Cada
+        execução passa novamente pela autorização normal do Cognitive
+        (LIST/DISCOVERY autorizado + EXECUTION authorization por resource).
+
+        Determinístico, sem LLM. Partial failure: erro de UM resource não
+        produz falso OK e não impede mostrar os demais resultados válidos
+        (fail-closed por resource, consolidação com seção de ERRO).
+        """
+        resource_keys = await self._adapter.list_resources()
+        if not resource_keys:
+            return build_servidores_view([], [])
+        views: list[dict[str, Any]] = []
+        failures: list[dict[str, Any]] = []
+        for resource_key in resource_keys:
+            try:
+                views.append(await self.servers_status(resource=resource_key))
+            except Exception as exc:  # noqa: BLE001 — fail-closed por resource
+                failures.append({
+                    "resource_key": resource_key,
+                    "error": str(exc)[:300],
+                })
+        return build_servidores_view(views, failures)
 
     @staticmethod
     def _has_required_tools(data: dict[str, Any]) -> bool:
