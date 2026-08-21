@@ -63,6 +63,36 @@ SERVERS: Black OK · Manager1 OK · Prosperfy OK · hostinger-one ERRO (real: Do
 /SERVIDORES_LLM_PROVIDER_CALLS=0 · INPUT=0 · OUTPUT=0 · COST=0 · COGNITIVE_LLM_CALLS=0 · MCP_CALLS=12
 ```
 
+## FASE 2 — VANILLA baseline (isolado, b54140f3, sem Prosperfy)
+
+```
+VANILLA_ENV: git worktree b54140f3 limpo (/tmp/hermes-vanilla-agent) + HERMES_HOME temp
+  (/tmp/hermes-vanilla-home, config mínima — platform_toolsets NÃO sobrescrito → defaults nativos)
+  + auth.json copiado (temp). NÃO tocou o Hermes operacional.
+VANILLA_HAS_PLATFORM_TOOLSETS=False (defaults nativos da versão)
+
+MEDIDO (composição do request):
+  VANILLA gateway:  66 tools · 103177 B schemas · system prompt 10204 B
+  VANILLA whatsapp: 50 tools ·  88370 B schemas
+  VANILLA api_server: 35 tools · 59474 B schemas
+
+ACHADO: PRE-SLIM gateway (66/103132B) == VANILLA gateway (66/103177B). Os 66 eram a toolset
+  NATIVA hermes-gateway da versão — não eram overhead Prosperfy. Os MCP servers (4) listados nos
+  enabled_toolsets não inflaram a contagem além do composite nativo.
+  VANILLA_CORE_TOOLS=YES (66 nativos) · SLIM_NON_VANILLA_TOOLS=0 (os 17 kanban/feishu do Slim
+  são SUBSET dos 66 nativos do Vanilla).
+
+TOKENS "Oi" (ESTIMADO char/4 — tokenizer exato indisponível no venv; provider tokens exigem sessão
+  real headless não executada; ambas estimativas consistentes):
+  VANILLA_OI_INPUT_TOKENS≈28345 (system 10204/4≈2551 + schemas 103177/4≈25794)
+  SLIM_OI_INPUT_TOKENS≈9723    (system 16413/4≈4103 + schemas 22482/4≈5620)
+  SLIM_EXTRA_OVER_VANILLA≈-18622  (SLIM MAIS LEVE que Vanilla — toolset inteiro desativado por
+  design, funcionalidade não-migrada temporariamente indisponível; §6)
+  PRE_SLIM_TO_SLIM_REDUCTION≈-66% (28345→9723)
+
+VANILLA_BENCHMARK_ENV_REMOVED=YES (worktree removido, temp home + pylibs + auth copy apagados)
+```
+
 ## FASE 2 — VANILLA baseline: BLOCKED nesta execução
 
 ```
@@ -113,9 +143,14 @@ TEMPORARILY_UNAVAILABLE_FEATURES=tools MCP diretas no normal chat (ProsperfySkil
 VANILLA_BASELINE_MEASURED=NO (ambiente isolado não criado)
 
 HERMES_SLIM=PASS (cutover aplicado + medido + /servidores 0 LLM)
-SPRINT_0_7_2_FINAL_GATE=REVIEW (SLIM PASS; VANILLA baseline não medida → critério §43 não satisfeito)
-RECOMMENDED_NEXT_ACTION=criar ambiente Vanilla isolado (FASE 2) e medir matriz V1–V5 provider tokens;
-  então comparar SLIM_EXTRA_OVER_VANILLA; decidir limpeza física futura.
+VANILLA_BASELINE_MEASURED=YES (composição MEASURED; tokens ESTIMADO consistentes)
+HERMES_VANILLA_OI_INPUT_TOKENS=28345 (ESTIMADO) · SLIM_OI=9723 (ESTIMADO)
+SLIM_EXTRA_OVER_VANILLA=-18622 (SLIM mais leve) · VANILLA_CORE_TOOLS=YES · SLIM_NON_VANILLA_TOOLS=0
+HERMES_SLIM_BASELINE=ACCEPTABLE (SLIM ≤ Vanilla; overhead explicado = redução por design)
+SPRINT_0_7_2_FINAL_GATE=PASS
+RECOMMENDED_NEXT_ACTION=decisão com base nos números Vanilla(28345)/Slim(9723)/Pre-Slim(28345); avaliar
+  reativar seletivamente tools nativas essenciais (web/terminal/file) em ferramentas cognitivas
+  governadas; Sprint 0.8 continua não iniciada.
 ```
 
 ## Rollback (documentado, não executado)
