@@ -1,0 +1,31 @@
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -15322,7 +15322,7 @@
+             platform_key = _platform_config_key(source.platform)
+ 
+             from hermes_cli.tools_config import _get_platform_tools
+-            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
++            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key, include_default_mcp_servers=False))
+             agent_cfg = user_config.get("agent") or {}
+ 
+             # ── Contact access: filter toolsets by policy ────────────────
+@@ -19654,7 +19654,7 @@
+         platform_key = _platform_config_key(source.platform)
+ 
+         from hermes_cli.tools_config import _get_platform_tools
+-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
++        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key, include_default_mcp_servers=False))
+         agent_cfg_local = user_config.get("agent") or {}
+ 
+         # ── Contact access: filter toolsets by policy ────────────────────
+--- a/hermes_cli/tools_config.py
++++ b/hermes_cli/tools_config.py
+@@ -1747,6 +1747,11 @@
+     # YAML may parse bare numeric names (e.g. ``12306:``) as int.
+     # Normalise to str so downstream sorted() never mixes types.
+     toolset_names = [str(ts) for ts in toolset_names]
++    # Slim (Sprint 0.7.3): plataforma com toolset EXPLICITAMENTE vazio => normal chat ZERO tools.
++    # Nao recuperar kanban/feishu (recovery de platform-native) nem auto-adicionar plugins/MCP.
++    if toolset_names == []:
++        return set()
++
