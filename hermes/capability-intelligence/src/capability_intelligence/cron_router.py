@@ -71,6 +71,22 @@ _CONCEPTUAL = (
     "o que sao",
 )
 
+# Scheduling temporal adicional (Sprint 0.7.8 §5): "em X minutos/horas/dias",
+# "hoje às", dias da semana — sinal claro de agendamento/recorrência.
+_SCHEDULE_RE = re.compile(
+    r"(em \d+ (minuto|minutos|hora|horas|dia|dias))"
+    r"|(hoje às|hoje as|hoje à)"
+    r"|(segunda-feira|terça-feira|quarta-feira|quinta-feira|sexta-feira|sábado|domingo)"
+    r"|(segunda|terça|quarta|quinta|sexta|sabado)"
+    r"|(às \d{1,2}h|as \d{1,2}h|a cada \d+)"
+)
+_WEEKDAYS_SCHEDULE = (
+    "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
+    "sexta-feira", "sábado", "domingo",
+    "toda segunda", "toda terça", "toda quarta", "toda quinta",
+    "toda sexta", "todo sábado", "todo domingo",
+)
+
 
 def _has_conceptual(text: str) -> bool:
     low = text.lower()
@@ -91,7 +107,8 @@ def is_cron_intent(message: str) -> bool:
         return False
     has_action = any(p in low for p in _ACTION_PREFIXES)
     has_temporal = any(m in low for m in _TEMPORAL_MARKERS)
-    if has_action and has_temporal:
+    has_schedule = bool(_SCHEDULE_RE.search(low)) or any(m in low for m in _WEEKDAYS_SCHEDULE)
+    if has_action and (has_temporal or has_schedule):
         return True
     # "/cron" no meio (ex.: "execute /cron listar") — raro, aceito.
     if "/cron " in text:
