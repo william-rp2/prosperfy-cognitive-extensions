@@ -78,6 +78,10 @@ _MEMORY_READ = (
     "você se lembra", "voce se lembra", "qual informação você tem salva",
     "qual informacao voce tem salva", "o que você sabe sobre", "o que voce sabe sobre",
     "tem salvo sobre", "tem salva sobre",
+    "pedi para você lembrar", "pedi para voce lembrar",
+    "pedi para você guardar", "pedi para voce guardar",
+    "eu pedi para lembrar", "pedi que você lembrasse", "pedi que voce lembrasse",
+    "qual foi a informação que eu pedi", "qual informação eu pedi",
 )
 
 # ─── SKILLS (sob demanda) ───────────────────────────────────────────────
