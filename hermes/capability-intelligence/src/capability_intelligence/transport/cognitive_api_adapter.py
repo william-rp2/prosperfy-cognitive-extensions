@@ -302,15 +302,15 @@ class CognitiveApiAdapter(ProtocolAdapter):
             f"{self._base_url}/v1/resources?capability={quote(capability)}",
         )
         resources = payload.get("resources") or []
-        # NOTA (Sprint 0.7.6.2 presentation): o metadata do resource exposto
-        # pela Cognitive hoje é {resource_key, resource_type} — sem display
-        # name. O display (ex.: "Hostinger One") é derivado do panorama do
-        # resource nos OK. Se a Cognitive passar a expor display_name no
-        # /v1/resources, a resolução de nomes amigáveis passa a cobrir também
-        # os resources com falha sem chamada extra (consumido por
-        # InfraService.servidores_status).
+        # Sprint 0.7.6.2 closure: o Cognitive passou a expor display_name no
+        # /v1/resources (derivado de resolved_params.host — fonte canônica).
+        # Consumimos o nome amigável aqui (NUNCA derivado por regex do key) e
+        # o propagamos para a visão consolidada (resources OK e falhas).
         return [
-            str(item["resource_key"])
+            {
+                "resource_key": str(item["resource_key"]),
+                "display_name": str(item.get("display_name") or item["resource_key"]),
+            }
             for item in resources
             if isinstance(item, dict) and item.get("resource_key")
         ]

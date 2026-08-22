@@ -114,17 +114,25 @@ class InfraService:
         produz falso OK e não impede mostrar os demais resultados válidos
         (fail-closed por resource, consolidação com seção de ERRO).
         """
-        resource_keys = await self._adapter.list_resources()
-        if not resource_keys:
+        resource_meta = await self._adapter.list_resources()
+        if not resource_meta:
             return build_servidores_view([], [])
+        resource_keys = [r["resource_key"] for r in resource_meta]
+        display_by_key = {r["resource_key"]: r.get("display_name") or r["resource_key"] for r in resource_meta}
         views: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
 
         async def _inspect(resource_key: str) -> tuple[str, dict[str, Any] | None]:
             try:
-                return "ok", await self.servers_status(resource=resource_key)
+                view = await self.servers_status(resource=resource_key)
+                view["display_name"] = display_by_key.get(resource_key, resource_key)
+                return "ok", view
             except Exception as exc:  # noqa: BLE001 — fail-closed por resource
-                return "err", {"resource_key": resource_key, "error": str(exc)[:300]}
+                return "err", {
+                    "resource_key": resource_key,
+                    "display_name": display_by_key.get(resource_key, resource_key),
+                    "error": str(exc)[:300],
+                }
 
         # Paralelo (Sprint 0.7.6.2 perf): execução SERIAL de 4 resources era a
         # soma das latências (≈40s); cada infra.inspect faz 3 MCP calls. Gather
