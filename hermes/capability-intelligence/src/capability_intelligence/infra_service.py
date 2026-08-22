@@ -23,6 +23,7 @@ direto (o que garantiria LEGACY_INFRA_PATH_USED=NO).
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any
 
@@ -118,14 +119,23 @@ class InfraService:
             return build_servidores_view([], [])
         views: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
-        for resource_key in resource_keys:
+
+        async def _inspect(resource_key: str) -> tuple[str, dict[str, Any] | None]:
             try:
-                views.append(await self.servers_status(resource=resource_key))
+                return "ok", await self.servers_status(resource=resource_key)
             except Exception as exc:  # noqa: BLE001 — fail-closed por resource
-                failures.append({
-                    "resource_key": resource_key,
-                    "error": str(exc)[:300],
-                })
+                return "err", {"resource_key": resource_key, "error": str(exc)[:300]}
+
+        # Paralelo (Sprint 0.7.6.2 perf): execução SERIAL de 4 resources era a
+        # soma das latências (≈40s); cada infra.inspect faz 3 MCP calls. Gather
+        # reduz o total para ~max(resource) (≈10s) sem alterar semantics nem o
+        # número de MCP calls (12). Fail-closed por resource é preservado.
+        results = await asyncio.gather(*[_inspect(k) for k in resource_keys])
+        for outcome, payload in results:
+            if outcome == "ok":
+                views.append(payload)
+            else:
+                failures.append(payload)
         return build_servidores_view(views, failures)
 
     @staticmethod

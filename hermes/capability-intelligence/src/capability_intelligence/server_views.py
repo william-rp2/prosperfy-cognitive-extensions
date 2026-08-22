@@ -389,7 +389,16 @@ def build_servidores_view(
                 continue
             summary.append("  " + line)
     for f in failures:
-        summary.append(f"{f['resource_key']} — ERRO")
+        # Friendly name quando disponível (host do panorama no sucesso;
+        # display_name do metadata quando a Cognitive expuser). Nunca expor
+        # o resource_key cru se existir nome de exibição/canônico.
+        display = (
+            f.get("display_name")
+            or f.get("host")
+            or f.get("resource_key")
+            or "?"
+        )
+        summary.append(f"{display} — ERRO")
         summary.append(f"  {f['error']}")
 
     tail = f"Resumo: {len(ok)} OK · {len(degraded)} DEGRADED"
