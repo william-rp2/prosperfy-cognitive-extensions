@@ -1,0 +1,28 @@
+diff --git a/gateway/run.py b/gateway/run.py
+index 9e9adaf5..2db8fdad 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -22428,7 +22428,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+             cfg["platform_toolsets"] = pts
+             return sorted(_get_platform_tools(cfg, platform_key))
+ 
+-        return sorted(_get_platform_tools(user_config, platform_key))
++        return sorted(_get_platform_tools(user_config, platform_key, include_default_mcp_servers=False))
+ 
+     async def _run_background_task_inner(
+         self,
+diff --git a/hermes_cli/tools_config.py b/hermes_cli/tools_config.py
+index a28fc09f..e844410c 100644
+--- a/hermes_cli/tools_config.py
++++ b/hermes_cli/tools_config.py
+@@ -2429,6 +2429,10 @@ def _get_platform_tools(
+     # YAML may parse bare numeric names (e.g. ``12306:``) as int.
+     # Normalise to str so downstream sorted() never mixes types.
+     toolset_names = [str(ts) for ts in toolset_names]
++    # Slim (Sprint 0.7.3/0.7.4): plataforma com toolset EXPLICITAMENTE vazio => normal chat ZERO tools.
++    # Nao recuperar kanban/feishu (recovery de platform-native) nem auto-adicionar plugins/MCP.
++    if toolset_names == []:
++        return set()
+ 
+     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+     plugin_ts_keys = _get_plugin_toolset_keys()
