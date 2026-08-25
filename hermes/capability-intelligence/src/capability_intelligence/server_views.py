@@ -183,6 +183,15 @@ def _normalize_ports(ports_raw: dict[str, Any] | None) -> tuple[list[dict[str, A
             for port, state in mapping.items()
         ]
         return items, False
+    # Contrato REAL (Phase 1A, RAW provado): prosperfy_vps_verificar_portas é um
+    # SCAN (`sudo ss -tulpn`) — o número fica no stdout (texto); `porta` vem null.
+    stdout = ports_raw.get("stdout") if isinstance(ports_raw, dict) else None
+    if isinstance(stdout, str) and "LISTEN" in stdout:
+        listen_ports = _parse_ss_stdout(stdout)
+        return [
+            {"port": p, "state": "open", "success": True}
+            for p in listen_ports
+        ], False
     # Verificação única (LEGACY porta/port + REAL port_number/numero/...):
     # o identificador vem SEMPRE de _port_identifier() — nunca str(None).
     # O branch antigo interceptava o payload quando "port" existia com valor
@@ -214,6 +223,27 @@ def _port_identifier(item: dict[str, Any]) -> Any:
         if value is not None:
             return value
     return None
+
+
+def _parse_ss_stdout(stdout: str) -> list[str]:
+    """Extrai portas de escuta (LISTEN) do stdout de `ss -tulpn`.
+
+    Formato ss: `tcp LISTEN 0 40 0.0.0.0:80 0.0.0.0:* [users:...]`
+    → colunas: Netid, State, Recv-Q, Send-Q, Local, Peer → Local = índice 4.
+    Ex.: `0.0.0.0:80`→80 · `127.0.0.1:3000`→3000 · `[::]:443`→443 · `*:8080`→8080.
+    """
+    ports: list[str] = []
+    for line in stdout.splitlines():
+        if "LISTEN" not in line:
+            continue
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        local = parts[4]
+        port = local.rsplit(":", 1)[-1].strip("[]*")
+        if port.isdigit() and port not in ports:
+            ports.append(port)
+    return sorted(ports, key=int)
 
 
 def build_server_status_view(
