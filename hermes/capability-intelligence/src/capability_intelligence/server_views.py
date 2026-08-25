@@ -183,19 +183,10 @@ def _normalize_ports(ports_raw: dict[str, Any] | None) -> tuple[list[dict[str, A
             for port, state in mapping.items()
         ]
         return items, False
-    if "porta" in ports_raw or "port" in ports_raw:
-        porta = _pick(ports_raw.get("porta"), ports_raw.get("port"))
-        success = ports_raw.get("sucesso")
-        return [{
-            "port": str(porta),
-            "state": "open" if success is True else str(ports_raw.get("exit_status") or "closed"),
-            "success": success is True,
-            "exit_status": ports_raw.get("exit_status"),
-        }], False
-    # Contrato REAL observado (Phase 1A): a tool de portas pode retornar o
-    # identificador sob chaves alternativas (port_number/numero/port_id/etc.) —
-    # antigamente isso virava "port": "None" na visão. Busca multi-chave
-    # (LEGACY + REAL) e fallback explícito.
+    # Verificação única (LEGACY porta/port + REAL port_number/numero/...):
+    # o identificador vem SEMPRE de _port_identifier() — nunca str(None).
+    # O branch antigo interceptava o payload quando "port" existia com valor
+    # None e o número real estava em outra chave → "None" na visão.
     porta = _port_identifier(ports_raw)
     success = ports_raw.get("sucesso", ports_raw.get("success"))
     if porta is not None or success is not None:
