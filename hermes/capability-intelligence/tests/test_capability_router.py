@@ -47,6 +47,19 @@ cases = [
     ("Existe uma skill para Y?", "SKILLS"),
     # Collision: recall "me lembre" sem scheduling -> NÃO é cron
     ("Me lembre o que conversamos ontem.", "SESSION_SEARCH"),
+    # INFRA_READ (Phase 1A)
+    ("Como estão meus servidores?", "INFRA_READ"),
+    ("Como está o Prosperfy?", "INFRA_READ"),
+    ("Quais containers estão rodando no Prosperfy?", "INFRA_READ"),
+    ("Quais portas estão abertas no Black?", "INFRA_READ"),
+    ("Tem algum container parado no Manager1?", "INFRA_READ"),
+    ("O que está acontecendo com o Hostinger One?", "INFRA_READ"),
+    ("Quantos containers existem no Black?", "INFRA_READ"),
+    # INFRA_READ negativos (conceitual → NORMAL)
+    ("O que significa servidor web?", "NORMAL"),
+    ("Qual a diferença entre Docker e VM?", "NORMAL"),
+    ("Explique como funciona um servidor.", "NORMAL"),
+    ("Como funciona busca semântica?", "NORMAL"),
 ]
 
 fails = 0

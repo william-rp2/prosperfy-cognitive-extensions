@@ -44,6 +44,25 @@ _EXPLICIT = {
     "/skills": "SKILLS",
 }
 
+# ─── INFRA_READ (Phase 1A — Infra Operations Read V1) ───────────────────
+_INFRA_KEYWORDS = (
+    "servidor", "servidores", "vps", "container", "containers", "docker",
+    "porta", "portas", "serviço", "serviços", "infraestrutura",
+    "containeres", "contêiner", "contêineres", "conteiner",
+)
+_INFRA_RESOURCES = (
+    "prosperfy", "black", "manager1", "manager 1", "hostinger one",
+    "hostinger", "prosperfy vps",
+)
+_INFRA_OPERATIONAL = (
+    "como está", "como esta", "como estão", "como estao", "como andam",
+    "quais", "o que está", "o que esta", "quantos", "tem algum",
+    "existe algum", "meus servidores", "status dos", "o que aconteceu",
+    "o que está acontecendo", "o que esta acontecendo", "andamento",
+    "rodando", "parado", "parados", "abertas", "abertos", "funcionando",
+    "listar", "mostre os", "mostrar os",
+)
+
 # ─── Conceitual (nunca roteia especialista) ─────────────────────────────
 _CONCEPTUAL = (
     "o que é", "o que e", "como funciona", "explique", "o que significa",
@@ -100,7 +119,9 @@ def _has_any(text: str, markers) -> bool:
 
 
 def _has_conceptual(text: str) -> bool:
-    return any(c in text for c in _CONCEPTUAL)
+    # Word-boundary: evita falso "o que e" casar dentro de "o que est..." 
+    # (ex.: "o que está acontecendo" é operacional, não conceitual).
+    return any(re.search(r"\b" + re.escape(c) + r"\b", text) for c in _CONCEPTUAL)
 
 
 def _is_explicit(text: str) -> Optional[str]:
@@ -131,6 +152,28 @@ def _is_skills(text: str) -> bool:
     return _has_any(text.lower(), _SKILLS_MARKERS)
 
 
+def _is_infra_read(text: str) -> bool:
+    """Intenção operacional sobre a infraestrutura (Phase 1A, read-only).
+
+    Conservador: exige sinal de keyword/recursos de infra + contexto
+    operacional (pergunta/estado/ações read). Conceitual é bloqueado antes
+    ("o que significa servidor web?", "diferença entre Docker e VM?" → NORMAL).
+    Se dúvida: NORMAL.
+    """
+    low = text.lower()
+    if _has_conceptual(low):
+        return False
+    has_infra_kw = _has_any(low, _INFRA_KEYWORDS)
+    has_resource = _has_any(low, _INFRA_RESOURCES)
+    has_operational = _has_any(low, _INFRA_OPERATIONAL)
+    if not (has_infra_kw or has_resource):
+        return False
+    # "meus servidores" é operacional por si só; demais exigem pergunta/estado.
+    if "meus servidores" in low:
+        return True
+    return has_operational
+
+
 def resolve_specialist_route(message: str) -> str:
     """Resolve a rota determinística do turno: NORMAL | CRON | SESSION_SEARCH |
     MEMORY | SKILLS. Conservador: ambíguo → NORMAL."""
@@ -150,6 +193,8 @@ def resolve_specialist_route(message: str) -> str:
         return "MEMORY"
     if _is_skills(text):
         return "SKILLS"
+    if _is_infra_read(text):
+        return "INFRA_READ"
     return "NORMAL"
 
 
@@ -158,6 +203,7 @@ _ROUTE_TOOLSETS = {
     "SESSION_SEARCH": ["session_search"],
     "MEMORY": ["memory"],
     "SKILLS": ["skills"],
+    "INFRA_READ": ["infra_read"],
     "NORMAL": [],
 }
 
