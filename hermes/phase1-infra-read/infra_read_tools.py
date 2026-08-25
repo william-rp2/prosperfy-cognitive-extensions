@@ -75,8 +75,9 @@ def _run_one_impl(resource: str) -> dict:
     return asyncio.run(svc.servers_status(resource=resource))
 
 
-def infra_read(operation: str = "all", resource: str = "", **kwargs: Any) -> dict:
-    """Handler da tool: resolve resource → executa via Cognitive → retorna visão."""
+def infra_read(operation: str = "all", resource: str = "", **kwargs: Any) -> str:
+    """Handler da tool: resolve resource → executa via Cognitive → retorna JSON string
+    (contrato do registry: handlers devem retornar str/JSON — dict é rejeitado)."""
     from capability_intelligence.infra_service import InfraService
     svc = InfraService.from_env()
 
@@ -90,31 +91,29 @@ def infra_read(operation: str = "all", resource: str = "", **kwargs: Any) -> dic
     try:
         if resource_key:
             view = asyncio.run(svc.servers_status(resource=resource_key))
-            view["display_name"] = resource_key
-            return {
+            return json.dumps({
                 "operation": operation,
                 "resource": resource,
                 "resource_key": resource_key,
                 "ok": True,
                 "summary": view.get("summary", ""),
                 "normalized": view.get("normalized", {}),
-            }
+            }, ensure_ascii=False)
         view = asyncio.run(svc.servidores_status())
-        return {
+        return json.dumps({
             "operation": operation,
             "resource": "all",
             "ok": True,
             "summary": view.get("summary", ""),
             "normalized": view.get("normalized", {}),
-        }
+        }, ensure_ascii=False)
     except Exception as exc:  # noqa: BLE001 — fail-closed por resource; nunca mascarar
-        return {
-            "operation": operation,
-            "resource": resource or "all",
-            "resource_key": resource_key,
-            "ok": False,
-            "error": str(exc)[:400],
-        }
+        return tool_error(
+            str(exc)[:400],
+            success=False,
+            operation=operation,
+            resource=resource or "all",
+        )
 
 
 def check_infra_read_requirements() -> bool:
