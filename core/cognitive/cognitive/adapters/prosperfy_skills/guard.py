@@ -54,6 +54,51 @@ class ForbiddenArgumentError(ValueError):
     """Levantado quando `arguments` contém uma chave ou valor não permitido."""
 
 
+_CONTROLAR_CONTAINER_ALLOWED_KEYS = frozenset({"host", "container", "acao", "confirmar"})
+_CONTROLAR_CONTAINER_TOOL = "prosperfy_vps_controlar_container"
+
+
+def _guard_vps_controlar_container(arguments: dict[str, Any]) -> None:
+    """
+    Phase 1B Slice 1H: defense-in-depth for container restart only.
+
+    Accepts exactly {host, container, acao=restart, confirmar=True} — no extras.
+    """
+    extra = set(arguments.keys()) - _CONTROLAR_CONTAINER_ALLOWED_KEYS
+    if extra:
+        raise ForbiddenArgumentError(
+            f"Argumento(s) extra(s) para '{_CONTROLAR_CONTAINER_TOOL}': {sorted(extra)}"
+        )
+    missing = _CONTROLAR_CONTAINER_ALLOWED_KEYS - set(arguments.keys())
+    if missing:
+        raise ForbiddenArgumentError(
+            f"Argumento(s) ausente(s) para '{_CONTROLAR_CONTAINER_TOOL}': {sorted(missing)}"
+        )
+
+    host = arguments.get("host")
+    if not isinstance(host, str) or not host.strip():
+        raise ForbiddenArgumentError(
+            f"'host' inválido para '{_CONTROLAR_CONTAINER_TOOL}': string não vazia exigida."
+        )
+
+    container = arguments.get("container")
+    if not isinstance(container, str) or not container.strip():
+        raise ForbiddenArgumentError(
+            f"'container' inválido para '{_CONTROLAR_CONTAINER_TOOL}': string não vazia exigida."
+        )
+
+    acao = arguments.get("acao")
+    if acao != "restart":
+        raise ForbiddenArgumentError(
+            f"'acao' inválida para '{_CONTROLAR_CONTAINER_TOOL}': somente 'restart' permitido."
+        )
+
+    if arguments.get("confirmar") is not True:
+        raise ForbiddenArgumentError(
+            f"'confirmar' inválido para '{_CONTROLAR_CONTAINER_TOOL}': deve ser True."
+        )
+
+
 def guard_arguments(tool_name: str, arguments: dict[str, Any]) -> None:
     """
     Valida `arguments` antes de invocar uma tool ProsperfySkill (real ou mock).
@@ -68,6 +113,10 @@ def guard_arguments(tool_name: str, arguments: dict[str, Any]) -> None:
     ANTES do adapter. Esta função cobre o caso do 'resource' ainda não
     resolvido chegar até aqui.
     """
+    if tool_name == _CONTROLAR_CONTAINER_TOOL:
+        _guard_vps_controlar_container(arguments)
+        return
+
     present_forbidden = FORBIDDEN_ARG_KEYS.intersection(arguments.keys())
     if present_forbidden:
         raise ForbiddenArgumentError(

@@ -42,6 +42,95 @@ logger = logging.getLogger(__name__)
 # tools.
 _RESOURCE_METADATA_NOT_TOOL_ARG_KEYS = frozenset({"type"})
 
+# Phase 1B Slice 1H: infra.action restart-only enforcement (V1 allowlist).
+# TODO/backlog: generalizar capability-resource grants numa fase futura.
+_INFRA_ACTION_ALLOWED_RESOURCES = frozenset({"prosperfy-vps-homolog"})
+_INFRA_ACTION_TOOL_NAME = "prosperfy_vps_controlar_container"
+_INFRA_ACTION_CALLER_FORBIDDEN_KEYS = frozenset({
+    "host",
+    "acao",
+    "confirmar",
+    "token",
+    "linhas",
+})
+
+
+def _reject_infra_action_caller_controlled_fields(params: dict[str, Any]) -> None:
+    """Caller must not supply MCP-bound fields — only resource/action/target_*."""
+    present = _INFRA_ACTION_CALLER_FORBIDDEN_KEYS.intersection(params.keys())
+    if present:
+        raise ForbiddenArgumentError(
+            "infra.action: caller não pode definir campos MCP "
+            f"{sorted(present)} — somente resource, action, target_type, target."
+        )
+
+
+def _build_infra_action_restart_plan(
+    params: dict[str, Any],
+    tools: list[dict],
+) -> tuple[str, dict[str, Any]]:
+    """
+    Fail-closed plan for infra.action → prosperfy_vps_controlar_container (restart only).
+
+    Returns (tool_name, tool_args) with a NEW dict — never merges caller/YAML params.
+    """
+    _reject_infra_action_caller_controlled_fields(params)
+
+    resource = params.get("resource")
+    if resource != "prosperfy-vps-homolog":
+        raise ForbiddenArgumentError(
+            f"infra.action: resource '{resource}' não autorizado neste slice "
+            f"(permitido: {sorted(_INFRA_ACTION_ALLOWED_RESOURCES)})."
+        )
+
+    if params.get("action") != "restart":
+        raise ForbiddenArgumentError(
+            f"infra.action: action '{params.get('action')}' não permitida — somente 'restart'."
+        )
+
+    if params.get("target_type") != "container":
+        raise ForbiddenArgumentError(
+            f"infra.action: target_type '{params.get('target_type')}' inválido — "
+            "somente 'container'."
+        )
+
+    target_raw = params.get("target")
+    if not isinstance(target_raw, str):
+        raise ForbiddenArgumentError("infra.action: target deve ser string não vazia.")
+    validated_target = target_raw.strip()
+    if not validated_target:
+        raise ForbiddenArgumentError("infra.action: target deve ser string não vazia.")
+
+    resolved = params.get("_resolved_resource")
+    if not isinstance(resolved, dict):
+        raise ForbiddenArgumentError(
+            "infra.action: _resolved_resource ausente ou inválido — resource não resolvido."
+        )
+    host_raw = resolved.get("host")
+    if not isinstance(host_raw, str) or not host_raw.strip():
+        raise ForbiddenArgumentError(
+            "infra.action: host resolvido ausente ou inválido em _resolved_resource."
+        )
+
+    if len(tools) != 1:
+        raise ForbiddenArgumentError(
+            f"infra.action: exatamente 1 tool exigida, recebidas {len(tools)}."
+        )
+    tool_name = tools[0].get("name")
+    if tool_name != _INFRA_ACTION_TOOL_NAME:
+        raise ForbiddenArgumentError(
+            f"infra.action: tool '{tool_name}' não permitida — "
+            f"somente '{_INFRA_ACTION_TOOL_NAME}'."
+        )
+
+    tool_args = {
+        "host": host_raw.strip(),
+        "container": validated_target,
+        "acao": "restart",
+        "confirmar": True,
+    }
+    return _INFRA_ACTION_TOOL_NAME, tool_args
+
 
 class ExecutionOrchestrator:
     """
@@ -145,6 +234,8 @@ class ExecutionOrchestrator:
         # params, never raw client params).
         try:
             guard_arguments(capability_id, params)
+            if capability_id == "infra.action":
+                _reject_infra_action_caller_controlled_fields(params)
         except ForbiddenArgumentError as exc:
             # outcome=FAILED (not DENIED): this rejects malformed/malicious
             # *input*, not a policy/grant decision — DENIED is reserved for
@@ -350,6 +441,16 @@ class ExecutionOrchestrator:
         Determinístico: sem LLM escolhendo a sequência.
         Retorna (tool_calls_count, result_data).
         """
+        if capability_id == "infra.action":
+            tool_name, tool_args = _build_infra_action_restart_plan(params, tools)
+            tool_result = await self._adapter.invoke_tool(
+                tool_name=tool_name,
+                arguments=tool_args,
+                tenant_id=tenant_id,
+                correlation_id=correlation_id,
+            )
+            return 1, {tool_name: tool_result}
+
         # 'resource'/'_resolved_resource' são bookkeeping do orquestrador —
         # nunca vão crus para o adapter (ADR-V2-002 §3). Tools com
         # args_from_resource=True recebem exclusivamente os parâmetros
