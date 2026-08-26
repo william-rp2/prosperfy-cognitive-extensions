@@ -77,7 +77,12 @@ def _cognitive_restart(resource_key: str, container: str, actor: str, tenant: st
     adapter = CognitiveApiAdapter()
     req = ExecutionRequest(
         capability_id="infra.action",
-        params={"resource": resource_key, "container": container, "action": "restart"},
+        params={
+            "resource": resource_key,
+            "action": "restart",
+            "target_type": "container",
+            "target": container,
+        },
     )
     try:
         ref = asyncio.run(adapter.execute(req))
