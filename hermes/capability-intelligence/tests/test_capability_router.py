@@ -60,6 +60,15 @@ cases = [
     ("Qual a diferença entre Docker e VM?", "NORMAL"),
     ("Explique como funciona um servidor.", "NORMAL"),
     ("Como funciona busca semântica?", "NORMAL"),
+    # INFRA_ACTION (Phase 1B — write explícito)
+    ("Reinicie o omniroute no Prosperfy.", "INFRA_ACTION"),
+    ("Restart o container traefik no Prosperfy.", "INFRA_ACTION"),
+    ("Reinicie o container omniroute no Black.", "INFRA_ACTION"),
+    # INFRA_ACTION negativos
+    ("Por que reiniciar um container?", "NORMAL"),
+    ("Como funciona docker restart?", "NORMAL"),
+    ("Quais containers estão rodando?", "INFRA_READ"),
+    ("O que significa reiniciar um container?", "NORMAL"),
 ]
 
 fails = 0

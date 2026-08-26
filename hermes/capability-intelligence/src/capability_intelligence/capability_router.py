@@ -63,6 +63,18 @@ _INFRA_OPERATIONAL = (
     "listar", "mostre os", "mostrar os",
 )
 
+# ─── INFRA_ACTION (Phase 1B — Infra Actions V1, write explícito) ──────────
+# Apenas intents operacionais EXPLÍCITOS de escrita/restart. Confirmado em 2
+# turnos. Negativos conceituais ("por que reiniciar?") → NORMAL.
+_INFRA_ACTION_VERBS = (
+    "reinicie", "reiniciar", "restart", "reinicie o", "reinicia",
+    "resete o", "resetar o", "reinicie o container",
+)
+_INFRA_ACTION_NEG = (
+    "por que", "porque", "como funciona", "o que é", "o que e",
+    "o que significa", "explica", "qual a diferença", "quando",
+)
+
 # ─── Conceitual (nunca roteia especialista) ─────────────────────────────
 _CONCEPTUAL = (
     "o que é", "o que e", "como funciona", "explique", "o que significa",
@@ -152,6 +164,21 @@ def _is_skills(text: str) -> bool:
     return _has_any(text.lower(), _SKILLS_MARKERS)
 
 
+def _is_infra_action(text: str) -> bool:
+    """Intenção EXPLÍCITA de escrita/restart (Phase 1B). Conservador:
+    verbo de ação + recurso/container + NÃO é pergunta conceitual.
+    "Reinicie o omniroute no Prosperfy." → YES · "Por que reiniciar?" → NO."""
+    low = text.lower()
+    if _has_any(low, _INFRA_ACTION_NEG):
+        return False
+    if not _has_any(low, _INFRA_ACTION_VERBS):
+        return False
+    has_resource = _has_any(low, _INFRA_RESOURCES)
+    has_container = "container" in low or "container " in low
+    # precisa de alvo: resource OU container explícito
+    return has_resource or has_container
+
+
 def _is_infra_read(text: str) -> bool:
     """Intenção operacional sobre a infraestrutura (Phase 1A, read-only).
 
@@ -193,6 +220,8 @@ def resolve_specialist_route(message: str) -> str:
         return "MEMORY"
     if _is_skills(text):
         return "SKILLS"
+    if _is_infra_action(text):
+        return "INFRA_ACTION"
     if _is_infra_read(text):
         return "INFRA_READ"
     return "NORMAL"
@@ -204,6 +233,7 @@ _ROUTE_TOOLSETS = {
     "MEMORY": ["memory"],
     "SKILLS": ["skills"],
     "INFRA_READ": ["infra_read"],
+    "INFRA_ACTION": ["restart_container"],
     "NORMAL": [],
 }
 
