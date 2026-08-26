@@ -61,14 +61,17 @@ output_schema:
     post_condition:
       type: object
 
-# MCP tool usada (única, governada). args montados pelo adapter a partir de
-# resource (binding MCP) + target (container) + action.
+# MCP tool usada (única, governada). Schema REAL observado (Slice 1C):
+#   prosperfy_vps_controlar_container: required=[host, container, acao]
+#   optional: confirmar(bool, default false) · linhas · token
+# Mapping REAL: action→acao="restart" · target→container · confirmar=true (mutação).
 tools:
   - name: "prosperfy_vps_controlar_container"
     args_from_resource: true
     params:
-      action: "${action}"
+      acao: "${action}"
       container: "${target}"
+      confirmar: true
     required: true
 
 # Validação estrita (fail-closed):
@@ -77,7 +80,7 @@ validation_rules:
   - "target_type must be 'container'"
   - "resource must resolve to an authorized resource binding"
 
-idempotency_behavior: "reject_duplicate"
+idempotency_behavior: "return_cached"
 timeout_seconds: 60
 cost_class: "low"
 
