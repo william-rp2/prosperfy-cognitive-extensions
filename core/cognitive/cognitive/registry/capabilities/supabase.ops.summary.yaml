@@ -1,0 +1,53 @@
+# Capability: supabase.ops.summary
+# P0 — Supabase Ops + Anti-Hibernação
+#
+# ADR-V2-004: default_policy = allow (read-only). Agregado do registry local
+# para WhatsApp — "Como estão meus Supabases?", "Quais são Free?", "Algum
+# com problema?" são todas variações de um filtro/leitura sobre este mesmo
+# resumo (o serviço do lado Hermes formata o texto por intent; esta
+# capability só devolve os dados).
+
+id: "supabase.ops.summary"
+version: "1.0.0"
+domain: "infrastructure"
+description: >
+  Resumo agregado de todos os projetos Supabase do tenant — contagem por
+  plano/status, quantos com keepalive habilitado, timestamp da última
+  rodada — mais a lista completa de projetos com metadata segura.
+adapter: "supabase_registry"
+default_policy: "allow"
+
+required_scopes:
+  - "supabase:read"
+
+input_schema:
+  type: object
+  properties: {}
+
+output_schema:
+  type: object
+  properties:
+    summary:
+      type: object
+    projects:
+      type: array
+
+tools:
+  - name: "supabase_registry.summary"
+    args_from_resource: false
+    required: true
+
+idempotency_behavior: "none"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: false
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"
+  - "dsn"

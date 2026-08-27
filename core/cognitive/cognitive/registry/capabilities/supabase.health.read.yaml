@@ -1,0 +1,65 @@
+# Capability: supabase.health.read
+# P0 — Supabase Ops + Anti-Hibernação
+#
+# ADR-V2-004: default_policy = allow (read-only, não destrutivo).
+# Testa alcance real do projeto via Compose MCP (SUPABASE_GETS_PROJECT_S_
+# SERVICE_HEALTH_STATUS) — diferente de supabase.projects.read, que só lê o
+# registry local. Usado por "Teste agora o Supabase X" quando o pedido é de
+# health/alcance (keepalive.run cobre o caso de "rodar a query real").
+
+id: "supabase.health.read"
+version: "1.0.0"
+domain: "infrastructure"
+description: >
+  Testa o alcance do banco/API de UM projeto Supabase via Compose MCP e
+  resume o estado dos serviços (auth/db/rest/storage/...). Read-only.
+adapter: "composio"
+default_policy: "allow"
+
+required_scopes:
+  - "supabase:read"
+
+input_schema:
+  type: object
+  required:
+    - ref
+    - account
+  properties:
+    ref:
+      type: string
+      pattern: "^[a-z]{20}$"
+      description: "Project ref público do Supabase (20 letras minúsculas, nunca secret)."
+    account:
+      type: string
+      description: "Alias da conta Composio (ex.: 'Supabase - Hermes') — não é secret."
+    services:
+      type: array
+      items:
+        type: string
+        enum: ["auth", "db", "db_postgres_user", "pg_bouncer", "pooler", "realtime", "rest", "storage"]
+
+output_schema:
+  type: object
+  properties:
+    SUPABASE_GETS_PROJECT_S_SERVICE_HEALTH_STATUS:
+      type: object
+
+tools:
+  - name: "SUPABASE_GETS_PROJECT_S_SERVICE_HEALTH_STATUS"
+    args_from_resource: false
+    required: true
+
+idempotency_behavior: "none"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"
+  - "dsn"

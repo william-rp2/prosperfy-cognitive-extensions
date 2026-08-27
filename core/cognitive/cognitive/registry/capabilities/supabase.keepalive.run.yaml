@@ -1,0 +1,71 @@
+# Capability: supabase.keepalive.run
+# P0 — Supabase Ops + Anti-Hibernação
+#
+# ADR-V2-004: default_policy = allow — a query em si é read-only e sem side
+# effect no projeto monitorado (doc §5.1: "consulta mínima e sem side
+# effects"). O que esta capability MUDA é local (supabase_projects/
+# supabase_keepalive_runs no Homolog), nunca o projeto monitorado.
+#
+# Fora de escopo (doc §3): SQL arbitrário, migrations, drop/truncate,
+# pause/resume, mudança de plano — NENHUM desses passa por aqui. O guard do
+# ComposioMcpAdapter (adapters/composio/guard.py) só aceita 'query' em
+# {"SELECT 1", "SELECT now()"} — qualquer outro valor é rejeitado antes de
+# qualquer chamada de rede (negativo obrigatório, gate NO_MUTATION).
+
+id: "supabase.keepalive.run"
+version: "1.0.0"
+domain: "infrastructure"
+description: >
+  Executa uma query read-only mínima (SELECT 1 / SELECT now()) em UM
+  projeto Supabase via Compose MCP, para evitar pausa por inatividade
+  (Free) e registrar sucesso/latência. Nunca aceita SQL arbitrário.
+adapter: "composio"
+default_policy: "allow"
+
+required_scopes:
+  - "supabase:keepalive"
+
+input_schema:
+  type: object
+  required:
+    - ref
+    - account
+    - query
+  properties:
+    ref:
+      type: string
+      pattern: "^[a-z]{20}$"
+      description: "Project ref público do Supabase (20 letras minúsculas, nunca secret)."
+    account:
+      type: string
+      description: "Alias da conta Composio (ex.: 'Supabase - Hermes') — não é secret."
+    query:
+      type: string
+      enum: ["SELECT 1", "SELECT now()"]
+      description: "Único conjunto de queries permitido — SQL arbitrário é sempre negado."
+
+output_schema:
+  type: object
+  properties:
+    SUPABASE_RUN_READ_ONLY_QUERY:
+      type: object
+
+tools:
+  - name: "SUPABASE_RUN_READ_ONLY_QUERY"
+    args_from_resource: false
+    required: true
+
+idempotency_behavior: "none"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"
+  - "dsn"

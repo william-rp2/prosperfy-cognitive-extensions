@@ -1,0 +1,59 @@
+# Capability: supabase.projects.read
+# P0 — Supabase Ops + Anti-Hibernação
+#
+# ADR-V2-005: definição em YAML versionado; banco NÃO é source of truth.
+# ADR-V2-004: default_policy = allow (read-only, não destrutivo — mesmo
+# raciocínio de infra.inspect).
+#
+# Lê o registry LOCAL (supabase_projects), não o Compose MCP ao vivo — a
+# descoberta/reconciliação com o Compose MCP é uma operação separada
+# (SupabaseKeepaliveService.sync_registry), não esta capability. Isso mantém
+# "Como estão meus Supabases?" rápido (1 SELECT) mesmo com 20+ contas
+# Composio conectadas.
+
+id: "supabase.projects.read"
+version: "1.0.0"
+domain: "infrastructure"
+description: >
+  Lista todos os projetos Supabase conectados registrados localmente,
+  com metadata segura (plano, keepalive habilitado, status operacional).
+  Nunca inclui secret/token/DSN.
+adapter: "supabase_registry"
+default_policy: "allow"
+
+required_scopes:
+  - "supabase:read"
+
+input_schema:
+  type: object
+  properties:
+    plan:
+      type: string
+      enum: ["free", "paid", "unknown"]
+      description: "Filtro opcional por plano detectado."
+
+output_schema:
+  type: object
+  properties:
+    projects:
+      type: array
+
+tools:
+  - name: "supabase_registry.list_projects"
+    args_from_resource: false
+    required: true
+
+idempotency_behavior: "none"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: false
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"
+  - "dsn"

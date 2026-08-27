@@ -1,0 +1,55 @@
+# Capability: supabase.keepalive.status
+# P0 — Supabase Ops + Anti-Hibernação
+#
+# ADR-V2-004: default_policy = allow (read-only). Lê o registry local — não
+# chama o Compose MCP. Usado por "Quando foi o último keepalive do X?".
+
+id: "supabase.keepalive.status"
+version: "1.0.0"
+domain: "infrastructure"
+description: >
+  Retorna o último resultado de keepalive de UM projeto (por ref ou por
+  nome) — timestamp, latência, status, falhas consecutivas — e as últimas
+  execuções recentes. Lê o registry local, nunca o Compose MCP.
+adapter: "supabase_registry"
+default_policy: "allow"
+
+required_scopes:
+  - "supabase:read"
+
+input_schema:
+  type: object
+  properties:
+    project_ref:
+      type: string
+      pattern: "^[a-z]{20}$"
+      description: "Project ref exato. Alternativa a name_query."
+    name_query:
+      type: string
+      description: "Busca por nome (case-insensitive, substring). Alternativa a project_ref."
+
+output_schema:
+  type: object
+  properties:
+    projects:
+      type: array
+
+tools:
+  - name: "supabase_registry.get_project_status"
+    args_from_resource: false
+    required: true
+
+idempotency_behavior: "none"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: false
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"
+  - "dsn"
