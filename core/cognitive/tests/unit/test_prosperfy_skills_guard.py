@@ -81,3 +81,45 @@ class TestResourceValidation:
     def test_absent_resource_key_passes(self):
         # Capabilities sem resource lógico (ex: já resolvido) não devem ser bloqueadas.
         guard_arguments("prosperfy_vps_panorama", {"host": "mock-vps.test"})
+
+
+class TestVpsControlarContainerGuard:
+    _VALID = {
+        "host": "homolog-vps.prosperfy.com.br",
+        "container": "omniroute",
+        "acao": "restart",
+        "confirmar": True,
+    }
+
+    def test_exact_restart_args_pass(self):
+        guard_arguments("prosperfy_vps_controlar_container", dict(self._VALID))
+
+    @pytest.mark.parametrize("acao", ["start", "stop", "delete"])
+    def test_non_restart_acao_rejected(self, acao: str):
+        args = dict(self._VALID, acao=acao)
+        with pytest.raises(ForbiddenArgumentError):
+            guard_arguments("prosperfy_vps_controlar_container", args)
+
+    def test_confirmar_false_rejected(self):
+        args = dict(self._VALID, confirmar=False)
+        with pytest.raises(ForbiddenArgumentError):
+            guard_arguments("prosperfy_vps_controlar_container", args)
+
+    @pytest.mark.parametrize("field", ["host", "container"])
+    def test_empty_string_rejected(self, field: str):
+        args = dict(self._VALID, **{field: "   "})
+        with pytest.raises(ForbiddenArgumentError):
+            guard_arguments("prosperfy_vps_controlar_container", args)
+
+    def test_extra_arg_rejected(self):
+        args = dict(self._VALID, token="secret")
+        with pytest.raises(ForbiddenArgumentError):
+            guard_arguments("prosperfy_vps_controlar_container", args)
+
+    def test_missing_key_rejected(self):
+        args = {"host": "x", "container": "y", "acao": "restart"}
+        with pytest.raises(ForbiddenArgumentError):
+            guard_arguments("prosperfy_vps_controlar_container", args)
+
+    def test_infra_inspect_panorama_guard_unchanged(self):
+        guard_arguments("prosperfy_vps_panorama", {"host": "mock-vps.test", "token": "x"})

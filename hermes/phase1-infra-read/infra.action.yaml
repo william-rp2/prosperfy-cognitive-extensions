@@ -1,0 +1,107 @@
+# Capability: infra.action
+# Phase 1B — Infra Actions V1 (Slice 1B). RESTART CONTAINER ONLY.
+#
+# ADR-V2-004: default_policy = deny (WRITE/destrutivo). Grant explícito obrigatório.
+# ADR-V2-002: params.resource é lógico ("prosperfy-vps-homolog") — nunca IP/host.
+# Slice 1: aceita SOMENTE action=restart + target_type=container.
+# Qualquer outra action (start/stop/delete/prune/exec/shell/reboot) → DENY.
+
+id: "infra.action"
+version: "1.0.0"
+domain: "infrastructure"
+description: >
+  Executa ações governadas de infraestrutura em um resource lógico tenant-scoped.
+  Slice 1: restart de container via prosperfy_vps_controlar_container.
+  Restart command success != post-condition success (post via infra.inspect).
+adapter: "prosperfy_skills"
+default_policy: "deny"
+
+required_scopes:
+  - "infra:write"
+
+input_schema:
+  type: object
+  required:
+    - resource
+    - action
+    - target_type
+    - target
+  properties:
+    resource:
+      type: string
+      description: "Resource lógico tenant-scoped (ex: 'prosperfy-vps-homolog'). Nunca IP/host."
+    action:
+      type: string
+      enum:
+        - "restart"
+      description: "Ação permitida NESTE slice. Qualquer outra (start/stop/delete/prune/exec/shell/reboot) é DENY."
+    target_type:
+      type: string
+      const: "container"
+      description: "Apenas 'container' neste slice."
+    target:
+      type: string
+      description: "Nome do container (ex.: omniroute)."
+
+output_schema:
+  type: object
+  properties:
+    success:
+      type: boolean
+    resource:
+      type: string
+    action:
+      type: string
+    target_type:
+      type: string
+    target:
+      type: string
+    execution_result:
+      type: object
+    post_condition:
+      type: object
+
+# MCP tool usada (única, governada). Schema REAL observado (Slice 1C):
+#   prosperfy_vps_controlar_container: required=[host, container, acao]
+#   optional: confirmar(bool, default false) · linhas · token
+# Mapping REAL: action→acao="restart" · target→container · confirmar=true (mutação).
+tools:
+  - name: "prosperfy_vps_controlar_container"
+    args_from_resource: true
+    params:
+      acao: "${action}"
+      container: "${target}"
+      confirmar: true
+    required: true
+
+# Validação estrita (fail-closed):
+validation_rules:
+  - "action must be 'restart'"
+  - "target_type must be 'container'"
+  - "resource must resolve to an authorized resource binding"
+
+idempotency_behavior: "return_cached"
+timeout_seconds: 60
+cost_class: "low"
+
+# Confirmação: o Hermes resolve a pending action (actor/resource/container/action)
+# em 2 turnos ANTES de chamar esta capability. O Cognitive NÃO confia em texto livre.
+confirmation: "pending_action_resolved_by_hermes"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+  audit_fields:
+    - "tenant"
+    - "actor"
+    - "resource"
+    - "action"
+    - "target_type"
+    - "target"
+    - "authorization_decision"
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"
