@@ -26,7 +26,7 @@ from ..registry.registry import InMemoryCapabilityRegistry
 from ..registry.grant_resolver import RegistryGrantResolver
 from ..telemetry.recorder import InMemoryTelemetryRecorder
 from ..tenancy.identity_resolver import IdentityResolver
-from .routes import capabilities, health, resources, status
+from .routes import capabilities, health, resources, status, trello_webhook
 from .metadata import api_version, deployment_environment
 
 logger = logging.getLogger(__name__)
@@ -132,6 +132,25 @@ def _build_services(app: FastAPI) -> None:
             "work_management": WorkManagementAdapter(work_service),
         }
         logger.info("Runtime: database mode (Postgres) — work_management adapter ativo")
+
+        # Track P1: TrelloSyncEngine — SEMPRE construído em database mode
+        # (é só objeto Python; TrelloClient.is_configured() é checado em
+        # runtime por cada operação). Sem TRELLO_API_KEY/TRELLO_TOKEN, todo
+        # drain/reconcile vira no-op (skipped_not_configured) — nunca
+        # levanta no startup. Isso é o que permite reportar
+        # HUMAN_BLOCKER=TRELLO_AUTH sem travar o resto do gateway.
+        from ..adapters.trello.client import TrelloClient
+        from ..adapters.trello.sync import TrelloSyncEngine
+
+        trello_sync_engine = TrelloSyncEngine(
+            client=TrelloClient(),
+            idea_repo=IdeaRepository(),
+            project_repo=ProjectRepository(),
+            task_repo=TaskRepository(),
+            binding_repo=TrelloBindingRepository(),
+            outbox_repo=SyncOutboxRepository(),
+            event_repo=WorkEventRepository(),
+        )
     else:
         audit_writer = InMemoryAuditWriter()
         telemetry_recorder = InMemoryTelemetryRecorder()
@@ -142,6 +161,7 @@ def _build_services(app: FastAPI) -> None:
         # fallback (skills_adapter) e falham de forma explícita, nunca
         # silenciosa (RuntimeError "capability desconhecida" no skills mock).
         extra_adapters = {}
+        trello_sync_engine = None
         # Mesmo resolvedor que o orchestrator usa por default em in-memory:
         # exposto no app.state para a rota de descoberta aplicar a mesma
         # elegibilidade por grant (sem grant → lista vazia).
@@ -186,11 +206,39 @@ def _build_services(app: FastAPI) -> None:
     app.state.resource_resolver = resource_resolver
     app.state.use_db = use_db
     app.state.resource_repo = resource_repo if use_db else None
+    app.state.trello_sync_engine = trello_sync_engine
+    app.state.trello_board_binding = None  # preenchido best-effort no lifespan (precisa de I/O async)
+
+
+async def _trello_background_loop(app: FastAPI) -> None:
+    """Task de background: drena outbox (DB->Trello) e reconcilia por
+    polling (Trello->DB, fallback do webhook). Gated por
+    COGNITIVE_TRELLO_POLL_ENABLED=1 (default OFF — nunca liga sozinho).
+    Ambos os métodos do TrelloSyncEngine já são no-op seguro sem
+    TRELLO_API_KEY/TRELLO_TOKEN (ver client.is_configured())."""
+    import asyncio
+
+    interval = float(os.getenv("COGNITIVE_TRELLO_POLL_INTERVAL_SECONDS", "90"))
+    dev_tenant = os.getenv("COGNITIVE_DEV_TENANT_ID", "prosperfy")
+    engine = app.state.trello_sync_engine
+    while True:
+        try:
+            drained = await engine.drain_outbox_once(dev_tenant)
+            reconciled = await engine.reconcile_poll(dev_tenant)
+            if drained.get("processed") or reconciled.get("scanned"):
+                logger.info("trello_background_loop drained=%s reconciled=%s", drained, reconciled)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("trello_background_loop: iteração falhou (non-fatal, retry no próximo ciclo)")
+        await asyncio.sleep(interval)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifecycle: startup — inicializa pools DB. shutdown — fecha pools."""
+    """Lifecycle: startup — inicializa pools DB (+ Trello board binding
+    best-effort + background loop opcional). shutdown — fecha pools."""
+    trello_task = None
     if is_database_mode():
         from ..db.connection import create_pools, close_pools
 
@@ -200,8 +248,24 @@ async def lifespan(app: FastAPI):
         await create_pools(app_dsn=db_url, worker_dsn=worker_url, admin_dsn=admin_url)
         logger.info("DB pools inicializados")
 
+        if app.state.trello_sync_engine is not None:
+            dev_tenant = os.getenv("COGNITIVE_DEV_TENANT_ID", "prosperfy")
+            try:
+                app.state.trello_board_binding = await app.state.trello_sync_engine.get_board_binding(dev_tenant)
+            except Exception:
+                logger.warning("lifespan: board Trello ainda não vinculado (ou DB indisponível no startup)")
+
+            if os.getenv("COGNITIVE_TRELLO_POLL_ENABLED", "0") == "1":
+                import asyncio
+                trello_task = asyncio.create_task(_trello_background_loop(app))
+                logger.info("Trello background loop iniciado (outbox drain + reconciliation poll)")
+            else:
+                logger.info("COGNITIVE_TRELLO_POLL_ENABLED=0 — Trello sync só sob demanda (sem loop de fundo)")
+
     yield
 
+    if trello_task is not None:
+        trello_task.cancel()
     if is_database_mode():
         from ..db.connection import close_pools
         await close_pools()
@@ -250,6 +314,7 @@ def create_app() -> FastAPI:
     app.include_router(status.router)
     app.include_router(capabilities.router)
     app.include_router(resources.router)
+    app.include_router(trello_webhook.router)
 
     logger.info(
         "Prosperfy Cognitive API v%s env=%s capabilities=%d mode=%s",
