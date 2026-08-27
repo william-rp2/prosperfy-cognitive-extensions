@@ -126,6 +126,13 @@ _SKILLS_MARKERS = (
     "skills disponíveis", "skills disponiveis", "skill chamada",
 )
 
+# ─── WORK_MANAGEMENT (Track P1 — Ideias/Projetos/Tarefas) ────────────────
+_WORK_KEYWORDS = (
+    "ideia", "ideias", "projeto", "projetos", "tarefa", "tarefas",
+    "backlog", "kanban", "bloqueado", "bloqueada", "conclua", "concluir",
+    "anote", "anotar",
+)
+
 # ─── Confirmação afirmativa (Phase 1B — continuation routing restart V1) ───
 # Match EXATO após normalização — "Sim, obrigado" permanece NORMAL.
 _AFFIRMATIVE_CONFIRMATIONS = frozenset({
@@ -233,6 +240,15 @@ def _is_infra_read(text: str) -> bool:
     return has_operational
 
 
+def _is_work_management(text: str) -> bool:
+    """Intenção de gestão de trabalho (ideias/projetos/tarefas — Track P1).
+    Conservador: keyword de domínio + não é pergunta conceitual."""
+    low = text.lower()
+    if _has_conceptual(low):
+        return False
+    return _has_any(low, _WORK_KEYWORDS)
+
+
 def resolve_specialist_route(message: str, actor_id: str | None = None) -> str:
     """Resolve a rota determinística do turno: NORMAL | CRON | SESSION_SEARCH |
     MEMORY | SKILLS | INFRA_READ | INFRA_ACTION. Conservador: ambíguo → NORMAL.
@@ -266,6 +282,8 @@ def resolve_specialist_route(message: str, actor_id: str | None = None) -> str:
         return "INFRA_ACTION"
     if _is_infra_read(text):
         return "INFRA_READ"
+    if _is_work_management(text):
+        return "WORK_MANAGEMENT"
     return "NORMAL"
 
 
@@ -276,6 +294,7 @@ _ROUTE_TOOLSETS = {
     "SKILLS": ["skills"],
     "INFRA_READ": ["infra_read"],
     "INFRA_ACTION": ["restart_container"],
+    "WORK_MANAGEMENT": ["work_management"],
     "NORMAL": [],
 }
 
