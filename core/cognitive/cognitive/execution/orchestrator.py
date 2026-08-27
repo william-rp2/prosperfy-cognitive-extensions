@@ -149,16 +149,24 @@ class ExecutionOrchestrator:
         resource_resolver: Any | None = None,
         grant_resolver: GrantResolverPort | None = None,
         composio_adapter: SkillsAdapterPort | None = None,
+        registry_adapter: SkillsAdapterPort | None = None,
     ) -> None:
         self._registry = registry
         self._policy = policy_engine
         self._adapter = skills_adapter
-        # P0 (Supabase Ops): segundo adapter opcional, roteado por
-        # capability.adapter == "composio" (ver _select_adapter). None por
-        # padrão — retrocompat total para todo orchestrator existente que só
-        # passa skills_adapter (infra.inspect/infra.action continuam 100% no
+        # P0 (Supabase Ops): adapters extras opcionais, roteados por
+        # capability.adapter (ver _select_adapter). None por padrão —
+        # retrocompat total para todo orchestrator existente que só passa
+        # skills_adapter (infra.inspect/infra.action continuam 100% no
         # ProsperfySkillsAdapter, sem nenhuma mudança de comportamento).
+        # "composio" -> Compose MCP real (supabase.keepalive.run/health.read).
+        # "supabase_registry" -> leitura do registry local via repo (Postgres)
+        # atrás do MESMO contrato SkillsAdapterPort, só para reusar
+        # policy/grant/audit do orchestrator também nas capabilities de
+        # leitura (supabase.projects.read/keepalive.status/ops.summary) sem
+        # nenhuma chamada de rede.
         self._composio_adapter = composio_adapter
+        self._registry_adapter = registry_adapter
         self._audit = audit_writer
         self._telemetry = telemetry_recorder
         # ADR-V2-002 §3: resolve params.resource (lógico) -> concretos ANTES do
@@ -448,8 +456,11 @@ class ExecutionOrchestrator:
         tools SUPABASE_* e falha explicitamente no invoke_tool, nunca com
         sucesso silencioso.
         """
-        if getattr(capability, "adapter", None) == "composio" and self._composio_adapter is not None:
+        cap_adapter = getattr(capability, "adapter", None)
+        if cap_adapter == "composio" and self._composio_adapter is not None:
             return self._composio_adapter
+        if cap_adapter == "supabase_registry" and self._registry_adapter is not None:
+            return self._registry_adapter
         return self._adapter
 
     async def _run_capability_tools(
