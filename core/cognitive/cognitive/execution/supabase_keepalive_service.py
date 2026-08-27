@@ -6,16 +6,23 @@ keepalive_enabled=true do tenant, via a capability supabase.keepalive.run
 (ExecutionOrchestrator -> ComposioMcpAdapter -> Compose MCP -> projeto
 real). Determinístico, sem LLM.
 
-Isolamento de falha por projeto: cada execução roda em seu próprio
-try/except (_run_one) — uma exceção (timeout, erro do adapter, DENY de
-policy) vira um ProjectRunOutcome(status='failure') para AQUELE projeto e o
-loop sempre segue para o próximo (doc §9 item 9: "Simular falha de um
-resource sem afetar os demais"; doc §10 FAILURE_ISOLATION). Mesmo padrão de
+Isolamento de falha por projeto: cada tentativa roda em seu próprio
+try/except (_attempt_once) — uma exceção (timeout, erro do adapter, DENY de
+policy) nunca aborta a rodada; o projeto problemático só fica marcado
+'failure' e os demais seguem (doc §9 item 9: "Simular falha de um resource
+sem afetar os demais"; doc §10 FAILURE_ISOLATION). Mesmo padrão de
 InfraService.servidores_status() (Hermes) — aqui do lado Cognitive porque
 quem dispara em produção é o scheduler (systemd timer), sem passar por
 Hermes/HTTP.
 
-Alerta (doc §8: "2 falhas consecutivas: alerta"): sinalizado no
+Retry (doc §4.1/§8: "RETRY=1m, 5m, 30m, máx. 3 retries por janela"):
+aplicado em nível de RODADA — todos os projetos ainda pendentes numa
+mesma passagem, não um retry isolado por projeto. Isso limita o pior caso
+da janela inteira a soma(delays)=36min, em vez de escalar linearmente com
+o número de projetos que falharem (17 projetos falhando em série com até
+36min cada estouraria a janela de 8h até o próximo round). Ver run_all().
+
+Alerta (doc §8: "2 falhas consecutivas: alerta"): sinalizado em
 ProjectRunOutcome.alert; o disparo real de notificação (WhatsApp) é
 responsabilidade de quem consome KeepaliveRoundResult — este service não
 conhece canal de notificação.
@@ -46,10 +53,9 @@ KEEPALIVE_CAPABILITY_ID = "supabase.keepalive.run"
 _KEEPALIVE_QUERY = "SELECT now()"
 ALERT_THRESHOLD_CONSECUTIVE_FAILURES = 2
 
-# doc §4.1/§8: "RETRY=1m, 5m, 30m (máx. 3 retries por janela)". Aplicado por
-# projeto, dentro da MESMA execução do scheduler (não entre janelas — as 3
-# janelas fixas 06:10/14:10/22:10 já são a cadência entre execuções). Só
-# retry de FALHA — sucesso nunca re-tenta. injetável via
+# doc §4.1/§8: "RETRY=1m, 5m, 30m (máx. 3 retries por janela)". Retries
+# adicionais DEPOIS da 1ª tentativa (imediata) — só quando ainda há
+# projeto(s) pendente(s) de sucesso. Injetável via
 # SupabaseKeepaliveService(retry_delays_seconds=...) para testes (delays
 # quase-zero) sem mudar o comportamento de produção.
 DEFAULT_RETRY_DELAYS_SECONDS: tuple[float, ...] = (60.0, 300.0, 1800.0)
@@ -143,21 +149,80 @@ class SupabaseKeepaliveService:
     ) -> KeepaliveRoundResult:
         """Roda keepalive em TODOS os projetos com keepalive_enabled=true.
 
-        Isolamento de falha total: ver docstring do módulo. O chamador
-        (systemd CLI / rota WhatsApp) sempre recebe um KeepaliveRoundResult
-        completo — nunca uma exceção que aborta o round inteiro.
+        Retry em nível de RODADA (ver docstring do módulo): a 1ª passagem
+        tenta todos; passagens seguintes (até 3, com delay 1m/5m/30m antes
+        de cada uma) tentam só quem ainda falhou. Isolamento de falha
+        total — o chamador (systemd CLI / rota WhatsApp) sempre recebe um
+        KeepaliveRoundResult completo, nunca uma exceção que aborta o round.
         """
         started_at = datetime.now(timezone.utc)
         result = KeepaliveRoundResult(started_at=started_at, triggered_by=triggered_by)
 
         projects = await self._projects.list_keepalive_enabled(tenant_id)
-        for project in projects:
-            outcome = await self._run_one(
+        if not projects:
+            result.ended_at = datetime.now(timezone.utc)
+            return result
+
+        state: dict[str, dict[str, Any]] = {
+            p.project_ref: {
+                "project": p,
+                "correlation_id": str(uuid.uuid4()),
+                "run_started_at": datetime.now(timezone.utc),
+                "status": "failure",
+                "latency_ms": 0,
+                "error_code": None,
+                "error_message": None,
+            }
+            for p in projects
+        }
+        pending_refs = list(state.keys())
+
+        delays = (0.0, *self._retry_delays_seconds)
+        last_pass = len(delays) - 1
+        for pass_index, delay in enumerate(delays):
+            if not pending_refs:
+                break
+            if delay > 0:
+                logger.info(
+                    "Keepalive retry: aguardando %.0fs antes de re-tentar %d projeto(s) pendente(s)",
+                    delay, len(pending_refs),
+                )
+                await asyncio.sleep(delay)
+
+            still_pending: list[str] = []
+            for ref in pending_refs:
+                entry = state[ref]
+                status, latency_ms, error_code, error_message = await self._attempt_once(
+                    tenant_id=tenant_id,
+                    project=entry["project"],
+                    actor_id=actor_id,
+                    profile=profile,
+                    correlation_id=entry["correlation_id"],
+                )
+                entry["status"] = status
+                entry["latency_ms"] = latency_ms
+                entry["error_code"] = error_code
+                entry["error_message"] = error_message
+                if status == "failure":
+                    logger.warning(
+                        "Keepalive falhou (passagem %d/%d) project_ref=%s correlation=%s error=%s",
+                        pass_index + 1, len(delays), ref, entry["correlation_id"], error_message,
+                    )
+                    if pass_index < last_pass:
+                        still_pending.append(ref)
+            pending_refs = still_pending
+
+        for entry in state.values():
+            outcome = await self._finalize(
                 tenant_id=tenant_id,
-                project=project,
-                actor_id=actor_id,
-                profile=profile,
+                project=entry["project"],
+                run_started_at=entry["run_started_at"],
+                status=entry["status"],
+                latency_ms=entry["latency_ms"],
+                error_code=entry["error_code"],
+                error_message=entry["error_message"],
                 triggered_by=triggered_by,
+                correlation_id=entry["correlation_id"],
             )
             result.outcomes.append(outcome)
 
@@ -178,30 +243,47 @@ class SupabaseKeepaliveService:
         """'Teste agora o Supabase X' — keepalive on-demand de UM projeto
         identificado por nome (case-insensitive, substring). Retorna None se
         nenhum projeto bater com name_query — o chamador decide a mensagem
-        de "não encontrado" (este service não formata texto de usuário)."""
+        de "não encontrado" (este service não formata texto de usuário).
+
+        SEM retry (diferente de run_all): é um pedido síncrono de um humano
+        no WhatsApp — bloquear a resposta por até 36min numa falha
+        transitória seria pior UX que simplesmente responder rápido que
+        falhou agora e sugerir tentar de novo."""
         matches = await self._projects.find_by_name(tenant_id, name_query)
         if not matches:
             return None
         project = matches[0]
-        return await self._run_one(
+        correlation_id = str(uuid.uuid4())
+        run_started_at = datetime.now(timezone.utc)
+
+        status, latency_ms, error_code, error_message = await self._attempt_once(
+            tenant_id=tenant_id, project=project, actor_id=actor_id,
+            profile=profile, correlation_id=correlation_id,
+        )
+        return await self._finalize(
             tenant_id=tenant_id,
             project=project,
-            actor_id=actor_id,
-            profile=profile,
+            run_started_at=run_started_at,
+            status=status,
+            latency_ms=latency_ms,
+            error_code=error_code,
+            error_message=error_message,
             triggered_by="whatsapp",
+            correlation_id=correlation_id,
         )
 
-    async def _run_one(
+    async def _attempt_once(
         self,
         tenant_id: str,
         project: SupabaseProjectRow,
         actor_id: str,
         profile: str,
-        triggered_by: str,
-    ) -> ProjectRunOutcome:
-        correlation_id = str(uuid.uuid4())
-        started_at = datetime.now(timezone.utc)
-
+        correlation_id: str,
+    ) -> tuple[str, int, str | None, str | None]:
+        """UMA tentativa de keepalive, sem persistir nada. Retorna
+        (status, latency_ms, error_code, error_message). Isolamento de
+        falha: qualquer exceção (timeout, erro de transporte do adapter,
+        DENY de policy) vira status='failure' aqui — nunca propaga."""
         ctx = ActorContext(
             tenant_id=tenant_id,
             actor_id=actor_id,
@@ -209,54 +291,42 @@ class SupabaseKeepaliveService:
             credential_ref=f"supabase-keepalive:{project.project_ref}",
             profile=profile,
         )
+        start_monotonic = time.monotonic()
+        try:
+            response = await self._orchestrator.execute(
+                ctx=ctx,
+                capability_id=KEEPALIVE_CAPABILITY_ID,
+                params={
+                    "ref": project.project_ref,
+                    "account": project.composio_account,
+                    "query": _KEEPALIVE_QUERY,
+                },
+            )
+            latency_ms = int((time.monotonic() - start_monotonic) * 1000)
+            if response.status.value != "completed":
+                raise RuntimeError(response.error or f"status={response.status.value}")
+            return "success", latency_ms, None, None
+        except Exception as exc:  # noqa: BLE001 — isolamento de falha por projeto
+            latency_ms = int((time.monotonic() - start_monotonic) * 1000)
+            return "failure", latency_ms, type(exc).__name__, sanitize_exception(exc)
 
-        # doc §4.1/§8 RETRY=1m,5m,30m (máx. 3 retries por janela): a 1ª
-        # tentativa é imediata; cada retry subsequente só roda se a anterior
-        # falhou, com o delay correspondente ANTES da nova tentativa. Sucesso
-        # em qualquer tentativa encerra o loop — o resultado final é o que é
-        # persistido (uma linha por PROJETO/EXECUÇÃO, não uma por tentativa).
-        attempt = 0
-        run_status = "failure"
-        latency_ms = 0
-        error_code: str | None = None
-        error_message: str | None = None
-        while True:
-            start_monotonic = time.monotonic()
-            try:
-                response = await self._orchestrator.execute(
-                    ctx=ctx,
-                    capability_id=KEEPALIVE_CAPABILITY_ID,
-                    params={
-                        "ref": project.project_ref,
-                        "account": project.composio_account,
-                        "query": _KEEPALIVE_QUERY,
-                    },
-                )
-                latency_ms = int((time.monotonic() - start_monotonic) * 1000)
-                if response.status.value != "completed":
-                    raise RuntimeError(response.error or f"status={response.status.value}")
-
-                run_status = "success"
-                error_code = None
-                error_message = None
-                break
-            except Exception as exc:  # noqa: BLE001 — isolamento de falha por projeto
-                latency_ms = int((time.monotonic() - start_monotonic) * 1000)
-                run_status = "failure"
-                error_message = sanitize_exception(exc)
-                error_code = type(exc).__name__
-                logger.warning(
-                    "Keepalive falhou (tentativa %d/%d) project_ref=%s correlation=%s error=%s",
-                    attempt + 1, len(self._retry_delays_seconds) + 1,
-                    project.project_ref, correlation_id, error_message,
-                )
-                if attempt >= len(self._retry_delays_seconds):
-                    break  # esgotou os retries da janela — falha final
-                delay = self._retry_delays_seconds[attempt]
-                if delay > 0:
-                    await asyncio.sleep(delay)
-                attempt += 1
-
+    async def _finalize(
+        self,
+        tenant_id: str,
+        project: SupabaseProjectRow,
+        run_started_at: datetime,
+        status: str,
+        latency_ms: int,
+        error_code: str | None,
+        error_message: str | None,
+        triggered_by: str,
+        correlation_id: str,
+    ) -> ProjectRunOutcome:
+        """Persiste o resultado FINAL (pós todas as tentativas) — uma única
+        linha em supabase_keepalive_runs por projeto/execução, nunca uma
+        por tentativa. Persistência isolada também: se o INSERT/UPDATE
+        falhar (ex.: DB fora do ar), não derruba o loop de run_all — vira
+        log de erro, resultado em memória ainda é retornado ao chamador."""
         ended_at = datetime.now(timezone.utc)
         next_run_at = _next_scheduled_run(ended_at)
 
@@ -265,9 +335,9 @@ class SupabaseKeepaliveService:
             await self._runs.record(
                 tenant_id=tenant_id,
                 project_id=project.id,
-                started_at=started_at,
+                started_at=run_started_at,
                 ended_at=ended_at,
-                status=run_status,
+                status=status,
                 latency_ms=latency_ms,
                 error_code=error_code,
                 error_message=error_message,
@@ -277,8 +347,8 @@ class SupabaseKeepaliveService:
             update = await self._projects.record_run_result(
                 tenant_id=tenant_id,
                 project_id=project.id,
-                run_status=run_status,
-                latency_ms=latency_ms if run_status == "success" else None,
+                run_status=status,
+                latency_ms=latency_ms if status == "success" else None,
                 error_code=error_code,
                 next_run_at=next_run_at,
             )
@@ -289,12 +359,12 @@ class SupabaseKeepaliveService:
                 project.project_ref, sanitize_exception(persist_exc),
             )
 
-        alert = run_status == "failure" and consecutive_failures >= ALERT_THRESHOLD_CONSECUTIVE_FAILURES
+        alert = status == "failure" and consecutive_failures >= ALERT_THRESHOLD_CONSECUTIVE_FAILURES
 
         return ProjectRunOutcome(
             project_ref=project.project_ref,
             display_name=project.display_name,
-            status=run_status,
+            status=status,
             latency_ms=latency_ms,
             error_code=error_code,
             error_message=error_message,

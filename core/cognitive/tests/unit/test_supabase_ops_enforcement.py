@@ -15,6 +15,7 @@ hermes/capability-intelligence/tests/test_capability_router.py (51/51).
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pytest
@@ -449,3 +450,39 @@ async def test_keepalive_exhausts_all_retries_then_fails():
     assert result.failure_count == 1
     assert adapter.call_count == 4  # 1 original + 3 retries (doc: máx. 3 retries)
     assert len(run_repo.records) == 1
+
+
+@pytest.mark.asyncio
+async def test_keepalive_retry_is_round_level_not_per_project():
+    """Regressão de design: o retry precisa ser aplicado à RODADA (todos os
+    projetos pendentes juntos em cada passagem), não a cada projeto
+    isoladamente. Com retry por-projeto, N projetos falhando em série
+    custariam N * soma(delays) de wall-clock; com retry por-rodada custa
+    sempre soma(delays), não importa quantos projetos falhem. Prova com 5
+    projetos falhando e delays pequenos porém mensuráveis: o tempo total
+    fica preso a ~soma(delays), não escala com o número de projetos."""
+    n_projects = 5
+    delays = (0.05, 0.05, 0.05)
+    projects = [
+        _project_row(ref=f"{chr(97 + i)}" * 20, id=f"id-multi-{i}", display_name=f"P{i}")
+        for i in range(n_projects)
+    ]
+    project_repo = FakeProjectRepo(projects)
+    run_repo = FakeRunRepo()
+
+    adapter = FlakyThenRecoversAdapter(fail_first_n=999)  # nenhum projeto nunca recupera
+    orch = _build_orchestrator(composio_adapter=adapter, grant_capability_ids=("supabase.keepalive.run",))
+    service = SupabaseKeepaliveService(
+        orch, project_repo=project_repo, run_repo=run_repo, retry_delays_seconds=delays,
+    )
+
+    start = time.monotonic()
+    result = await service.run_all(tenant_id=TENANT)
+    elapsed = time.monotonic() - start
+
+    assert result.failure_count == n_projects
+    # 4 passagens (1 + 3 retries) * 5 projetos = 20 chamadas ao adapter
+    assert adapter.call_count == n_projects * 4
+    # tempo total ~ soma(delays) = 0.15s, independente de n_projects — se o
+    # retry fosse por-projeto isolado, isso escalaria para ~0.75s (5x)
+    assert elapsed < sum(delays) + 0.5, f"elapsed={elapsed:.3f}s sugere retry por-projeto, não por-rodada"
