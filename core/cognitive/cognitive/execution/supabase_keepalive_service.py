@@ -23,6 +23,7 @@ conhece canal de notificação.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -44,6 +45,14 @@ logger = logging.getLogger(__name__)
 KEEPALIVE_CAPABILITY_ID = "supabase.keepalive.run"
 _KEEPALIVE_QUERY = "SELECT now()"
 ALERT_THRESHOLD_CONSECUTIVE_FAILURES = 2
+
+# doc §4.1/§8: "RETRY=1m, 5m, 30m (máx. 3 retries por janela)". Aplicado por
+# projeto, dentro da MESMA execução do scheduler (não entre janelas — as 3
+# janelas fixas 06:10/14:10/22:10 já são a cadência entre execuções). Só
+# retry de FALHA — sucesso nunca re-tenta. injetável via
+# SupabaseKeepaliveService(retry_delays_seconds=...) para testes (delays
+# quase-zero) sem mudar o comportamento de produção.
+DEFAULT_RETRY_DELAYS_SECONDS: tuple[float, ...] = (60.0, 300.0, 1800.0)
 
 # Profile do único service_identity real provisionado no Cognitive Homolog
 # para o Hermes (ver service_identities.profile — confirmado ao vivo nesta
@@ -118,10 +127,12 @@ class SupabaseKeepaliveService:
         orchestrator: ExecutionOrchestrator,
         project_repo: SupabaseProjectRepository | None = None,
         run_repo: SupabaseKeepaliveRunRepository | None = None,
+        retry_delays_seconds: tuple[float, ...] = DEFAULT_RETRY_DELAYS_SECONDS,
     ) -> None:
         self._orchestrator = orchestrator
         self._projects = project_repo or SupabaseProjectRepository()
         self._runs = run_repo or SupabaseKeepaliveRunRepository()
+        self._retry_delays_seconds = retry_delays_seconds
 
     async def run_all(
         self,
@@ -190,7 +201,6 @@ class SupabaseKeepaliveService:
     ) -> ProjectRunOutcome:
         correlation_id = str(uuid.uuid4())
         started_at = datetime.now(timezone.utc)
-        start_monotonic = time.monotonic()
 
         ctx = ActorContext(
             tenant_id=tenant_id,
@@ -200,33 +210,52 @@ class SupabaseKeepaliveService:
             profile=profile,
         )
 
-        try:
-            response = await self._orchestrator.execute(
-                ctx=ctx,
-                capability_id=KEEPALIVE_CAPABILITY_ID,
-                params={
-                    "ref": project.project_ref,
-                    "account": project.composio_account,
-                    "query": _KEEPALIVE_QUERY,
-                },
-            )
-            latency_ms = int((time.monotonic() - start_monotonic) * 1000)
+        # doc §4.1/§8 RETRY=1m,5m,30m (máx. 3 retries por janela): a 1ª
+        # tentativa é imediata; cada retry subsequente só roda se a anterior
+        # falhou, com o delay correspondente ANTES da nova tentativa. Sucesso
+        # em qualquer tentativa encerra o loop — o resultado final é o que é
+        # persistido (uma linha por PROJETO/EXECUÇÃO, não uma por tentativa).
+        attempt = 0
+        run_status = "failure"
+        latency_ms = 0
+        error_code: str | None = None
+        error_message: str | None = None
+        while True:
+            start_monotonic = time.monotonic()
+            try:
+                response = await self._orchestrator.execute(
+                    ctx=ctx,
+                    capability_id=KEEPALIVE_CAPABILITY_ID,
+                    params={
+                        "ref": project.project_ref,
+                        "account": project.composio_account,
+                        "query": _KEEPALIVE_QUERY,
+                    },
+                )
+                latency_ms = int((time.monotonic() - start_monotonic) * 1000)
+                if response.status.value != "completed":
+                    raise RuntimeError(response.error or f"status={response.status.value}")
 
-            if response.status.value != "completed":
-                raise RuntimeError(response.error or f"status={response.status.value}")
-
-            run_status = "success"
-            error_code = None
-            error_message = None
-        except Exception as exc:  # noqa: BLE001 — isolamento de falha por projeto
-            latency_ms = int((time.monotonic() - start_monotonic) * 1000)
-            run_status = "failure"
-            error_message = sanitize_exception(exc)
-            error_code = type(exc).__name__
-            logger.warning(
-                "Keepalive falhou project_ref=%s correlation=%s error=%s",
-                project.project_ref, correlation_id, error_message,
-            )
+                run_status = "success"
+                error_code = None
+                error_message = None
+                break
+            except Exception as exc:  # noqa: BLE001 — isolamento de falha por projeto
+                latency_ms = int((time.monotonic() - start_monotonic) * 1000)
+                run_status = "failure"
+                error_message = sanitize_exception(exc)
+                error_code = type(exc).__name__
+                logger.warning(
+                    "Keepalive falhou (tentativa %d/%d) project_ref=%s correlation=%s error=%s",
+                    attempt + 1, len(self._retry_delays_seconds) + 1,
+                    project.project_ref, correlation_id, error_message,
+                )
+                if attempt >= len(self._retry_delays_seconds):
+                    break  # esgotou os retries da janela — falha final
+                delay = self._retry_delays_seconds[attempt]
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                attempt += 1
 
         ended_at = datetime.now(timezone.utc)
         next_run_at = _next_scheduled_run(ended_at)

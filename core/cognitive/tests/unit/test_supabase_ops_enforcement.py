@@ -313,7 +313,9 @@ async def test_keepalive_service_isolates_single_project_failure():
 
     adapter = FlakyComposioAdapter(fail_refs={"bbbbbbbbbbbbbbbbbbbb"})
     orch = _build_orchestrator(composio_adapter=adapter, grant_capability_ids=("supabase.keepalive.run",))
-    service = SupabaseKeepaliveService(orch, project_repo=project_repo, run_repo=run_repo)
+    service = SupabaseKeepaliveService(
+        orch, project_repo=project_repo, run_repo=run_repo, retry_delays_seconds=(),
+    )
 
     result = await service.run_all(tenant_id=TENANT)
 
@@ -333,7 +335,9 @@ async def test_keepalive_service_no_projects_enabled_returns_empty_round():
     run_repo = FakeRunRepo()
     adapter = FlakyComposioAdapter(fail_refs=set())
     orch = _build_orchestrator(composio_adapter=adapter, grant_capability_ids=("supabase.keepalive.run",))
-    service = SupabaseKeepaliveService(orch, project_repo=project_repo, run_repo=run_repo)
+    service = SupabaseKeepaliveService(
+        orch, project_repo=project_repo, run_repo=run_repo, retry_delays_seconds=(),
+    )
 
     result = await service.run_all(tenant_id=TENANT)
 
@@ -351,7 +355,9 @@ async def test_keepalive_service_alert_on_second_consecutive_failure():
 
     adapter = FlakyComposioAdapter(fail_refs={"cccccccccccccccccccc"})
     orch = _build_orchestrator(composio_adapter=adapter, grant_capability_ids=("supabase.keepalive.run",))
-    service = SupabaseKeepaliveService(orch, project_repo=project_repo, run_repo=run_repo)
+    service = SupabaseKeepaliveService(
+        orch, project_repo=project_repo, run_repo=run_repo, retry_delays_seconds=(),
+    )
 
     result = await service.run_all(tenant_id=TENANT)
 
@@ -368,9 +374,78 @@ async def test_keepalive_service_first_failure_no_alert_yet():
 
     adapter = FlakyComposioAdapter(fail_refs={"dddddddddddddddddddd"})
     orch = _build_orchestrator(composio_adapter=adapter, grant_capability_ids=("supabase.keepalive.run",))
-    service = SupabaseKeepaliveService(orch, project_repo=project_repo, run_repo=run_repo)
+    service = SupabaseKeepaliveService(
+        orch, project_repo=project_repo, run_repo=run_repo, retry_delays_seconds=(),
+    )
 
     result = await service.run_all(tenant_id=TENANT)
 
     assert result.failure_count == 1
     assert len(result.alerts) == 0  # 1ª falha isolada — doc §8: não incomodar ainda
+
+
+# ─── Retry (doc §4.1/§8: RETRY=1m,5m,30m, máx. 3 retries por janela) ────
+
+class FlakyThenRecoversAdapter:
+    """Falha nas N primeiras chamadas por ref, sucesso a partir da (N+1)ª —
+    simula uma indisponibilidade transitória do Compose MCP que o retry
+    consegue superar dentro da mesma janela."""
+
+    def __init__(self, fail_first_n: int) -> None:
+        self._fail_first_n = fail_first_n
+        self.call_count = 0
+
+    async def invoke_tool(self, tool_name, arguments, tenant_id, correlation_id):
+        self.call_count += 1
+        if self.call_count <= self._fail_first_n:
+            raise RuntimeError(f"transiente (tentativa {self.call_count})")
+        return {"success": True, "data": {"result": [{"now": "2026-01-01T00:00:00Z"}], "rows_returned": 1}}
+
+    async def health(self) -> bool:
+        return True
+
+
+@pytest.mark.asyncio
+async def test_keepalive_retries_and_recovers_within_window():
+    """1ª tentativa falha, retry (delay injetado ~0) sucede — resultado
+    final é 'success', uma ÚNICA linha de run persistida (não uma por
+    tentativa)."""
+    project = _project_row(ref="eeeeeeeeeeeeeeeeeeee", id="id-e")
+    project_repo = FakeProjectRepo([project])
+    run_repo = FakeRunRepo()
+
+    adapter = FlakyThenRecoversAdapter(fail_first_n=1)
+    orch = _build_orchestrator(composio_adapter=adapter, grant_capability_ids=("supabase.keepalive.run",))
+    service = SupabaseKeepaliveService(
+        orch, project_repo=project_repo, run_repo=run_repo,
+        retry_delays_seconds=(0.001, 0.001, 0.001),
+    )
+
+    result = await service.run_all(tenant_id=TENANT)
+
+    assert result.success_count == 1
+    assert result.failure_count == 0
+    assert adapter.call_count == 2  # 1ª falhou, 2ª (retry) sucedeu
+    assert len(run_repo.records) == 1  # 1 linha por PROJETO/EXECUÇÃO, não por tentativa
+
+
+@pytest.mark.asyncio
+async def test_keepalive_exhausts_all_retries_then_fails():
+    """Falha em TODAS as tentativas (1 original + 3 retries = 4 chamadas) —
+    esgota o orçamento de retry da janela e reporta failure final."""
+    project = _project_row(ref="ffffffffffffffffffff", id="id-f")
+    project_repo = FakeProjectRepo([project])
+    run_repo = FakeRunRepo()
+
+    adapter = FlakyThenRecoversAdapter(fail_first_n=999)  # nunca recupera
+    orch = _build_orchestrator(composio_adapter=adapter, grant_capability_ids=("supabase.keepalive.run",))
+    service = SupabaseKeepaliveService(
+        orch, project_repo=project_repo, run_repo=run_repo,
+        retry_delays_seconds=(0.001, 0.001, 0.001),
+    )
+
+    result = await service.run_all(tenant_id=TENANT)
+
+    assert result.failure_count == 1
+    assert adapter.call_count == 4  # 1 original + 3 retries (doc: máx. 3 retries)
+    assert len(run_repo.records) == 1
