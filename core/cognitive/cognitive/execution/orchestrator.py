@@ -148,10 +148,17 @@ class ExecutionOrchestrator:
         telemetry_recorder: InMemoryTelemetryRecorder,
         resource_resolver: Any | None = None,
         grant_resolver: GrantResolverPort | None = None,
+        composio_adapter: SkillsAdapterPort | None = None,
     ) -> None:
         self._registry = registry
         self._policy = policy_engine
         self._adapter = skills_adapter
+        # P0 (Supabase Ops): segundo adapter opcional, roteado por
+        # capability.adapter == "composio" (ver _select_adapter). None por
+        # padrão — retrocompat total para todo orchestrator existente que só
+        # passa skills_adapter (infra.inspect/infra.action continuam 100% no
+        # ProsperfySkillsAdapter, sem nenhuma mudança de comportamento).
+        self._composio_adapter = composio_adapter
         self._audit = audit_writer
         self._telemetry = telemetry_recorder
         # ADR-V2-002 §3: resolve params.resource (lógico) -> concretos ANTES do
@@ -373,6 +380,7 @@ class ExecutionOrchestrator:
                 params=resolved_params,
                 tenant_id=ctx.tenant_id,
                 correlation_id=ctx.correlation_id,
+                adapter=self._select_adapter(capability),
             )
         except Exception as exc:
             # Sprint 0.3 RETURN_TO_DEV (Item B): nunca loga o traceback bruto
@@ -427,6 +435,23 @@ class ExecutionOrchestrator:
             self._idempotency_cache[cache_key] = response
         return response
 
+    def _select_adapter(self, capability: Any) -> SkillsAdapterPort:
+        """
+        P0 (Supabase Ops): roteia por capability.adapter — "composio" usa o
+        ComposioMcpAdapter injetado (se houver); qualquer outro valor
+        (inclusive "prosperfy_skills", o único existente antes do P0)
+        preserva o comportamento 100% original: self._adapter.
+
+        Fail-closed silencioso não existe aqui: se adapter=="composio" mas
+        nenhum composio_adapter foi injetado neste orchestrator, cai em
+        self._adapter (ProsperfySkillsAdapter/mock) — que não reconhece as
+        tools SUPABASE_* e falha explicitamente no invoke_tool, nunca com
+        sucesso silencioso.
+        """
+        if getattr(capability, "adapter", None) == "composio" and self._composio_adapter is not None:
+            return self._composio_adapter
+        return self._adapter
+
     async def _run_capability_tools(
         self,
         capability_id: str,
@@ -434,16 +459,23 @@ class ExecutionOrchestrator:
         params: dict[str, Any],
         tenant_id: str,
         correlation_id: str,
+        adapter: SkillsAdapterPort | None = None,
     ) -> tuple[int, dict[str, Any]]:
         """
         Executa a sequência de tools de uma capability composta.
 
         Determinístico: sem LLM escolhendo a sequência.
         Retorna (tool_calls_count, result_data).
+
+        `adapter` (P0): adapter concreto a usar nesta execução — default
+        None preserva 100% o comportamento pré-P0 (usa self._adapter); todo
+        chamador existente (incl. testes que chamam este método diretamente
+        sem `adapter=`) continua idêntico.
         """
+        adapter = adapter or self._adapter
         if capability_id == "infra.action":
             tool_name, tool_args = _build_infra_action_restart_plan(params, tools)
-            tool_result = await self._adapter.invoke_tool(
+            tool_result = await adapter.invoke_tool(
                 tool_name=tool_name,
                 arguments=tool_args,
                 tenant_id=tenant_id,
@@ -460,7 +492,7 @@ class ExecutionOrchestrator:
 
         if not tools:
             # Capability simples (sem steps YAML) — invoca pelo capability_id direto
-            result = await self._adapter.invoke_tool(
+            result = await adapter.invoke_tool(
                 tool_name=capability_id,
                 arguments=client_args,
                 tenant_id=tenant_id,
@@ -498,7 +530,7 @@ class ExecutionOrchestrator:
                 tool_args = dict(client_args)
 
             try:
-                tool_result = await self._adapter.invoke_tool(
+                tool_result = await adapter.invoke_tool(
                     tool_name=tool_name,
                     arguments=tool_args,
                     tenant_id=tenant_id,
