@@ -42,12 +42,16 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def _project_public_dict(row: SupabaseProjectRow) -> dict[str, Any]:
-    """Metadata segura para output de capability (WhatsApp/humano) — nunca
-    inclui composio_account (identificador interno de roteamento, não
-    secret, mas irrelevante fora do Cognitive) nem tenant_id (redundante,
-    já é o escopo da própria chamada)."""
+    """Metadata segura para output de capability (WhatsApp/humano). Nunca
+    inclui tenant_id (redundante, já é o escopo da própria chamada).
+    Inclui composio_account: é um alias de conexão (ex.: "Supabase -
+    Hermes"), não um secret — já é público no próprio inventário operacional
+    da track — e o Hermes precisa dele para montar a chamada de
+    supabase.keepalive.run (que exige ref+account explícitos, nunca busca
+    por nome, para nunca rodar no projeto errado por engano)."""
     return {
         "project_ref": row.project_ref,
+        "composio_account": row.composio_account,
         "display_name": row.display_name,
         "region": row.region,
         "plan": row.plan,

@@ -126,6 +126,38 @@ _SKILLS_MARKERS = (
     "skills disponíveis", "skills disponiveis", "skill chamada",
 )
 
+# ─── SUPABASE_OPS (P0 — Supabase Ops + Anti-Hibernação) ───────────────────
+# Palavras-chave + intents operacionais (doc P0 §7): "supabase", "banco",
+# hiberna(ção), pausad(o/a), keepalive. Conservador: keyword sozinha não
+# roteia — exige também contexto operacional/pergunta (mesmo shape de
+# _is_infra_read), ou "meus supabases"/"meus bancos" que já é operacional
+# por si só.
+_SUPABASE_KEYWORDS = (
+    "supabase", "banco", "bancos", "hiberna", "hibernacao", "hibernação",
+    "pausad", "keepalive", "keep-alive",
+)
+_SUPABASE_OPERATIONAL = (
+    "como está", "como esta", "como estão", "como estao", "como andam",
+    "quais", "algum", "alguma", "com problema", "quando foi", "teste agora",
+    "teste o", "teste a", "último", "ultimo", "status dos", "status do",
+)
+
+
+def _is_supabase_ops(text: str) -> bool:
+    """Intenção operacional sobre Supabase (P0, read-only na rota — a ação
+    real de keepalive/teste é sempre read-only no projeto monitorado).
+    Conceitual é bloqueado antes ("o que é Supabase?" → NORMAL). Se dúvida:
+    NORMAL."""
+    low = text.lower()
+    if _has_conceptual(low):
+        return False
+    if not _has_any(low, _SUPABASE_KEYWORDS):
+        return False
+    if "meus supabases" in low or "meus bancos" in low:
+        return True
+    return _has_any(low, _SUPABASE_OPERATIONAL)
+
+
 # ─── Confirmação afirmativa (Phase 1B — continuation routing restart V1) ───
 # Match EXATO após normalização — "Sim, obrigado" permanece NORMAL.
 _AFFIRMATIVE_CONFIRMATIONS = frozenset({
@@ -266,6 +298,8 @@ def resolve_specialist_route(message: str, actor_id: str | None = None) -> str:
         return "INFRA_ACTION"
     if _is_infra_read(text):
         return "INFRA_READ"
+    if _is_supabase_ops(text):
+        return "SUPABASE_OPS"
     return "NORMAL"
 
 
@@ -276,6 +310,7 @@ _ROUTE_TOOLSETS = {
     "SKILLS": ["skills"],
     "INFRA_READ": ["infra_read"],
     "INFRA_ACTION": ["restart_container"],
+    "SUPABASE_OPS": ["supabase_ops"],
     "NORMAL": [],
 }
 

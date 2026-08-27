@@ -69,6 +69,19 @@ cases = [
     ("Como funciona docker restart?", "NORMAL"),
     ("Quais containers estão rodando?", "INFRA_READ"),
     ("O que significa reiniciar um container?", "NORMAL"),
+    # SUPABASE_OPS (P0 — Supabase Ops + Anti-Hibernação)
+    ("Como estão meus Supabases?", "SUPABASE_OPS"),
+    ("Quais Supabases são Free?", "SUPABASE_OPS"),
+    ("Algum Supabase está com problema?", "SUPABASE_OPS"),
+    ("Quando foi o último keepalive do Hermes?", "SUPABASE_OPS"),
+    ("Teste agora o Supabase TimerProsper.", "SUPABASE_OPS"),
+    ("Algum banco está pausado?", "SUPABASE_OPS"),
+    ("Status do Supabase Hermes", "SUPABASE_OPS"),
+    # SUPABASE_OPS negativos (conceitual → NORMAL)
+    ("O que é Supabase?", "NORMAL"),
+    ("Como funciona hibernação de projeto no Supabase?", "NORMAL"),
+    ("Qual a diferença entre Supabase e Postgres puro?", "NORMAL"),
+    ("Obrigado pelo banco de dados que você criou.", "NORMAL"),
 ]
 
 fails = 0
@@ -82,6 +95,7 @@ assert route_toolsets("CRON") == ["cronjob"]
 assert route_toolsets("SESSION_SEARCH") == ["session_search"]
 assert route_toolsets("MEMORY") == ["memory"]
 assert route_toolsets("SKILLS") == ["skills"]
+assert route_toolsets("SUPABASE_OPS") == ["supabase_ops"]
 
 print(f"TOTAL={len(cases)} FAILS={fails}")
 print("ROUTE_TOOLSETS_OK")
