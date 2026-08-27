@@ -1,0 +1,49 @@
+# Capability: work.project.list
+# Track P1 — Work Management
+
+id: "work.project.list"
+version: "1.0.0"
+domain: "work_management"
+description: "Lista Projects do tenant, com filtro opcional por status."
+adapter: "work_management"
+default_policy: "allow"
+
+required_scopes:
+  - "work:read"
+
+input_schema:
+  type: object
+  properties:
+    status:
+      type: string
+      enum: ["planned", "active", "on_hold", "completed", "cancelled", "archived"]
+    include_archived:
+      type: boolean
+    limit:
+      type: integer
+    offset:
+      type: integer
+
+output_schema:
+  type: object
+  properties:
+    projects:
+      type: array
+    count:
+      type: integer
+
+tools: []
+
+idempotency_behavior: "none"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: false
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"

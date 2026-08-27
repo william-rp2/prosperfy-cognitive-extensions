@@ -1,0 +1,50 @@
+# Capability: work.sync.status
+# Track P1 — Work Management
+#
+# Observabilidade do adapter Trello: outbox por status (pending/processing/
+# done/failed/dead_letter) e se board/lists já estão vinculados
+# (work_trello_bindings). Nunca expõe token/secret Trello.
+
+id: "work.sync.status"
+version: "1.0.0"
+domain: "work_management"
+description: "Status de sincronização Trello — outbox pendente/falhado e binding de board/listas."
+adapter: "work_management"
+default_policy: "allow"
+
+required_scopes:
+  - "work:read"
+
+input_schema:
+  type: object
+  properties: {}
+
+output_schema:
+  type: object
+  properties:
+    outbox:
+      type: object
+    board_bound:
+      type: boolean
+    board_id:
+      type: string
+    lists_bound:
+      type: array
+    lists_count:
+      type: integer
+
+tools: []
+
+idempotency_behavior: "none"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"

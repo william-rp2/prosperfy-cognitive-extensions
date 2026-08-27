@@ -1,0 +1,56 @@
+# Capability: work.summary
+# Track P1 — Work Management
+
+id: "work.summary"
+version: "1.0.0"
+domain: "work_management"
+description: >
+  Resumo de tasks por status (tenant-wide ou de um Project específico),
+  contagem de bloqueadas e (tenant-wide) totais de projects/ideas. Atende
+  "o que falta para terminar o projeto X?".
+adapter: "work_management"
+default_policy: "allow"
+
+required_scopes:
+  - "work:read"
+
+input_schema:
+  type: object
+  properties:
+    project_id:
+      type: string
+      description: "Se omitido, resumo é tenant-wide."
+
+output_schema:
+  type: object
+  properties:
+    tasks_by_status:
+      type: object
+    tasks_total:
+      type: integer
+    tasks_blocked:
+      type: integer
+    blocked_tasks:
+      type: array
+    project:
+      type: object
+    projects_total:
+      type: integer
+    ideas_total:
+      type: integer
+
+tools: []
+
+idempotency_behavior: "none"
+timeout_seconds: 20
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: false
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"

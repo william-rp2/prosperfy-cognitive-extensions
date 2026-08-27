@@ -79,7 +79,20 @@ def _build_services(app: FastAPI) -> None:
         from ..db.repositories.resource_repo import TenantResourceRepository
         from ..db.repositories.telemetry_repo import PostgresTelemetryRecorder
         from ..db.repositories.tenancy_repo import GrantRepository
+        from ..db.repositories.work_repo import (
+            IdeaRepository,
+            ProjectRepository,
+            TaskRepository,
+            WorkEventRepository,
+            WorkLinkRepository,
+        )
+        from ..db.repositories.work_trello_repo import (
+            SyncOutboxRepository,
+            TrelloBindingRepository,
+        )
         from ..registry.grant_resolver import PostgresGrantResolver
+        from ..adapters.work_management.adapter import WorkManagementAdapter
+        from ..services.work_service import WorkService
 
         audit_writer = PostgresAuditWriter()
         # Sprint 0.3 (fechamento E2E): antes deste fix, telemetry_recorder
@@ -101,12 +114,34 @@ def _build_services(app: FastAPI) -> None:
         # por tenant_transaction). Sem este wiring, grants persistidos eram
         # ignorados → todo tenant em database mode levava DENY [no_grant].
         grant_resolver = PostgresGrantResolver(repo=GrantRepository())
-        logger.info("Runtime: database mode (Postgres)")
+        # Track P1 (Work Management): WorkService/WorkManagementAdapter só
+        # existem em database mode — o domínio inteiro (work_ideas/
+        # work_projects/work_tasks/...) é Postgres-backed via
+        # tenant_transaction (RLS), sem fallback in-memory (mesmo padrão de
+        # audit_writer/telemetry_recorder acima).
+        work_service = WorkService(
+            idea_repo=IdeaRepository(),
+            project_repo=ProjectRepository(),
+            task_repo=TaskRepository(),
+            link_repo=WorkLinkRepository(),
+            event_repo=WorkEventRepository(),
+            outbox_repo=SyncOutboxRepository(),
+            binding_repo=TrelloBindingRepository(),
+        )
+        extra_adapters: dict[str, object] = {
+            "work_management": WorkManagementAdapter(work_service),
+        }
+        logger.info("Runtime: database mode (Postgres) — work_management adapter ativo")
     else:
         audit_writer = InMemoryAuditWriter()
         telemetry_recorder = InMemoryTelemetryRecorder()
         identity_resolver = IdentityResolver(identity_repo=None, database_mode=False)
         resource_resolver = InMemoryResourceResolver()
+        # Sem DB não há WorkService (precisa de tenant_transaction/pool real)
+        # — capabilities work.* registradas mas sem adapter extra caem no
+        # fallback (skills_adapter) e falham de forma explícita, nunca
+        # silenciosa (RuntimeError "capability desconhecida" no skills mock).
+        extra_adapters = {}
         # Mesmo resolvedor que o orchestrator usa por default em in-memory:
         # exposto no app.state para a rota de descoberta aplicar a mesma
         # elegibilidade por grant (sem grant → lista vazia).
@@ -130,6 +165,7 @@ def _build_services(app: FastAPI) -> None:
         telemetry_recorder=telemetry_recorder,
         resource_resolver=resource_resolver,
         grant_resolver=grant_resolver,
+        adapters=extra_adapters,
     )
 
     if is_in_memory_mode():

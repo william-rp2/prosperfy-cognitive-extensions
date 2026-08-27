@@ -1,0 +1,59 @@
+# Capability: work.task.list
+# Track P1 — Work Management
+#
+# blocked_only=true: ignora status/assignee/project_id e retorna tasks com
+# status='blocked' OU com dependência ainda não concluída (query correlacionada
+# em work_task_dependencies) — atende "Quais tarefas estão bloqueadas?".
+
+id: "work.task.list"
+version: "1.0.0"
+domain: "work_management"
+description: "Lista Tasks do tenant, com filtros por status/assignee/project_id ou modo blocked_only."
+adapter: "work_management"
+default_policy: "allow"
+
+required_scopes:
+  - "work:read"
+
+input_schema:
+  type: object
+  properties:
+    status:
+      type: string
+      enum: ["todo", "in_progress", "blocked", "waiting", "done", "cancelled", "archived"]
+    assignee:
+      type: string
+    project_id:
+      type: string
+    blocked_only:
+      type: boolean
+    include_archived:
+      type: boolean
+    limit:
+      type: integer
+    offset:
+      type: integer
+
+output_schema:
+  type: object
+  properties:
+    tasks:
+      type: array
+    count:
+      type: integer
+
+tools: []
+
+idempotency_behavior: "none"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: false
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"

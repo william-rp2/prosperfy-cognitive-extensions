@@ -1,0 +1,58 @@
+# Capability: work.task.get
+# Track P1 — Work Management
+
+id: "work.task.get"
+version: "1.0.0"
+domain: "work_management"
+description: >
+  Busca uma Task por id, incluindo project_ids, idea_ids, depends_on
+  (bloqueadoras), blocks (o que destrava) e is_blocked calculado.
+adapter: "work_management"
+default_policy: "allow"
+
+required_scopes:
+  - "work:read"
+
+input_schema:
+  type: object
+  required:
+    - task_id
+  properties:
+    task_id:
+      type: string
+
+output_schema:
+  type: object
+  properties:
+    id:
+      type: string
+    title:
+      type: string
+    status:
+      type: string
+    project_ids:
+      type: array
+    idea_ids:
+      type: array
+    depends_on:
+      type: array
+    blocks:
+      type: array
+    is_blocked:
+      type: boolean
+
+tools: []
+
+idempotency_behavior: "none"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: false
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"

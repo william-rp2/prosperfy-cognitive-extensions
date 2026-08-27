@@ -1,0 +1,50 @@
+# Capability: work.project.get
+# Track P1 — Work Management
+
+id: "work.project.get"
+version: "1.0.0"
+domain: "work_management"
+description: "Busca um Project por id, incluindo idea_ids e task_ids vinculados."
+adapter: "work_management"
+default_policy: "allow"
+
+required_scopes:
+  - "work:read"
+
+input_schema:
+  type: object
+  required:
+    - project_id
+  properties:
+    project_id:
+      type: string
+
+output_schema:
+  type: object
+  properties:
+    id:
+      type: string
+    title:
+      type: string
+    status:
+      type: string
+    idea_ids:
+      type: array
+    task_ids:
+      type: array
+
+tools: []
+
+idempotency_behavior: "none"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: false
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"

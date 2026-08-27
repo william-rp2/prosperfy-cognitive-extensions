@@ -1,0 +1,76 @@
+# Capability: work.project.create
+# Track P1 — Work Management
+#
+# from_idea_id: fluxo "transforme essa ideia em um projeto" — cria o Project,
+# vincula a Idea (work_idea_projects) e marca a Idea como status='converted'.
+
+id: "work.project.create"
+version: "1.0.0"
+domain: "work_management"
+description: >
+  Cria um Project no Supabase (status inicial 'planned'). Opcionalmente
+  vincula Ideas existentes (idea_ids) e/ou converte uma Idea de origem
+  (from_idea_id -> idea.status='converted').
+adapter: "work_management"
+default_policy: "allow"
+
+required_scopes:
+  - "work:write"
+
+input_schema:
+  type: object
+  required:
+    - title
+  properties:
+    title:
+      type: string
+    description:
+      type: string
+    priority:
+      type: string
+      enum: ["low", "medium", "high", "urgent"]
+    owner:
+      type: string
+    start_date:
+      type: string
+      description: "ISO date (YYYY-MM-DD)."
+    due_date:
+      type: string
+      description: "ISO date (YYYY-MM-DD)."
+    tags:
+      type: array
+      items:
+        type: string
+    idea_ids:
+      type: array
+      items:
+        type: string
+    from_idea_id:
+      type: string
+      description: "Idea de origem — vira status 'converted' e é vinculada ao Project criado."
+
+output_schema:
+  type: object
+  properties:
+    id:
+      type: string
+    status:
+      type: string
+    idea_ids:
+      type: array
+
+tools: []
+
+idempotency_behavior: "return_cached"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"
