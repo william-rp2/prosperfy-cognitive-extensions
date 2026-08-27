@@ -60,6 +60,14 @@ def _pending_key(actor: str, resource: str, container: str) -> str:
     return f"{actor}|{resource}|{container}|restart_container"
 
 
+def has_pending_restart_for_actor(actor: str) -> bool:
+    """Read-only: existe pending restart para este actor? Não remove nem cria pending."""
+    if not actor:
+        return False
+    with _lock:
+        return any(entry.get("actor") == actor for entry in _pending.values())
+
+
 def _resolve_resource(meta: list[dict], name: str) -> str | None:
     low = (name or "").strip().lower()
     for r in meta:
@@ -184,3 +192,14 @@ registry.register(
     ),
     check_fn=check_restart_container_requirements,
 )
+
+
+def _wire_routing_continuation() -> None:
+    try:
+        from capability_intelligence.capability_router import set_pending_restart_checker
+        set_pending_restart_checker(has_pending_restart_for_actor)
+    except ImportError:
+        pass
+
+
+_wire_routing_continuation()

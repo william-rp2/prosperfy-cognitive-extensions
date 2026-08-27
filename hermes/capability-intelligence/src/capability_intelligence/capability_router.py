@@ -29,8 +29,9 @@ NORMAL_CHAT_ROUTER_LLM_CALLS=0 · FALSE_POSITIVE_SPECIALIST=baixo (conservador).
 
 from __future__ import annotations
 
+import os
 import re
-from typing import Optional
+from typing import Callable, Optional
 
 from .cron_router import is_cron_intent
 
@@ -125,6 +126,37 @@ _SKILLS_MARKERS = (
     "skills disponíveis", "skills disponiveis", "skill chamada",
 )
 
+# ─── Confirmação afirmativa (Phase 1B — continuation routing restart V1) ───
+# Match EXATO após normalização — "Sim, obrigado" permanece NORMAL.
+_AFFIRMATIVE_CONFIRMATIONS = frozenset({
+    "sim",
+    "sim.",
+    "confirmo",
+    "confirmado",
+    "pode",
+    "pode executar",
+    "ok",
+})
+
+_pending_restart_checker: Callable[[str], bool] | None = None
+
+
+def set_pending_restart_checker(checker: Callable[[str], bool] | None) -> None:
+    """Registra lookup read-only de pending restart (wire-in pelo restart_container_tools)."""
+    global _pending_restart_checker
+    _pending_restart_checker = checker
+
+
+def _is_affirmative_confirmation(text: str) -> bool:
+    normalized = (text or "").strip().lower().rstrip("!").strip()
+    return normalized in _AFFIRMATIVE_CONFIRMATIONS
+
+
+def _routing_actor_id(actor_id: str | None) -> str | None:
+    if actor_id:
+        return actor_id
+    return os.getenv("COGNITIVE_ACTOR_ID") or None
+
 
 def _has_any(text: str, markers) -> bool:
     return any(m in text for m in markers)
@@ -201,12 +233,22 @@ def _is_infra_read(text: str) -> bool:
     return has_operational
 
 
-def resolve_specialist_route(message: str) -> str:
+def resolve_specialist_route(message: str, actor_id: str | None = None) -> str:
     """Resolve a rota determinística do turno: NORMAL | CRON | SESSION_SEARCH |
-    MEMORY | SKILLS. Conservador: ambíguo → NORMAL."""
+    MEMORY | SKILLS | INFRA_READ | INFRA_ACTION. Conservador: ambíguo → NORMAL.
+
+    Phase 1B: confirmação afirmativa explícita + pending restart do mesmo actor
+    → INFRA_ACTION (continuation routing — nunca "Sim" global).
+    """
     text = (message or "").strip()
     if not text:
         return "NORMAL"
+
+    actor = _routing_actor_id(actor_id)
+    if actor and _pending_restart_checker is not None and _is_affirmative_confirmation(text):
+        if _pending_restart_checker(actor):
+            return "INFRA_ACTION"
+
     explicit = _is_explicit(text)
     if explicit:
         return explicit
@@ -241,6 +283,12 @@ _ROUTE_TOOLSETS = {
 def route_toolsets(route: str) -> list[str]:
     """Toolsets do specialist para a rota (sem recovery de plataforma)."""
     return list(_ROUTE_TOOLSETS.get(route, []))
+
+
+def resolve_turn_toolsets(message: str, actor_id: str | None = None) -> tuple[str, list[str]]:
+    """Boundary pré-LLM: rota + toolsets (espelha CAPABILITY_ROUTE / ENABLED_TOOLSETS)."""
+    route = resolve_specialist_route(message, actor_id=actor_id)
+    return route, route_toolsets(route)
 
 
 def is_specialist(route: str) -> bool:
