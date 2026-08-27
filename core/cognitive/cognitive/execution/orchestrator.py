@@ -148,12 +148,22 @@ class ExecutionOrchestrator:
         telemetry_recorder: InMemoryTelemetryRecorder,
         resource_resolver: Any | None = None,
         grant_resolver: GrantResolverPort | None = None,
+        adapters: dict[str, Any] | None = None,
     ) -> None:
         self._registry = registry
         self._policy = policy_engine
         self._adapter = skills_adapter
         self._audit = audit_writer
         self._telemetry = telemetry_recorder
+        # Track P1 (Work Management): registry opcional de adapters extras,
+        # chaveado pelo campo `adapter` do YAML da capability (ex.:
+        # "work_management" -> WorkManagementAdapter). Capabilities cujo
+        # `capability.adapter` não está neste dict continuam indo 100% para
+        # `skills_adapter` (self._adapter) — comportamento idêntico ao
+        # anterior a esta mudança para infra.* e qualquer capability
+        # existente. Aditivo, zero regressão: dict vazio/None -> sempre
+        # self._adapter, exatamente como antes.
+        self._extra_adapters: dict[str, Any] = adapters or {}
         # ADR-V2-002 §3: resolve params.resource (lógico) -> concretos ANTES do
         # adapter. None é permitido (capabilities sem resource, ou runtime que
         # ainda não fia um resolver) — nesse caso params fluem sem resolução.
@@ -366,6 +376,12 @@ class ExecutionOrchestrator:
         error: str | None = None
         outcome = AuditOutcome.COMPLETED
 
+        # Track P1: resolve o adapter pelo campo `adapter` do YAML. Capability
+        # sem entrada em self._extra_adapters (todo o parque existente hoje)
+        # cai no fallback self._adapter — idêntico ao comportamento anterior.
+        selected_adapter = self._extra_adapters.get(capability.adapter, self._adapter)
+        uses_extra_adapter = capability.adapter in self._extra_adapters
+
         try:
             tool_calls, result_data = await self._run_capability_tools(
                 capability_id=capability_id,
@@ -373,6 +389,9 @@ class ExecutionOrchestrator:
                 params=resolved_params,
                 tenant_id=ctx.tenant_id,
                 correlation_id=ctx.correlation_id,
+                adapter=selected_adapter,
+                inject_actor_id=uses_extra_adapter,
+                actor_id=ctx.actor_id,
             )
         except Exception as exc:
             # Sprint 0.3 RETURN_TO_DEV (Item B): nunca loga o traceback bruto
@@ -434,16 +453,34 @@ class ExecutionOrchestrator:
         params: dict[str, Any],
         tenant_id: str,
         correlation_id: str,
+        adapter: Any = None,
+        inject_actor_id: bool = False,
+        actor_id: str = "",
     ) -> tuple[int, dict[str, Any]]:
         """
         Executa a sequência de tools de uma capability composta.
 
         Determinístico: sem LLM escolhendo a sequência.
         Retorna (tool_calls_count, result_data).
+
+        `adapter`: já resolvido pelo caller (execute()) via capability.adapter
+        — pode ser self._adapter (default/prosperfy_skills) ou uma entrada de
+        self._extra_adapters (ex.: WorkManagementAdapter). Default None ->
+        self._adapter, para retrocompat de qualquer caller (inclusive testes
+        white-box) que invoque este método diretamente sem conhecer o
+        parâmetro novo.
+        `inject_actor_id`: só True para adapters extras (Track P1) — injeta
+        `_ctx_actor_id` nos arguments para o adapter local gravar WorkEvent
+        com o actor real. NUNCA aplicado ao path infra.action (tool_args ali
+        é um allowlist estrito para o servidor MCP real, que rejeita chaves
+        desconhecidas — ver comentário de _build_infra_action_restart_plan).
         """
+        if adapter is None:
+            adapter = self._adapter
+
         if capability_id == "infra.action":
             tool_name, tool_args = _build_infra_action_restart_plan(params, tools)
-            tool_result = await self._adapter.invoke_tool(
+            tool_result = await adapter.invoke_tool(
                 tool_name=tool_name,
                 arguments=tool_args,
                 tenant_id=tenant_id,
@@ -459,10 +496,14 @@ class ExecutionOrchestrator:
         client_args = {k: v for k, v in params.items() if k not in ("resource", "_resolved_resource")}
 
         if not tools:
-            # Capability simples (sem steps YAML) — invoca pelo capability_id direto
-            result = await self._adapter.invoke_tool(
+            # Capability simples (sem steps YAML) — invoca pelo capability_id
+            # direto. Todas as capabilities work.* (Track P1) usam este path.
+            call_args = dict(client_args)
+            if inject_actor_id:
+                call_args["_ctx_actor_id"] = actor_id
+            result = await adapter.invoke_tool(
                 tool_name=capability_id,
-                arguments=client_args,
+                arguments=call_args,
                 tenant_id=tenant_id,
                 correlation_id=correlation_id,
             )
@@ -497,8 +538,11 @@ class ExecutionOrchestrator:
             else:
                 tool_args = dict(client_args)
 
+            if inject_actor_id:
+                tool_args = {**tool_args, "_ctx_actor_id": actor_id}
+
             try:
-                tool_result = await self._adapter.invoke_tool(
+                tool_result = await adapter.invoke_tool(
                     tool_name=tool_name,
                     arguments=tool_args,
                     tenant_id=tenant_id,
