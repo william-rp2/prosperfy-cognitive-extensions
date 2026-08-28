@@ -52,10 +52,14 @@ class TrelloClient:
         api_key: str | None = None,
         token: str | None = None,
         timeout: float = _DEFAULT_TIMEOUT,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._api_key = api_key if api_key is not None else os.getenv(ENV_API_KEY, "")
         self._token = token if token is not None else os.getenv(ENV_TOKEN, "")
         self._timeout = timeout
+        # Injetável (httpx.MockTransport) para testes determinísticos sem
+        # rede real — mesmo padrão de CognitiveApiAdapter.
+        self._transport = transport
 
     def is_configured(self) -> bool:
         return bool(self._api_key.strip() and self._token.strip())
@@ -76,7 +80,7 @@ class TrelloClient:
         params.update(self._auth_params())
         url = f"{_BASE_URL}{path}"
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
+            async with httpx.AsyncClient(timeout=self._timeout, transport=self._transport) as client:
                 response = await client.request(method, url, params=params, **kwargs)
         except httpx.HTTPError as exc:
             logger.error("TrelloClient transport error path=%s type=%s", path, type(exc).__name__)
