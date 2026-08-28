@@ -1,0 +1,22 @@
+[Unit]
+Description=Track BH - dedicated headless Chrome for browser-harness (CDP, loopback-only)
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/opt/google/chrome/chrome --headless=new --remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --no-sandbox --disable-gpu --disable-dev-shm-usage --user-data-dir=/root/.cache/browser-harness-profile --noerrdialogs --no-first-run
+Restart=on-failure
+RestartSec=3
+User=root
+
+# Isolation: CDP port bound to 127.0.0.1 only -- never reachable off-host.
+# Dedicated --user-data-dir: never the operator's personal Chrome profile
+# (doc 00 Sec.5: "Nao depender do Chrome pessoal do usuario"). This is why
+# the worker connects via BU_CDP_URL=http://127.0.0.1:9222 instead of
+# letting browser-harness scan default browser profiles (see
+# ops/browser-worker/README.md "Why BU_CDP_URL").
+
+[Install]
+WantedBy=multi-user.target

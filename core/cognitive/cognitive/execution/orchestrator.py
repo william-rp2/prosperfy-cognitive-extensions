@@ -151,6 +151,7 @@ class ExecutionOrchestrator:
         composio_adapter: SkillsAdapterPort | None = None,
         registry_adapter: SkillsAdapterPort | None = None,
         adapters: dict[str, Any] | None = None,
+        adapter_registry: dict[str, SkillsAdapterPort] | None = None,
     ) -> None:
         self._registry = registry
         self._policy = policy_engine
@@ -170,29 +171,25 @@ class ExecutionOrchestrator:
         self._registry_adapter = registry_adapter
         self._audit = audit_writer
         self._telemetry = telemetry_recorder
-        # Track P1 (Work Management): registry opcional de adapters extras,
-        # chaveado pelo campo `adapter` do YAML da capability (ex.:
-        # "work_management" -> WorkManagementAdapter). Capabilities cujo
-        # `capability.adapter` não está neste dict continuam indo 100% para
-        # `skills_adapter` (self._adapter) — comportamento idêntico ao
-        # anterior a esta mudança para infra.* e qualquer capability
-        # existente. Aditivo, zero regressão: dict vazio/None -> sempre
-        # self._adapter, exatamente como antes.
-        # INTEGRAÇÃO P0+P1: um único mecanismo de dispatch. As tracks
-        # resolveram o mesmo problema em paralelo — P1 com um registry
-        # genérico chaveado por capability.adapter, P0 com dois parâmetros
-        # nomeados. Convergimos no registry do P1 e dobramos os adapters do
-        # P0 dentro dele, em vez de manter dois caminhos concorrentes.
+        # INTEGRAÇÃO P0+P1+BH: um único mecanismo de dispatch por
+        # capability.adapter. As TRÊS tracks resolveram o mesmo problema em
+        # paralelo e com nomes diferentes — P1 `adapters`, P0 dois parâmetros
+        # nomeados, BH `adapter_registry`. Convergimos num registry só; os
+        # outros nomes viram aliases que caem aqui dentro, em vez de três
+        # caminhos concorrentes de resolução.
         self._extra_adapters: dict[str, Any] = dict(adapters or {})
+        for _name, _ad in (adapter_registry or {}).items():
+            self._extra_adapters.setdefault(_name, _ad)
         if composio_adapter is not None:
             self._extra_adapters.setdefault("composio", composio_adapter)
         if registry_adapter is not None:
             self._extra_adapters.setdefault("supabase_registry", registry_adapter)
-        # Só adapters LOCAIS gravam WorkEvent e portanto precisam do actor
-        # injetado nos arguments. Adapters que falam com MCP externo (P0:
-        # composio) NÃO podem receber `_ctx_actor_id` — o servidor real
-        # rejeita chave desconhecida. Por isso a injeção é opt-in por chave,
-        # e não "todo adapter extra" como era no P1 isolado.
+        # Só adapters LOCAIS que gravam WorkEvent precisam do actor injetado
+        # nos arguments. Adapters que falam com serviço externo — composio
+        # (MCP) e browser_harness (worker HTTP) — NÃO podem receber
+        # `_ctx_actor_id`: o destino rejeita chave desconhecida. Por isso a
+        # injeção é opt-in por chave, e não "todo adapter extra" como era no
+        # P1 isolado.
         self._actor_injecting_adapters: set[str] = set(adapters or {})
         # ADR-V2-002 §3: resolve params.resource (lógico) -> concretos ANTES do
         # adapter. None é permitido (capabilities sem resource, ou runtime que
@@ -214,6 +211,12 @@ class ExecutionOrchestrator:
         # restart nem é compartilhado entre instâncias — dedup cross-processo
         # exigiria store em banco (fora de escopo do Sprint 0.3).
         self._idempotency_cache: dict[tuple[str, str, str, str], CapabilityExecuteResponse] = {}
+
+    def _resolve_adapter(self, adapter_name: str) -> SkillsAdapterPort:
+        """Track BH: capability.adapter -> adapter concreto, com fallback para
+        self._adapter (prosperfy_skills) quando nao ha entrada no registry --
+        preserva 100% do comportamento anterior a esta mudanca."""
+        return self._adapter_registry.get(adapter_name, self._adapter)
 
     async def execute(
         self,

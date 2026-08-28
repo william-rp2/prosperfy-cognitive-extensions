@@ -1,0 +1,79 @@
+# Capability: browser.account
+# Track BH — Browser Harness V1 (doc 00 §5, §6.2).
+#
+# ADR-V2-004: default_policy = deny. Mais sensivel que browser.act: cria
+# identidade externa em nome do tenant. Grant explicito obrigatorio +
+# matriz §6.2 (conta gratuita explicitamente pedida -> allow; pagamento/
+# trial com cartao -> CONFIRM; MFA/CAPTCHA -> HUMAN STEP; excluir conta ->
+# CONFIRM). Nunca cria assinatura paga (limite duro doc 00 §2.2).
+
+id: "browser.account"
+version: "1.0.0"
+domain: "other"
+description: >
+  Cria conta GRATUITA (sem cartao) numa ferramenta externa via Browser
+  Worker isolado, quando explicitamente solicitado, e registra metadata da
+  conta (nunca a senha em claro). Para em MFA/CAPTCHA, termos atipicos,
+  qualquer sinal de cobranca/cartao/trial pago, ou exclusao de conta —
+  nesses casos devolve blocked_reason e aguarda humano.
+adapter: "browser_harness"
+default_policy: "deny"
+
+required_scopes:
+  - "browser:account"
+
+input_schema:
+  type: object
+  required:
+    - url
+    - fields
+  properties:
+    url:
+      type: string
+      format: uri
+    fields:
+      type: object
+      description: "Dados de cadastro autorizados. Senha sempre 'secret_ref:<alias>' gerado por CSPRNG (SecretBroker) — nunca literal."
+    accept_standard_terms:
+      type: boolean
+      default: false
+      description: "Termos padrao sem compromisso financeiro. Termos atipicos/contratuais exigem confirmacao a parte."
+    plan:
+      type: string
+      const: "free"
+      description: "Somente plano gratuito e sem cartao. Qualquer sinal de pagamento -> CONFIRM/stop (limite duro doc 00 §2.2)."
+
+output_schema:
+  type: object
+  properties:
+    success:
+      type: boolean
+    account_ref:
+      type: string
+      description: "Referencia/alias da conta criada — nunca a senha."
+    blocked_reason:
+      type: string
+      description: "mfa | captcha | payment | terms_atypical | destructive | null"
+
+tools:
+  - name: "browser_create_account"
+    args_from_resource: false
+    required: true
+
+idempotency_behavior: "reject"
+timeout_seconds: 180
+cost_class: "high"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"
+  - "cookie"
+  - "authorization"
+  - "fields"
+  - "session_cookie"

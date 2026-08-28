@@ -1,0 +1,91 @@
+# Capability: browser.act
+# Track BH — Browser Harness V1 (doc 00 §5, §6.2).
+#
+# ADR-V2-004: default_policy = deny (submit/click/upload — grant explicito
+# obrigatorio, igual infra.action). A matriz §6.2 e enforced DENTRO do
+# BrowserAdapter/BrowserService, nao so pelo grant grosso desta capability:
+#   - fill sem submit                       -> permitido dentro da tarefa
+#   - submit quando pedido explicito original -> permitido
+#   - termos padrao p/ criar conta           -> prossegue se indispensavel/sem $
+#   - pagamento/trial c/ cartao/upgrade/compra -> CONFIRM explicito (stop)
+#   - MFA/CAPTCHA                            -> HUMAN STEP (stop)
+#   - excluir conta/dado, revogar acesso, publicar -> CONFIRM explicito (stop)
+# Enforcement: cognitive/browser/policy_gates.py (mesmo espirito de
+# infra.action's _build_infra_action_restart_plan em execution/orchestrator.py).
+
+id: "browser.act"
+version: "1.0.0"
+domain: "other"
+description: >
+  Executa uma acao de escrita em um formulario/site via Browser Worker
+  isolado: preencher e (se pedido explicitamente) submeter. Nunca avanca
+  sozinho em pagamento, assinatura, upgrade, compra, exclusao de
+  conta/dado, revogacao de acesso ou publicacao — para e retorna motivo
+  (fail-closed). MFA/CAPTCHA sempre param e devolvem HUMAN STEP.
+adapter: "browser_harness"
+default_policy: "deny"
+
+required_scopes:
+  - "browser:write"
+
+input_schema:
+  type: object
+  required:
+    - url
+    - action
+    - fields
+  properties:
+    url:
+      type: string
+      format: uri
+    action:
+      type: string
+      enum:
+        - "fill_form"
+        - "submit_form"
+      description: "submit_form so quando o pedido original ja incluiu submit (matriz 6.2)."
+    fields:
+      type: object
+      description: >
+        Mapa campo->valor. Valor sensivel usa referencia 'secret_ref:<alias>'
+        (nunca literal) — resolvido pelo SecretBroker so no instante do
+        preenchimento, dentro do Browser Worker.
+    submit:
+      type: boolean
+      default: false
+    session_id:
+      type: string
+
+output_schema:
+  type: object
+  properties:
+    success:
+      type: boolean
+    submitted:
+      type: boolean
+    blocked_reason:
+      type: string
+      description: "mfa | captcha | payment | destructive | terms_atypical | null"
+
+tools:
+  - name: "browser_fill_form"
+    args_from_resource: false
+    required: true
+
+idempotency_behavior: "reject"
+timeout_seconds: 120
+cost_class: "medium"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"
+  - "cookie"
+  - "authorization"
+  - "fields"
+  - "session_cookie"

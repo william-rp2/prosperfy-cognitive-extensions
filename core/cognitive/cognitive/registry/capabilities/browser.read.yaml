@@ -1,0 +1,74 @@
+# Capability: browser.read
+# Track BH — Browser Harness V1 (doc 00 §5, §6.2 linha 1).
+#
+# ADR-V2-004: default_policy = allow (leitura/navegação/resumo, não destrutivo).
+# Decision gate (doc 00 §4.2): usar SOMENTE quando fetch/API não bastam
+# (JS-only, bot-protection, sessão autenticada, clique/upload/login). Página
+# pública estática deve preferir fetch simples fora desta capability.
+
+id: "browser.read"
+version: "1.0.0"
+domain: "other"
+description: >
+  Le e resume conteudo web via Browser Worker isolado quando fetch/API nao
+  bastam (JS, login, bot-protection, sessao autenticada, navegacao
+  multi-etapa). Preenche formulario SEM submeter dentro da mesma tarefa
+  (matriz 6.2, linha 2). Nao clica em pagamento/assinatura nem cria conta.
+adapter: "browser_harness"
+default_policy: "allow"
+
+required_scopes:
+  - "browser:read"
+
+input_schema:
+  type: object
+  required:
+    - urls
+  properties:
+    urls:
+      type: array
+      items:
+        type: string
+        format: uri
+      description: "1+ URLs a ler. Cada uma decide fetch vs browser internamente (doc 00 §4.2)."
+    task:
+      type: string
+      description: "Instrucao do que extrair/resumir (opcional, guia o worker)."
+    session_id:
+      type: string
+      description: "Sessao isolada opcional para reuso dentro do mesmo job (nunca entre actors/tenants)."
+
+output_schema:
+  type: object
+  properties:
+    pages:
+      type: array
+      description: "Um item por URL: {url, title, summary, fetched_via: fetch|browser}."
+    citations:
+      type: array
+      description: "Origem de cada afirmacao do resumo."
+
+tools:
+  - name: "browser_read_links"
+    args_from_resource: false
+    required: true
+
+idempotency_behavior: "none"
+timeout_seconds: 90
+cost_class: "medium"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+# Campos a redigir nos inputs/outputs antes de armazenar no audit (defesa em
+# profundidade — o BrowserAdapter tambem nunca recebe secret em claro, so
+# referencia; ver cognitive/secrets/broker.py).
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"
+  - "cookie"
+  - "authorization"
+  - "session_cookie"

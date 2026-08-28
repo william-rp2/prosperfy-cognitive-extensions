@@ -170,6 +170,67 @@ _WORK_KEYWORDS = (
     "anote", "anotar",
 )
 
+# ─── BROWSER (Track BH — Browser Harness V1, sob demanda) ────────────────
+# Doc 00 §4.2: só quando clique/digitação/upload/login/sessão autenticada
+# são necessários — nunca substitui fetch/API simples. Conservador: link
+# solto sem verbo de interação cai em NORMAL (fetch resolve fora do
+# specialist route); pergunta conceitual já caiu em NORMAL antes de chegar
+# aqui (guard em resolve_specialist_route).
+_BROWSER_URL_RE = re.compile(r"https?://\S+")
+_BROWSER_NAV_VERBS = (
+    "acesse", "acesse o site", "acesse esse site", "acesse essa página",
+    "abra o site", "abra esse site", "abra esse link", "visite o site", "visite esse site",
+    "navegue até", "navegue ate",
+)
+_BROWSER_INTERACTION_VERBS = (
+    "faça login", "faca login", "logue em", "loga em", "faça o login", "faca o login",
+    "preencha o formulário", "preencha o formulario", "preencher o formulário",
+    "cadastre-se em", "cadastre-me em", "faça o cadastro em", "faca o cadastro em",
+    # Use case literal do doc 00 §4.1: "Faça meu cadastro nessa ferramenta".
+    # O gate original exigia a preposição "em" e deixava essa frase em NORMAL.
+    "faça meu cadastro", "faca meu cadastro", "faça o cadastro", "faca o cadastro",
+    "criar conta em", "criar uma conta em",
+    "crie uma conta em", "crie minha conta em", "clique no botão", "clique em enviar",
+    "envie o formulário", "envie o formulario", "submeta o formulário",
+)
+
+
+# Verbos de LEITURA. Sozinhos nunca roteiam — exigem URL explícita na
+# mensagem (ver _is_browser).
+_BROWSER_READ_VERBS = (
+    "leia", "leiam", "resuma", "resumir", "resumo", "analise", "analisar",
+    "extraia", "extrair", "consulte", "consultar", "o que tem em",
+    "o que diz", "me diga o que", "confira",
+)
+
+
+def _is_browser(text: str) -> bool:
+    """Intenção de uso do Browser Worker isolado (doc 00 §4.1/§4.2).
+
+    INTEGRAÇÃO — correção do gate original da track BH: ele mandava
+    "Leia e resuma <url1> <url2>" para NORMAL, argumentando que fetch
+    resolveria fora do specialist. Só que NORMAL é slim e tem 0 tools, então
+    ninguém buscava nada e a primeira use case do doc 00 §4.1 (justamente
+    "Leia e resuma estes materiais" + links) não fechava ponta a ponta.
+
+    Agora: URL explícita + verbo de leitura/navegação → BROWSER. A escolha
+    entre fetch e navegador NÃO é feita aqui por keyword; ela é o decision
+    gate do §4.2, aplicado dentro de browser.read, que é onde existe a
+    evidência real (página pública/estática → fetch; JS/login/bot-protection
+    → navegador). Roteador decide QUEM atende, a capability decide COMO.
+
+    Sem URL e sem verbo de interação → NORMAL (conservador, inalterado).
+    """
+    low = text.lower()
+    if _has_any(low, _BROWSER_INTERACTION_VERBS):
+        return True
+    if _BROWSER_URL_RE.search(text) and (
+        _has_any(low, _BROWSER_NAV_VERBS) or _has_any(low, _BROWSER_READ_VERBS)
+    ):
+        return True
+    return False
+
+
 # ─── Confirmação afirmativa (Phase 1B — continuation routing restart V1) ───
 # Match EXATO após normalização — "Sim, obrigado" permanece NORMAL.
 _AFFIRMATIVE_CONFIRMATIONS = frozenset({
@@ -323,6 +384,8 @@ def resolve_specialist_route(message: str, actor_id: str | None = None) -> str:
         return "SUPABASE_OPS"
     if _is_work_management(text):
         return "WORK_MANAGEMENT"
+    if _is_browser(text):
+        return "BROWSER"
     return "NORMAL"
 
 
@@ -335,6 +398,7 @@ _ROUTE_TOOLSETS = {
     "INFRA_ACTION": ["restart_container"],
     "SUPABASE_OPS": ["supabase_ops"],
     "WORK_MANAGEMENT": ["work_management"],
+    "BROWSER": ["browser_harness"],
     "NORMAL": [],
 }
 
