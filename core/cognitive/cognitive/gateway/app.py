@@ -131,7 +131,33 @@ def _build_services(app: FastAPI) -> None:
         extra_adapters: dict[str, object] = {
             "work_management": WorkManagementAdapter(work_service),
         }
-        logger.info("Runtime: database mode (Postgres) — work_management adapter ativo")
+
+        # INTEGRAÇÃO P0: os adapters de Supabase Ops estavam wirados apenas no
+        # CLI do scheduler (ops/supabase_keepalive_cli.py) e nunca no gateway
+        # — sem isto, toda capability supabase.* servida por HTTP cairia no
+        # fallback skills_adapter e falharia. Vão pelos parâmetros nomeados,
+        # NÃO por `adapters=`, porque só adapters locais que gravam WorkEvent
+        # devem receber `_ctx_actor_id` injetado (ver ExecutionOrchestrator).
+        from ..adapters.composio.client import ComposioMcpAdapter
+        from ..adapters.supabase_registry.adapter import SupabaseRegistryAdapter
+        from ..db.repositories.supabase_ops_repo import (
+            SupabaseKeepaliveRunRepository,
+            SupabaseProjectRepository,
+        )
+
+        supabase_registry_adapter = SupabaseRegistryAdapter(
+            project_repo=SupabaseProjectRepository(),
+            run_repo=SupabaseKeepaliveRunRepository(),
+        )
+        # Mesmo padrão do TrelloClient: construir sempre é barato e não faz
+        # rede. Sem COMPOSIO_MCP_URL/API_KEY, o adapter falha explicitamente
+        # no invoke_tool — nunca no startup, e nunca com sucesso silencioso.
+        composio_adapter = ComposioMcpAdapter()
+
+        logger.info(
+            "Runtime: database mode (Postgres) — adapters ativos: "
+            "work_management, supabase_registry, composio"
+        )
 
         # Track P1: TrelloSyncEngine — SEMPRE construído em database mode
         # (é só objeto Python; TrelloClient.is_configured() é checado em
@@ -162,6 +188,10 @@ def _build_services(app: FastAPI) -> None:
         # silenciosa (RuntimeError "capability desconhecida" no skills mock).
         extra_adapters = {}
         trello_sync_engine = None
+        # P0: sem DB não há repositories — capabilities supabase.* caem no
+        # fallback e falham explicitamente, igual às work.*.
+        composio_adapter = None
+        supabase_registry_adapter = None
         # Mesmo resolvedor que o orchestrator usa por default em in-memory:
         # exposto no app.state para a rota de descoberta aplicar a mesma
         # elegibilidade por grant (sem grant → lista vazia).
@@ -186,6 +216,8 @@ def _build_services(app: FastAPI) -> None:
         resource_resolver=resource_resolver,
         grant_resolver=grant_resolver,
         adapters=extra_adapters,
+        composio_adapter=composio_adapter,
+        registry_adapter=supabase_registry_adapter,
     )
 
     if is_in_memory_mode():
