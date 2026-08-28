@@ -1,0 +1,34 @@
+[Unit]
+Description=Prosperfy Cognitive - Supabase Ops keepalive read-only (P0)
+Documentation=file:///home/will/projetos/prosperfy-cognitive-gate-0.3/core/cognitive/cognitive/ops/supabase_keepalive_cli.py
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/will/projetos/prosperfy-cognitive-gate-0.3/core/cognitive
+# Mesmo EnvironmentFile da API Homolog (COGNITIVE_DB_URL/ADMIN_URL/WORKER_URL
+# ja configurados ali). O "-" torna o segundo arquivo opcional: contem as
+# variaveis NOVAS deste slice (COGNITIVE_LIVE_COMPOSIO_MCP, COMPOSIO_MCP_URL,
+# COMPOSIO_MCP_API_KEY, COGNITIVE_TENANT_SLUG) — ver
+# ops/supabase-ops/supabase-ops.env.example para o template. Sem esse
+# segundo arquivo a unit ainda instala e o timer ainda agenda; a EXECUCAO
+# falha fechada (exit 1, log claro) ate o arquivo existir — ver
+# REMAINING_GAPS do relatorio final da track.
+EnvironmentFile=/home/will/.config/prosperfy-cognitive-v2-homolog/api-runtime-sprint03.env
+EnvironmentFile=-/home/will/.config/prosperfy-cognitive-v2-homolog/supabase-ops.env
+ExecStart=/home/will/projetos/prosperfy-cognitive-gate-0.3/.venv-gate/bin/python -m cognitive.ops.supabase_keepalive_cli
+# Pior caso de wall-clock de um round: soma dos retries em nivel de rodada
+# (1m+5m+30m=36min) + tempo de execucao normal dos projetos. Margem de
+# seguranca acima disso (ver supabase_keepalive_service.py: retry e por
+# RODADA, nao por projeto — nao escala com o numero de projetos).
+TimeoutStartSec=2700
+Restart=no
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

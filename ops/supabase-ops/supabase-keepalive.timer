@@ -1,0 +1,20 @@
+[Unit]
+Description=Prosperfy Cognitive - Supabase Ops keepalive schedule (06:10/14:10/22:10)
+
+[Timer]
+# Host confirmado em America/Sao_Paulo (timedatectl, 2026-08-27) — systemd
+# OnCalendar= nao aceita timezone explicita por unit; horario local do
+# sistema JA E America/Sao_Paulo, entao estes horarios batem direto com o
+# doc P0 §4.1 sem nenhuma conversao. Se o host mudar de timezone algum dia,
+# reconferir com `timedatectl` antes de reusar este arquivo.
+OnCalendar=*-*-* 06:10:00
+OnCalendar=*-*-* 14:10:00
+OnCalendar=*-*-* 22:10:00
+# Nao dispara retroativo se a maquina estava desligada na hora exata —
+# a proxima janela fixa de qualquer forma chega em <=8h.
+Persistent=false
+AccuracySec=30s
+Unit=supabase-keepalive.service
+
+[Install]
+WantedBy=timers.target
