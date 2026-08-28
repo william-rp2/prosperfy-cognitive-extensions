@@ -20,6 +20,12 @@
 -- devolvia "No account found matching ...". Essa era a causa real das 2
 -- falhas de alias da família ProsperSend, agora resolvidas e comprovadas.
 --
+-- EXCLUSAO DE PRODUCTION: wioorhtdwnfujkrynxij (projeto "Hermes") e
+-- Production/legado e foi declarado PROIBIDO pelo owner em 28/08/2026.
+-- Fica registrado no inventario apenas como metadata, com
+-- keepalive_enabled=false — o scheduler nunca o alcanca. Se ele for Free e
+-- ficar inativo, pode hibernar; essa e uma decisao consciente do owner.
+--
 -- Idempotente. Requer permissão de escrita SQL no Homolog
 -- (ref esvjfkknrzzziafovwrv, conta Composio "Supabase - Hermes").
 
@@ -27,7 +33,7 @@ INSERT INTO supabase_projects
   (tenant_id, composio_account, project_ref, display_name, region, plan, plan_source, keepalive_enabled, status)
 VALUES
 ('11a26649-91d0-4971-8d1f-2afc57f8b5ae','Supabase - Patricia Candido','ulghzvebrbvlqncjjiir','NailsDesigner','sa-east-1','free','owner confirmou em 28/08/2026: todos os projetos sao Free',true,'healthy'),
-('11a26649-91d0-4971-8d1f-2afc57f8b5ae','Supabase - Hermes','wioorhtdwnfujkrynxij','Hermes','sa-east-1','free','owner confirmou em 28/08/2026: todos os projetos sao Free',true,'healthy'),
+('11a26649-91d0-4971-8d1f-2afc57f8b5ae','Supabase - Hermes','wioorhtdwnfujkrynxij','Hermes','sa-east-1','free','PRODUCTION/LEGADO — proibido pelo owner em 28/08/2026',false,'unknown'),
 ('11a26649-91d0-4971-8d1f-2afc57f8b5ae','Supabase - Hermes','esvjfkknrzzziafovwrv','Prosperfy Cognitive Homolog','sa-east-1','free','owner confirmou em 28/08/2026: todos os projetos sao Free',true,'healthy'),
 ('11a26649-91d0-4971-8d1f-2afc57f8b5ae','Supabase - Agify (Planner)','mkpjtvpstdjfmidvruor','Planner','us-east-1','free','owner confirmou em 28/08/2026: todos os projetos sao Free',true,'healthy'),
 ('11a26649-91d0-4971-8d1f-2afc57f8b5ae','Supabase - ProsperSend - Produção','heuwncftykogedukklbz','ProsperSend-Producao','us-east-2','free','owner confirmou em 28/08/2026: todos os projetos sao Free',true,'healthy'),
