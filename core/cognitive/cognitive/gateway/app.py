@@ -14,8 +14,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
+from ..adapters.finance_api.client import FinanceApiAdapter
+from ..adapters.finance_api.mock import MockFinanceApiAdapter
 from ..adapters.prosperfy_skills.client import ProsperfySkillsAdapter
 from ..adapters.prosperfy_skills.mock import MockSkillsAdapter
+from ..adapters.routing import RoutingSkillsAdapter
 from ..audit.writer import InMemoryAuditWriter
 from ..config.runtime import is_database_mode, is_in_memory_mode, require_database_config
 from ..contracts.tenancy import CapabilityGrant
@@ -55,6 +58,23 @@ def _require_live_mcp_secret() -> None:
     )
 
 
+def _require_finance_api_token() -> None:
+    """
+    Fail-closed eager check (mesmo padrão de _require_live_mcp_secret): se
+    FINANCE_API_BASE_URL está configurado (sinal de "quero o FinanceApiAdapter
+    real"), FINANCE_API_TOKEN é obrigatório — recusa a inicialização do
+    gateway inteiro em vez de deixar toda chamada finance.* falhar em
+    runtime com 401. Nunca interpola valor parcial na mensagem.
+    """
+    if os.getenv("FINANCE_API_TOKEN", "").strip():
+        return
+    raise RuntimeError(
+        "FINANCE_API_BASE_URL configurado exige FINANCE_API_TOKEN (env var "
+        "ausente, vazia ou somente espaços) — mesmo service credential que "
+        "apps/financeiro-pessoal-api espera em Authorization: Bearer <token>."
+    )
+
+
 def _build_services(app: FastAPI) -> None:
     """Constrói e injeta todos os serviços no app.state."""
     require_database_config()
@@ -72,6 +92,33 @@ def _build_services(app: FastAPI) -> None:
     else:
         logger.info("COGNITIVE_LIVE_MCP=0 — usando MockSkillsAdapter (dev/CI)")
         skills_adapter = MockSkillsAdapter()
+
+    # P2 (Financeiro pelo WhatsApp): capabilities finance.* falam HTTP com
+    # apps/financeiro-pessoal-api em vez de MCP — terceiro transporte da
+    # arquitetura vigente ("adapter: prosperfy_skills MCP / Composio MCP /
+    # HTTP"). RoutingSkillsAdapter despacha por prefixo de tool_name sem
+    # que o ExecutionOrchestrator precise saber que existe mais de um
+    # adapter concreto (ver adapters/routing.py).
+    #
+    # Só envolve skills_adapter quando a Finance API está de fato
+    # configurada: em dev/CI sem FINANCE_API_BASE_URL, app.state.orchestrator
+    # ._adapter continua sendo exatamente MockSkillsAdapter/ProsperfySkillsAdapter
+    # como antes deste slice — testes existentes que fazem isinstance direto
+    # (test_prosperfy_skills_adapters.py, test_mcp_secret_contract.py) não
+    # precisam saber que finance.* existe.
+    finance_base_url = os.getenv("FINANCE_API_BASE_URL", "").strip()
+    if finance_base_url:
+        _require_finance_api_token()
+        logger.info("FINANCE_API_BASE_URL=%s — usando FinanceApiAdapter real", finance_base_url)
+        finance_adapter: FinanceApiAdapter | MockFinanceApiAdapter = FinanceApiAdapter(base_url=finance_base_url)
+        skills_adapter = RoutingSkillsAdapter(default_adapter=skills_adapter, routes={"finance.": finance_adapter})
+    elif os.getenv("COGNITIVE_FINANCE_MOCK_ROUTE", "0") == "1":
+        # Opt-in para dev/CI que queira exercitar o roteamento sem apontar
+        # para uma Finance API real (usado pelos testes deste adapter).
+        logger.info("COGNITIVE_FINANCE_MOCK_ROUTE=1 — roteando finance.* para MockFinanceApiAdapter")
+        skills_adapter = RoutingSkillsAdapter(default_adapter=skills_adapter, routes={"finance.": MockFinanceApiAdapter()})
+    else:
+        logger.info("FINANCE_API_BASE_URL ausente — capabilities finance.* usam o adapter default (%s)", type(skills_adapter).__name__)
 
     if use_db:
         from ..db.repositories.audit_repo import PostgresAuditWriter

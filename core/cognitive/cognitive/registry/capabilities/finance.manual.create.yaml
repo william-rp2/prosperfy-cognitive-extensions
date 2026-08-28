@@ -1,0 +1,77 @@
+# Capability: finance.manual.create
+# P2 — Financeiro pelo WhatsApp.
+#
+# ADR-V2-004 / doc 00 §8: lançamento manual explícito é ALLOW direto (sem
+# confirmação) — mas a resposta sempre ecoa o que foi salvo (campo
+# "message") para o specialist confirmar em texto. Nunca escreve na tabela
+# Pluggy (financial_transactions); vive em financial_manual_transactions,
+# fonte separada (source=manual).
+
+id: "finance.manual.create"
+version: "1.0.0"
+domain: "finance"
+description: >
+  Registra uma despesa ou receita manual (não vinda do Pluggy). Nunca
+  mistura com o histórico bancário sincronizado.
+adapter: "finance_api"
+default_policy: "allow"
+
+required_scopes:
+  - "finance:write"
+
+input_schema:
+  type: object
+  required:
+    - amount
+    - direction
+    - description
+  properties:
+    amount:
+      type: number
+      exclusiveMinimum: 0
+      description: "Valor em reais (positivo). Convertido para centavos internamente."
+    direction:
+      type: string
+      enum:
+        - "income"
+        - "expense"
+    description:
+      type: string
+      minLength: 1
+    date:
+      type: string
+      description: "Data do lançamento (YYYY-MM-DD ou ISO 8601). Default: hoje. Datas relativas ('ontem') devem ser resolvidas pelo specialist antes de chamar esta capability."
+    category:
+      type: string
+      description: "Nome livre de categoria (ex: 'Combustível'). Resolvido internamente; 0 matches é permitido (fica sem categoria)."
+    categoryId:
+      type: string
+    accountId:
+      type: string
+    notes:
+      type: string
+
+output_schema:
+  type: object
+  properties:
+    transaction:
+      type: object
+    message:
+      type: string
+      description: "Confirmação textual do que foi salvo, pronta para repassar ao usuário."
+
+tools: []
+
+idempotency_behavior: "reject"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"

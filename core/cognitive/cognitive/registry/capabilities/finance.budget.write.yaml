@@ -1,0 +1,59 @@
+# Capability: finance.budget.write
+# P2 — Financeiro pelo WhatsApp.
+#
+# doc 00 §8: criar/alterar orçamento explicitamente pedido pelo usuário é
+# ALLOW direto. Upsert por (month, category) — chamar de novo com o mesmo
+# mês/categoria substitui o limite, nunca duplica a linha.
+
+id: "finance.budget.write"
+version: "1.0.0"
+domain: "finance"
+description: >
+  Cria ou atualiza o limite de orçamento de um mês — geral (sem categoria)
+  ou de uma categoria específica.
+adapter: "finance_api"
+default_policy: "allow"
+
+required_scopes:
+  - "finance:write"
+
+input_schema:
+  type: object
+  required:
+    - month
+    - limitAmount
+  properties:
+    month:
+      type: string
+      description: "Mês no formato YYYY-MM."
+    limitAmount:
+      type: number
+      minimum: 0
+      description: "Limite planejado em reais."
+    category:
+      type: string
+      description: "Nome livre da categoria. Omitido = orçamento geral do mês."
+    categoryId:
+      type: string
+
+output_schema:
+  type: object
+  properties:
+    budget:
+      type: object
+
+tools: []
+
+idempotency_behavior: "return_cached"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"

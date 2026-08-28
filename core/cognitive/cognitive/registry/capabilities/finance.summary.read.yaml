@@ -1,0 +1,66 @@
+# Capability: finance.summary.read
+# P2 — Financeiro pelo WhatsApp.
+#
+# Leitura agregada (entradas/saídas/saldo) de um período, opcionalmente
+# filtrada por categoria interna. Soma Pluggy + lançamentos manuais — nunca
+# expõe o SQLite diretamente; passa pela Finance API (adapter finance_api).
+
+id: "finance.summary.read"
+version: "1.0.0"
+domain: "finance"
+description: >
+  Resumo financeiro de um mês (entradas, saídas, saldo, comparação),
+  opcionalmente filtrado por categoria. Combina transações Pluggy e
+  lançamentos manuais.
+adapter: "finance_api"
+default_policy: "allow"
+
+required_scopes:
+  - "finance:read"
+
+input_schema:
+  type: object
+  properties:
+    month:
+      type: string
+      description: "Mês no formato YYYY-MM. Default: mês corrente."
+      example: "2026-08"
+    category:
+      type: string
+      description: "Nome livre de categoria (ex: 'Alimentação'). Opcional — sem filtro se omitido."
+
+output_schema:
+  type: object
+  properties:
+    month:
+      type: string
+    category:
+      type: object
+    totalBalance:
+      type: number
+    monthIncome:
+      type: number
+    monthExpense:
+      type: number
+    monthResult:
+      type: number
+    openCardBalance:
+      type: number
+    lastSync:
+      type: string
+
+tools: []
+
+idempotency_behavior: "return_cached"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"
