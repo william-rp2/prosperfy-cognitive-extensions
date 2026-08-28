@@ -1,4 +1,4 @@
--- 006_finance_capability_grants.sql
+-- 008_finance_capability_grants.sql
 -- P2 (Financeiro pelo WhatsApp) — seed de capability_grants para as 10
 -- capabilities finance.* (core/cognitive/cognitive/registry/capabilities/
 -- finance.*.yaml). NAO altera schema — capability_grants já existe desde
