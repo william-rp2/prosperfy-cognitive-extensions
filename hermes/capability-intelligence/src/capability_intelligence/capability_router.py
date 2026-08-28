@@ -132,8 +132,13 @@ _SKILLS_MARKERS = (
 # roteia — exige também contexto operacional/pergunta (mesmo shape de
 # _is_infra_read), ou "meus supabases"/"meus bancos" que já é operacional
 # por si só.
+# NOTA (integração P0/P2): "banco"/"bancos" REMOVIDOS de propósito. Em PT-BR
+# "banco" é ambíguo (database vs. banco financeiro) e colidia com o contrato
+# FINANCE do P2 — "Sincronize meus bancos" roteava para SUPABASE_OPS em vez de
+# finance.sync.run. Supabase Ops tem chaves inequívocas; linguagem bancária
+# pertence à rota FINANCE.
 _SUPABASE_KEYWORDS = (
-    "supabase", "banco", "bancos", "hiberna", "hibernacao", "hibernação",
+    "supabase", "supabases", "hiberna", "hibernacao", "hibernação",
     "pausad", "keepalive", "keep-alive",
 )
 _SUPABASE_OPERATIONAL = (
@@ -153,7 +158,7 @@ def _is_supabase_ops(text: str) -> bool:
         return False
     if not _has_any(low, _SUPABASE_KEYWORDS):
         return False
-    if "meus supabases" in low or "meus bancos" in low:
+    if "meus supabases" in low:
         return True
     return _has_any(low, _SUPABASE_OPERATIONAL)
 
