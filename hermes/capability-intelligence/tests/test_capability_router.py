@@ -82,6 +82,20 @@ cases = [
     ("Como funciona hibernação de projeto no Supabase?", "NORMAL"),
     ("Qual a diferença entre Supabase e Postgres puro?", "NORMAL"),
     ("Obrigado pelo banco de dados que você criou.", "NORMAL"),
+    # WORK_MANAGEMENT (Track P1)
+    ("Anote uma ideia: criar onboarding guiado para clientes.", "WORK_MANAGEMENT"),
+    ("Vincule essa ideia ao projeto ProsperSend.", "WORK_MANAGEMENT"),
+    ("Transforme essa ideia em um projeto.", "WORK_MANAGEMENT"),
+    ("Crie a tarefa revisar copy no projeto X baseada na ideia Y.", "WORK_MANAGEMENT"),
+    ("Quais tarefas estão bloqueadas?", "WORK_MANAGEMENT"),
+    ("Mova a tarefa 123 para concluído.", "WORK_MANAGEMENT"),
+    ("O que falta para terminar o projeto X?", "WORK_MANAGEMENT"),
+    ("Essa tarefa depende da tarefa Y.", "WORK_MANAGEMENT"),
+    ("Mostre o backlog de projetos.", "WORK_MANAGEMENT"),
+    ("Como está o kanban do time?", "WORK_MANAGEMENT"),
+    # WORK_MANAGEMENT negativos (conceitual → NORMAL)
+    ("O que é um projeto?", "NORMAL"),
+    ("Como funciona um kanban?", "NORMAL"),
 ]
 
 fails = 0
@@ -96,6 +110,7 @@ assert route_toolsets("SESSION_SEARCH") == ["session_search"]
 assert route_toolsets("MEMORY") == ["memory"]
 assert route_toolsets("SKILLS") == ["skills"]
 assert route_toolsets("SUPABASE_OPS") == ["supabase_ops"]
+assert route_toolsets("WORK_MANAGEMENT") == ["work_management"]
 
 print(f"TOTAL={len(cases)} FAILS={fails}")
 print("ROUTE_TOOLSETS_OK")

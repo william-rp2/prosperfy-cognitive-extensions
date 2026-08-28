@@ -1,0 +1,63 @@
+# Capability: work.task.link
+# Track P1 — Work Management
+#
+# Um único ponto de entrada para os 3 tipos de vínculo de Task: projeto,
+# ideia e dependência (task -> task). link_type='depends_on' rejeita
+# self-dependency (task_id == target_id) na camada de repositório.
+
+id: "work.task.link"
+version: "1.0.0"
+domain: "work_management"
+description: >
+  Cria um vínculo a partir de uma Task: com um Project, com uma Idea, ou uma
+  dependência (depends_on) para outra Task. Atende "essa tarefa depende da
+  tarefa Y".
+adapter: "work_management"
+default_policy: "allow"
+
+required_scopes:
+  - "work:write"
+
+input_schema:
+  type: object
+  required:
+    - task_id
+    - link_type
+    - target_id
+  properties:
+    task_id:
+      type: string
+    link_type:
+      type: string
+      enum: ["project", "idea", "depends_on"]
+    target_id:
+      type: string
+      description: "project_id | idea_id | depends_on_task_id, conforme link_type."
+
+output_schema:
+  type: object
+  properties:
+    task_id:
+      type: string
+    link_type:
+      type: string
+    target_id:
+      type: string
+    is_blocked:
+      type: boolean
+
+tools: []
+
+idempotency_behavior: "return_cached"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"

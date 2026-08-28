@@ -1,0 +1,71 @@
+# Capability: work.idea.update
+# Track P1 — Work Management
+#
+# Patch parcial (só campos presentes são alterados). status='archived' seta
+# archived_at automaticamente. project_ids aqui é ADITIVO (cria vínculos
+# novos; não remove os existentes) — mesmo espírito de work.task.link.
+
+id: "work.idea.update"
+version: "1.0.0"
+domain: "work_management"
+description: "Atualiza campos de uma Idea existente (patch parcial) e/ou muda seu status."
+adapter: "work_management"
+default_policy: "allow"
+
+required_scopes:
+  - "work:write"
+
+input_schema:
+  type: object
+  required:
+    - idea_id
+  properties:
+    idea_id:
+      type: string
+    title:
+      type: string
+    description:
+      type: string
+    status:
+      type: string
+      enum: ["inbox", "evaluating", "approved", "rejected", "converted", "archived"]
+    source:
+      type: string
+    impact:
+      type: string
+      enum: ["low", "medium", "high"]
+    value_notes:
+      type: string
+    tags:
+      type: array
+      items:
+        type: string
+    project_ids:
+      type: array
+      items:
+        type: string
+      description: "Vínculos adicionais a criar (aditivo, não remove existentes)."
+
+output_schema:
+  type: object
+  properties:
+    id:
+      type: string
+    status:
+      type: string
+
+tools: []
+
+idempotency_behavior: "return_cached"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"

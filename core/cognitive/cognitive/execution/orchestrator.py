@@ -150,6 +150,7 @@ class ExecutionOrchestrator:
         grant_resolver: GrantResolverPort | None = None,
         composio_adapter: SkillsAdapterPort | None = None,
         registry_adapter: SkillsAdapterPort | None = None,
+        adapters: dict[str, Any] | None = None,
     ) -> None:
         self._registry = registry
         self._policy = policy_engine
@@ -169,6 +170,30 @@ class ExecutionOrchestrator:
         self._registry_adapter = registry_adapter
         self._audit = audit_writer
         self._telemetry = telemetry_recorder
+        # Track P1 (Work Management): registry opcional de adapters extras,
+        # chaveado pelo campo `adapter` do YAML da capability (ex.:
+        # "work_management" -> WorkManagementAdapter). Capabilities cujo
+        # `capability.adapter` não está neste dict continuam indo 100% para
+        # `skills_adapter` (self._adapter) — comportamento idêntico ao
+        # anterior a esta mudança para infra.* e qualquer capability
+        # existente. Aditivo, zero regressão: dict vazio/None -> sempre
+        # self._adapter, exatamente como antes.
+        # INTEGRAÇÃO P0+P1: um único mecanismo de dispatch. As tracks
+        # resolveram o mesmo problema em paralelo — P1 com um registry
+        # genérico chaveado por capability.adapter, P0 com dois parâmetros
+        # nomeados. Convergimos no registry do P1 e dobramos os adapters do
+        # P0 dentro dele, em vez de manter dois caminhos concorrentes.
+        self._extra_adapters: dict[str, Any] = dict(adapters or {})
+        if composio_adapter is not None:
+            self._extra_adapters.setdefault("composio", composio_adapter)
+        if registry_adapter is not None:
+            self._extra_adapters.setdefault("supabase_registry", registry_adapter)
+        # Só adapters LOCAIS gravam WorkEvent e portanto precisam do actor
+        # injetado nos arguments. Adapters que falam com MCP externo (P0:
+        # composio) NÃO podem receber `_ctx_actor_id` — o servidor real
+        # rejeita chave desconhecida. Por isso a injeção é opt-in por chave,
+        # e não "todo adapter extra" como era no P1 isolado.
+        self._actor_injecting_adapters: set[str] = set(adapters or {})
         # ADR-V2-002 §3: resolve params.resource (lógico) -> concretos ANTES do
         # adapter. None é permitido (capabilities sem resource, ou runtime que
         # ainda não fia um resolver) — nesse caso params fluem sem resolução.
@@ -381,6 +406,12 @@ class ExecutionOrchestrator:
         error: str | None = None
         outcome = AuditOutcome.COMPLETED
 
+        # Track P1: resolve o adapter pelo campo `adapter` do YAML. Capability
+        # sem entrada em self._extra_adapters (todo o parque existente hoje)
+        # cai no fallback self._adapter — idêntico ao comportamento anterior.
+        selected_adapter = self._extra_adapters.get(capability.adapter, self._adapter)
+        injects_actor = capability.adapter in self._actor_injecting_adapters
+
         try:
             tool_calls, result_data = await self._run_capability_tools(
                 capability_id=capability_id,
@@ -388,7 +419,9 @@ class ExecutionOrchestrator:
                 params=resolved_params,
                 tenant_id=ctx.tenant_id,
                 correlation_id=ctx.correlation_id,
-                adapter=self._select_adapter(capability),
+                adapter=selected_adapter,
+                inject_actor_id=injects_actor,
+                actor_id=ctx.actor_id,
             )
         except Exception as exc:
             # Sprint 0.3 RETURN_TO_DEV (Item B): nunca loga o traceback bruto
@@ -455,13 +488,16 @@ class ExecutionOrchestrator:
         self._adapter (ProsperfySkillsAdapter/mock) — que não reconhece as
         tools SUPABASE_* e falha explicitamente no invoke_tool, nunca com
         sucesso silencioso.
+
+        INTEGRAÇÃO P0+P1: passou a ler do registry unificado
+        (self._extra_adapters), onde os adapters do P0 são registrados no
+        __init__. Mantido como helper para os callers/testes do P0 que o
+        invocam diretamente; execute() usa o registry direto.
         """
         cap_adapter = getattr(capability, "adapter", None)
-        if cap_adapter == "composio" and self._composio_adapter is not None:
-            return self._composio_adapter
-        if cap_adapter == "supabase_registry" and self._registry_adapter is not None:
-            return self._registry_adapter
-        return self._adapter
+        if cap_adapter is None:
+            return self._adapter
+        return self._extra_adapters.get(cap_adapter, self._adapter)
 
     async def _run_capability_tools(
         self,
@@ -470,7 +506,9 @@ class ExecutionOrchestrator:
         params: dict[str, Any],
         tenant_id: str,
         correlation_id: str,
-        adapter: SkillsAdapterPort | None = None,
+        adapter: Any = None,
+        inject_actor_id: bool = False,
+        actor_id: str = "",
     ) -> tuple[int, dict[str, Any]]:
         """
         Executa a sequência de tools de uma capability composta.
@@ -478,12 +516,21 @@ class ExecutionOrchestrator:
         Determinístico: sem LLM escolhendo a sequência.
         Retorna (tool_calls_count, result_data).
 
-        `adapter` (P0): adapter concreto a usar nesta execução — default
-        None preserva 100% o comportamento pré-P0 (usa self._adapter); todo
-        chamador existente (incl. testes que chamam este método diretamente
-        sem `adapter=`) continua idêntico.
+        `adapter`: já resolvido pelo caller (execute()) via capability.adapter
+        — pode ser self._adapter (default/prosperfy_skills) ou uma entrada de
+        self._extra_adapters (ex.: WorkManagementAdapter). Default None ->
+        self._adapter, para retrocompat de qualquer caller (inclusive testes
+        white-box) que invoque este método diretamente sem conhecer o
+        parâmetro novo.
+        `inject_actor_id`: só True para adapters extras (Track P1) — injeta
+        `_ctx_actor_id` nos arguments para o adapter local gravar WorkEvent
+        com o actor real. NUNCA aplicado ao path infra.action (tool_args ali
+        é um allowlist estrito para o servidor MCP real, que rejeita chaves
+        desconhecidas — ver comentário de _build_infra_action_restart_plan).
         """
-        adapter = adapter or self._adapter
+        if adapter is None:
+            adapter = self._adapter
+
         if capability_id == "infra.action":
             tool_name, tool_args = _build_infra_action_restart_plan(params, tools)
             tool_result = await adapter.invoke_tool(
@@ -502,10 +549,14 @@ class ExecutionOrchestrator:
         client_args = {k: v for k, v in params.items() if k not in ("resource", "_resolved_resource")}
 
         if not tools:
-            # Capability simples (sem steps YAML) — invoca pelo capability_id direto
+            # Capability simples (sem steps YAML) — invoca pelo capability_id
+            # direto. Todas as capabilities work.* (Track P1) usam este path.
+            call_args = dict(client_args)
+            if inject_actor_id:
+                call_args["_ctx_actor_id"] = actor_id
             result = await adapter.invoke_tool(
                 tool_name=capability_id,
-                arguments=client_args,
+                arguments=call_args,
                 tenant_id=tenant_id,
                 correlation_id=correlation_id,
             )
@@ -539,6 +590,9 @@ class ExecutionOrchestrator:
                 }
             else:
                 tool_args = dict(client_args)
+
+            if inject_actor_id:
+                tool_args = {**tool_args, "_ctx_actor_id": actor_id}
 
             try:
                 tool_result = await adapter.invoke_tool(

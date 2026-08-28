@@ -1,0 +1,72 @@
+# Capability: work.idea.create
+# Track P1 — Work Management (Ideias, Projetos, Tarefas)
+#
+# Supabase é source of truth (work_ideas). default_policy=allow: CREATE
+# normal de item de trabalho não exige confirmação extra (P1 spec §8).
+
+id: "work.idea.create"
+version: "1.0.0"
+domain: "work_management"
+description: >
+  Cria uma Idea no Supabase (status inicial 'inbox'). Opcionalmente vincula
+  a um ou mais Projects existentes (project_ids). Enfileira sync outbox
+  para o card espelho na lista "Ideias" do Trello.
+adapter: "work_management"
+default_policy: "allow"
+
+required_scopes:
+  - "work:write"
+
+input_schema:
+  type: object
+  required:
+    - title
+  properties:
+    title:
+      type: string
+      description: "Título da ideia."
+    description:
+      type: string
+    tags:
+      type: array
+      items:
+        type: string
+    project_ids:
+      type: array
+      items:
+        type: string
+      description: "IDs de Project já existentes para vincular (many-to-many)."
+    source:
+      type: string
+      description: "Origem da captura (default: 'whatsapp')."
+    impact:
+      type: string
+      enum: ["low", "medium", "high"]
+    value_notes:
+      type: string
+
+output_schema:
+  type: object
+  properties:
+    id:
+      type: string
+    status:
+      type: string
+    project_ids:
+      type: array
+
+tools: []
+
+idempotency_behavior: "return_cached"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"

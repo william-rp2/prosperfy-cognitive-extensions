@@ -1,0 +1,68 @@
+# Capability: work.task.update
+# Track P1 — Work Management
+#
+# Patch parcial. status='done' seta completed_at; status='archived' seta
+# archived_at. Mudança de status é o gatilho de STATUS_DB_TO_TRELLO — vira
+# outbox operation='move' (card muda de lista no board).
+
+id: "work.task.update"
+version: "1.0.0"
+domain: "work_management"
+description: >
+  Atualiza campos de uma Task existente (patch parcial) e/ou muda seu
+  status — inclui "mova a tarefa X para concluído".
+adapter: "work_management"
+default_policy: "allow"
+
+required_scopes:
+  - "work:write"
+
+input_schema:
+  type: object
+  required:
+    - task_id
+  properties:
+    task_id:
+      type: string
+    title:
+      type: string
+    description:
+      type: string
+    status:
+      type: string
+      enum: ["todo", "in_progress", "blocked", "waiting", "done", "cancelled", "archived"]
+    priority:
+      type: string
+      enum: ["low", "medium", "high", "urgent"]
+    assignee:
+      type: string
+    due_at:
+      type: string
+    source:
+      type: string
+
+output_schema:
+  type: object
+  properties:
+    id:
+      type: string
+    status:
+      type: string
+    completed_at:
+      type: string
+
+tools: []
+
+idempotency_behavior: "return_cached"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"
