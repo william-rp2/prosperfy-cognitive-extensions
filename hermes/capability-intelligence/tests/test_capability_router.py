@@ -69,6 +69,24 @@ cases = [
     ("Como funciona docker restart?", "NORMAL"),
     ("Quais containers estão rodando?", "INFRA_READ"),
     ("O que significa reiniciar um container?", "NORMAL"),
+    # FINANCE (P2 — doc 00 §7, contratos conversacionais)
+    ("Quanto gastei este mês?", "FINANCE"),
+    ("Quanto entrou esta semana?", "FINANCE"),
+    ("Registre R$ 89 de combustível hoje.", "FINANCE"),
+    ("Registre 120 reais, mas foi ontem.", "FINANCE"),
+    ("Quanto gastei com alimentação em agosto?", "FINANCE"),
+    ("Essa compra de 54,90 do X é Alimentação.", "FINANCE"),
+    ("Meu orçamento de alimentação este mês é R$ 800.", "FINANCE"),
+    ("Como está meu orçamento?", "FINANCE"),
+    ("Sincronize meus bancos.", "FINANCE"),
+    ("Quero ver meu extrato do mês.", "FINANCE"),
+    ("Qual o saldo da minha conta?", "FINANCE"),
+    ("Quais contas vencem esta semana?", "FINANCE"),
+    # FINANCE negativos (conceitual → NORMAL; nunca reivindica P0/P1)
+    ("O que é orçamento?", "NORMAL"),
+    ("Como funciona um extrato bancário?", "NORMAL"),
+    ("Pausar o projeto Supabase.", "NORMAL"),
+    ("Crie uma tarefa no kanban.", "NORMAL"),
 ]
 
 fails = 0
@@ -82,6 +100,7 @@ assert route_toolsets("CRON") == ["cronjob"]
 assert route_toolsets("SESSION_SEARCH") == ["session_search"]
 assert route_toolsets("MEMORY") == ["memory"]
 assert route_toolsets("SKILLS") == ["skills"]
+assert route_toolsets("FINANCE") == ["finance"]
 
 print(f"TOTAL={len(cases)} FAILS={fails}")
 print("ROUTE_TOOLSETS_OK")

@@ -10,6 +10,7 @@ Rotas:
   SESSION_SEARCH  → toolset session_search (referência a conversas passadas)
   MEMORY          → toolset memory (salvar/recuperar memória explícita)
   SKILLS          → toolset skills (consultar/gerenciar skills sob demanda)
+  FINANCE         → toolset finance (P2 — financeiro pessoal pelo WhatsApp)
 
 Precedência (determinística):
   1. rota slash explícita (/cron /memory /session /skills)
@@ -125,6 +126,60 @@ _SKILLS_MARKERS = (
     "lista de skills", "listar skills", "me mostre as skills", "skill x",
     "skills disponíveis", "skills disponiveis", "skill chamada",
 )
+
+# ─── FINANCE (P2 — Financeiro pelo WhatsApp) ────────────────────────────
+# Linguagem bancária pessoal é EXCLUSIVA desta rota — nunca reivindica
+# "supabase"/"pausad"/"hiberna"/"keepalive" (P0) nem "ideia"/"projeto"/
+# "tarefa"/"kanban" (P1). Bloqueio conceitual herdado do check global de
+# _has_conceptual em resolve_specialist_route (roda antes de qualquer rota
+# de domínio) — "o que é orçamento?" já cai em NORMAL antes de chegar aqui.
+_FINANCE_KEYWORDS = (
+    "gastei", "gasto", "gastos", "receita", "receitas", "entrou", "entradas",
+    "saldo", "orçamento", "orcamento", "orçamentos", "orcamentos",
+    "fatura", "faturas", "extrato", "despesa", "despesas",
+    "banco", "bancos", "vencem", "vencer", "a vencer", "vencimento", "vencimentos",
+)
+_FINANCE_SYNC_PHRASES = (
+    "sincronize meus bancos", "sincronizar meus bancos", "sincronize os bancos",
+    "sincronizar os bancos", "sincronize meu banco",
+)
+_FINANCE_ACTION_VERBS = (
+    "registre", "registrar", "lancei", "lançar", "lancar", "anote", "anotar",
+)
+_FINANCE_MONEY_MARKERS = ("r$", " reais", "centavos")
+# Categorias internas seed (migration 002, apps/financeiro-pessoal-api) —
+# só conta como sinal de finance quando combinada com um valor monetário
+# (evita "saúde"/"lazer" isolados colidirem com outros domínios).
+_FINANCE_CATEGORY_NAMES = (
+    "alimentação", "alimentacao", "transporte", "moradia", "saúde", "saude",
+    "lazer", "combustível", "combustivel", "compras", "educação", "educacao",
+    "serviços", "servicos", "salário", "salario",
+)
+_FINANCE_MONEY_VALUE_RE = re.compile(r"\d+[.,]\d{2}\b")
+
+
+def _is_finance(text: str) -> bool:
+    """Intenção financeira pessoal: leitura ("quanto gastei"), lançamento
+    manual, reclassificação de categoria, orçamento, sync com o banco.
+
+    Conservador: keyword de domínio OU frase de sync OU (valor monetário +
+    verbo de lançamento) OU (valor monetário + nome de categoria conhecida)
+    — cobre "Registre 120 reais, mas foi ontem" (sem 'R$') e "Essa compra de
+    54,90 do X é Alimentação" (sem keyword nem verbo de lançamento) do doc
+    00 §7, sem deixar um valor monetário sozinho roteando qualquer frase.
+    """
+    low = text.lower()
+    if _has_any(low, _FINANCE_KEYWORDS):
+        return True
+    if _has_any(low, _FINANCE_SYNC_PHRASES):
+        return True
+    has_money = _has_any(low, _FINANCE_MONEY_MARKERS) or bool(_FINANCE_MONEY_VALUE_RE.search(low))
+    if has_money and _has_any(low, _FINANCE_ACTION_VERBS):
+        return True
+    if has_money and _has_any(low, _FINANCE_CATEGORY_NAMES):
+        return True
+    return False
+
 
 # ─── Confirmação afirmativa (Phase 1B — continuation routing restart V1) ───
 # Match EXATO após normalização — "Sim, obrigado" permanece NORMAL.
@@ -262,6 +317,8 @@ def resolve_specialist_route(message: str, actor_id: str | None = None) -> str:
         return "MEMORY"
     if _is_skills(text):
         return "SKILLS"
+    if _is_finance(text):
+        return "FINANCE"
     if _is_infra_action(text):
         return "INFRA_ACTION"
     if _is_infra_read(text):
@@ -276,6 +333,7 @@ _ROUTE_TOOLSETS = {
     "SKILLS": ["skills"],
     "INFRA_READ": ["infra_read"],
     "INFRA_ACTION": ["restart_container"],
+    "FINANCE": ["finance"],
     "NORMAL": [],
 }
 
