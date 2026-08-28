@@ -74,6 +74,18 @@ export class ProductsRepository {
       | undefined
   }
 
+  /** Bills due on/after fromDate (default: everything), soonest first — used by finance.bills.read. */
+  listUpcoming(fromDate?: string, limit = 50): FinancialCreditCardBillRow[] {
+    if (fromDate) {
+      return this.db
+        .prepare('SELECT * FROM financial_credit_card_bills WHERE due_date >= ? ORDER BY due_date ASC LIMIT ?')
+        .all(fromDate, limit) as FinancialCreditCardBillRow[]
+    }
+    return this.db
+      .prepare('SELECT * FROM financial_credit_card_bills ORDER BY due_date ASC LIMIT ?')
+      .all(limit) as FinancialCreditCardBillRow[]
+  }
+
   upsertInvestment(input: UpsertInvestmentInput): FinancialInvestmentRow {
     const now = new Date().toISOString()
     const existing = this.getInvestmentByPluggyId(input.pluggyInvestmentId)
