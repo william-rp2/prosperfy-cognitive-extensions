@@ -126,6 +126,39 @@ _SKILLS_MARKERS = (
     "skills disponíveis", "skills disponiveis", "skill chamada",
 )
 
+# ─── BROWSER (Track BH — Browser Harness V1, sob demanda) ────────────────
+# Doc 00 §4.2: só quando clique/digitação/upload/login/sessão autenticada
+# são necessários — nunca substitui fetch/API simples. Conservador: link
+# solto sem verbo de interação cai em NORMAL (fetch resolve fora do
+# specialist route); pergunta conceitual já caiu em NORMAL antes de chegar
+# aqui (guard em resolve_specialist_route).
+_BROWSER_URL_RE = re.compile(r"https?://\S+")
+_BROWSER_NAV_VERBS = (
+    "acesse", "acesse o site", "acesse esse site", "acesse essa página",
+    "abra o site", "abra esse site", "abra esse link", "visite o site", "visite esse site",
+    "navegue até", "navegue ate",
+)
+_BROWSER_INTERACTION_VERBS = (
+    "faça login", "faca login", "logue em", "loga em", "faça o login", "faca o login",
+    "preencha o formulário", "preencha o formulario", "preencher o formulário",
+    "cadastre-se em", "cadastre-me em", "faça o cadastro em", "faca o cadastro em",
+    "crie uma conta em", "crie minha conta em", "clique no botão", "clique em enviar",
+    "envie o formulário", "envie o formulario", "submeta o formulário",
+)
+
+
+def _is_browser(text: str) -> bool:
+    """Intenção explícita de interação via Browser Worker isolado (doc 00 §4.2).
+    "Leia esse link" (sem verbo de interação) → NORMAL, fetch resolve fora
+    do specialist. "Faça meu cadastro nesse site" → BROWSER."""
+    low = text.lower()
+    if _has_any(low, _BROWSER_INTERACTION_VERBS):
+        return True
+    if _BROWSER_URL_RE.search(text) and _has_any(low, _BROWSER_NAV_VERBS):
+        return True
+    return False
+
+
 # ─── Confirmação afirmativa (Phase 1B — continuation routing restart V1) ───
 # Match EXATO após normalização — "Sim, obrigado" permanece NORMAL.
 _AFFIRMATIVE_CONFIRMATIONS = frozenset({
@@ -266,6 +299,8 @@ def resolve_specialist_route(message: str, actor_id: str | None = None) -> str:
         return "INFRA_ACTION"
     if _is_infra_read(text):
         return "INFRA_READ"
+    if _is_browser(text):
+        return "BROWSER"
     return "NORMAL"
 
 
@@ -276,6 +311,7 @@ _ROUTE_TOOLSETS = {
     "SKILLS": ["skills"],
     "INFRA_READ": ["infra_read"],
     "INFRA_ACTION": ["restart_container"],
+    "BROWSER": ["browser_harness"],
     "NORMAL": [],
 }
 
