@@ -148,12 +148,19 @@ class ExecutionOrchestrator:
         telemetry_recorder: InMemoryTelemetryRecorder,
         resource_resolver: Any | None = None,
         grant_resolver: GrantResolverPort | None = None,
+        adapter_registry: dict[str, SkillsAdapterPort] | None = None,
     ) -> None:
         self._registry = registry
         self._policy = policy_engine
         self._adapter = skills_adapter
         self._audit = audit_writer
         self._telemetry = telemetry_recorder
+        # Track BH: dispatch opcional por capability.adapter (ex.: "browser_harness"
+        # -> BrowserAdapter). Aditivo e retrocompativel -- capabilities cujo
+        # .adapter nao esta no registry (ou quando adapter_registry=None, o
+        # caso de toda capability existente pre-BH) continuam indo 100% para
+        # self._adapter, exatamente como antes desta mudanca.
+        self._adapter_registry = adapter_registry or {}
         # ADR-V2-002 §3: resolve params.resource (lógico) -> concretos ANTES do
         # adapter. None é permitido (capabilities sem resource, ou runtime que
         # ainda não fia um resolver) — nesse caso params fluem sem resolução.
@@ -174,6 +181,12 @@ class ExecutionOrchestrator:
         # restart nem é compartilhado entre instâncias — dedup cross-processo
         # exigiria store em banco (fora de escopo do Sprint 0.3).
         self._idempotency_cache: dict[tuple[str, str, str, str], CapabilityExecuteResponse] = {}
+
+    def _resolve_adapter(self, adapter_name: str) -> SkillsAdapterPort:
+        """Track BH: capability.adapter -> adapter concreto, com fallback para
+        self._adapter (prosperfy_skills) quando nao ha entrada no registry --
+        preserva 100% do comportamento anterior a esta mudanca."""
+        return self._adapter_registry.get(adapter_name, self._adapter)
 
     async def execute(
         self,
@@ -373,6 +386,7 @@ class ExecutionOrchestrator:
                 params=resolved_params,
                 tenant_id=ctx.tenant_id,
                 correlation_id=ctx.correlation_id,
+                adapter_name=capability.adapter,
             )
         except Exception as exc:
             # Sprint 0.3 RETURN_TO_DEV (Item B): nunca loga o traceback bruto
@@ -434,6 +448,7 @@ class ExecutionOrchestrator:
         params: dict[str, Any],
         tenant_id: str,
         correlation_id: str,
+        adapter_name: str = "prosperfy_skills",
     ) -> tuple[int, dict[str, Any]]:
         """
         Executa a sequência de tools de uma capability composta.
@@ -441,9 +456,10 @@ class ExecutionOrchestrator:
         Determinístico: sem LLM escolhendo a sequência.
         Retorna (tool_calls_count, result_data).
         """
+        adapter = self._resolve_adapter(adapter_name)
         if capability_id == "infra.action":
             tool_name, tool_args = _build_infra_action_restart_plan(params, tools)
-            tool_result = await self._adapter.invoke_tool(
+            tool_result = await adapter.invoke_tool(
                 tool_name=tool_name,
                 arguments=tool_args,
                 tenant_id=tenant_id,
@@ -460,7 +476,7 @@ class ExecutionOrchestrator:
 
         if not tools:
             # Capability simples (sem steps YAML) — invoca pelo capability_id direto
-            result = await self._adapter.invoke_tool(
+            result = await adapter.invoke_tool(
                 tool_name=capability_id,
                 arguments=client_args,
                 tenant_id=tenant_id,
@@ -498,7 +514,7 @@ class ExecutionOrchestrator:
                 tool_args = dict(client_args)
 
             try:
-                tool_result = await self._adapter.invoke_tool(
+                tool_result = await adapter.invoke_tool(
                     tool_name=tool_name,
                     arguments=tool_args,
                     tenant_id=tenant_id,

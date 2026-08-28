@@ -14,6 +14,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
+from ..adapters.browser_harness.client import BrowserAdapter
+from ..adapters.browser_harness.mock import MockBrowserAdapter
 from ..adapters.prosperfy_skills.client import ProsperfySkillsAdapter
 from ..adapters.prosperfy_skills.mock import MockSkillsAdapter
 from ..audit.writer import InMemoryAuditWriter
@@ -73,6 +75,17 @@ def _build_services(app: FastAPI) -> None:
         logger.info("COGNITIVE_LIVE_MCP=0 — usando MockSkillsAdapter (dev/CI)")
         skills_adapter = MockSkillsAdapter()
 
+    # Track BH: BrowserAdapter reusa o MESMO transporte prosperfy_skills
+    # (invoke_tool prosperfy_vps_escrever_arquivo/executar) para falar com o
+    # Browser Worker isolado — nunca abre conexão própria. Segue o mesmo
+    # toggle de COGNITIVE_LIVE_MCP do skills_adapter: mock em dev/CI, real
+    # quando live.
+    if live_mcp:
+        browser_worker_host = os.getenv("COGNITIVE_BROWSER_WORKER_HOST", "Hostinger One")
+        browser_adapter = BrowserAdapter(inner_adapter=skills_adapter, host=browser_worker_host)
+    else:
+        browser_adapter = MockBrowserAdapter()
+
     if use_db:
         from ..db.repositories.audit_repo import PostgresAuditWriter
         from ..db.repositories.identity_repo import ServiceIdentityRepository
@@ -130,6 +143,7 @@ def _build_services(app: FastAPI) -> None:
         telemetry_recorder=telemetry_recorder,
         resource_resolver=resource_resolver,
         grant_resolver=grant_resolver,
+        adapter_registry={"browser_harness": browser_adapter},
     )
 
     if is_in_memory_mode():
@@ -143,6 +157,7 @@ def _build_services(app: FastAPI) -> None:
 
     app.state.registry = registry
     app.state.orchestrator = orchestrator
+    app.state.browser_adapter = browser_adapter
     app.state.grant_resolver = grant_resolver
     app.state.audit_writer = audit_writer
     app.state.telemetry_recorder = telemetry_recorder

@@ -67,3 +67,46 @@ def test_registry_grant_not_found_other_tenant():
 
     grant = registry.resolve_grant("tenant-b", "owner-core", "infra.inspect")
     assert grant is None
+
+
+# ─── Track BH: browser.read / browser.act / browser.account ────────────────
+
+def test_load_browser_capabilities_yaml():
+    caps = load_all_capabilities()
+    ids = {c.id for c in caps}
+    assert {"browser.read", "browser.act", "browser.account"} <= ids
+
+
+def test_browser_read_is_allow_by_default():
+    caps = load_all_capabilities()
+    cap = next(c for c in caps if c.id == "browser.read")
+    assert cap.default_policy == "allow"
+    assert cap.adapter == "browser_harness"
+    assert cap.tools[0]["name"] == "browser_read_links"
+
+
+def test_browser_act_and_account_are_deny_by_default():
+    """doc 00: browser.act/browser.account default_policy=deny -- grant
+    explicito obrigatorio (matriz 6.2 e enforced no worker, nao aqui)."""
+    caps = load_all_capabilities()
+    by_id = {c.id: c for c in caps}
+    assert by_id["browser.act"].default_policy == "deny"
+    assert by_id["browser.account"].default_policy == "deny"
+    assert by_id["browser.act"].adapter == "browser_harness"
+    assert by_id["browser.account"].adapter == "browser_harness"
+
+
+def test_browser_capabilities_redact_secret_like_fields():
+    caps = load_all_capabilities()
+    for cap_id in ("browser.read", "browser.act", "browser.account"):
+        cap = next(c for c in caps if c.id == cap_id)
+        for field in ("password", "token", "secret", "cookie", "authorization"):
+            assert field in cap.redaction_rules, f"{cap_id} missing redaction for {field}"
+
+
+def test_browser_act_without_grant_denies_by_registry():
+    """Sem grant, browser.act nao aparece resolvivel mesmo com default_policy
+    lido do YAML -- mesma semantica de infra.action (DENY [no_grant])."""
+    registry = InMemoryCapabilityRegistry()
+    registry.load_from_yaml()
+    assert registry.resolve_grant("tenant-a", "owner-core", "browser.act") is None
