@@ -8,6 +8,7 @@ COGNITIVE_MODE=database  → DB obrigatório; fail-closed se indisponível
 from __future__ import annotations
 
 import logging
+from typing import Any
 import os
 
 from fastapi import FastAPI
@@ -224,10 +225,28 @@ def _build_services(app: FastAPI) -> None:
         # levanta no startup. Isso é o que permite reportar
         # HUMAN_BLOCKER=TRELLO_AUTH sem travar o resto do gateway.
         from ..adapters.trello.client import TrelloClient
+        from ..adapters.trello.composio_client import (
+            TrelloComposioAdapter,
+            is_configured as composio_trello_configured,
+        )
         from ..adapters.trello.sync import TrelloSyncEngine
 
+        # Decisao do owner (29/08/2026): priorizar o transporte Composio para
+        # nao provisionar TRELLO_API_KEY/TOKEN/WEBHOOK_SECRET. Os dois clients
+        # expoem a MESMA interface, entao o TrelloSyncEngine — e com ele
+        # outbox, bindings, anti-echo e idempotencia — nao muda nada.
+        # Fallback para o client HTTP direto se o Composio nao estiver
+        # configurado; se nenhum dos dois estiver, o proprio TrelloSyncEngine
+        # ja trata como no-op seguro (skipped_not_configured).
+        if composio_trello_configured():
+            trello_client: Any = TrelloComposioAdapter()
+            logger.info("Trello: transporte Composio (sem credencial Trello propria)")
+        else:
+            trello_client = TrelloClient()
+            logger.info("Trello: transporte HTTP direto (TrelloClient)")
+
         trello_sync_engine = TrelloSyncEngine(
-            client=TrelloClient(),
+            client=trello_client,
             idea_repo=IdeaRepository(),
             project_repo=ProjectRepository(),
             task_repo=TaskRepository(),
