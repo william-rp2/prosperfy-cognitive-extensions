@@ -15,8 +15,19 @@ WorkingDirectory=/home/will/projetos/prosperfy-cognitive-gate-0.3/core/cognitive
 # segundo arquivo a unit ainda instala e o timer ainda agenda; a EXECUCAO
 # falha fechada (exit 1, log claro) ate o arquivo existir — ver
 # REMAINING_GAPS do relatorio final da track.
+# Caminhos corrigidos na instalacao real (29/08/2026). A versao anterior
+# apontava para .../prosperfy-cognitive-v2-homolog/supabase-ops.env, que
+# nunca existiu, e omitia a DSN admin — sem ela o CLI morre com
+# "COGNITIVE_DB_ADMIN_URL ausente" antes de chegar no Composio.
+#   api-runtime-sprint03.env -> COGNITIVE_DB_URL / DB_WORKER_URL
+#   secrets.env              -> COGNITIVE_DB_ADMIN_URL (BYPASSRLS)
+#   prosperfy-supabase-ops/  -> COMPOSIO_MCP_URL / COMPOSIO_MCP_API_KEY (0600)
 EnvironmentFile=/home/will/.config/prosperfy-cognitive-v2-homolog/api-runtime-sprint03.env
-EnvironmentFile=-/home/will/.config/prosperfy-cognitive-v2-homolog/supabase-ops.env
+EnvironmentFile=/home/will/.config/prosperfy-cognitive-v2-homolog/secrets.env
+EnvironmentFile=/home/will/.config/prosperfy-supabase-ops/secrets.env
+
+Environment=COGNITIVE_LIVE_COMPOSIO_MCP=1
+Environment=COGNITIVE_TENANT_SLUG=prosperfy-homolog
 ExecStart=/home/will/projetos/prosperfy-cognitive-gate-0.3/.venv-gate/bin/python -m cognitive.ops.supabase_keepalive_cli
 # Pior caso de wall-clock de um round: soma dos retries em nivel de rodada
 # (1m+5m+30m=36min) + tempo de execucao normal dos projetos. Margem de
