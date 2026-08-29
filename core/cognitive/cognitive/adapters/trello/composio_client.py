@@ -35,6 +35,7 @@ continua no reconcile_poll do sync.py, que não exige credencial nova.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -52,6 +53,11 @@ DEFAULT_ACCOUNT = "Trello - prosperfybr@gmail.com"
 _EXECUTOR = "COMPOSIO_MULTI_EXECUTE_TOOL"
 
 _CARD_FIELDS = "name,desc,idList,due,closed,dateLastActivity"
+
+# Retry de transporte. O Composio estrangula rajadas de conexao nova, e o
+# reconcile_poll faz uma chamada por lista vinculada.
+_MAX_TENTATIVAS = 3
+_BACKOFF_SEGUNDOS = (1.0, 3.0)
 
 
 class TrelloComposioError(RuntimeError):
@@ -123,13 +129,37 @@ class TrelloComposioAdapter:
             "sync_response_to_workbench": False,
         }
 
-        try:
-            async with self._build_client() as client:
-                result = await client.call_tool(_EXECUTOR, payload, raise_on_error=False)
-        except Exception as exc:  # noqa: BLE001 — boundary externo
+        # Retry com backoff em erro de TRANSPORTE apenas.
+        #
+        # Cada chamada abre uma conexao MCP nova, e o reconcile_poll dispara
+        # uma por lista vinculada — 8 conexoes em poucos segundos. Sem retry,
+        # o Composio devolve McpError em rajada e o poll inteiro falha, mesmo
+        # com os argumentos corretos (comprovado ao vivo: as mesmas chamadas
+        # funcionam isoladas). Erro de PROTOCOLO ou de toolkit nao e
+        # retentado — so falha transitoria de conexao.
+        ultimo_erro: Exception | None = None
+        result = None
+        for tentativa in range(_MAX_TENTATIVAS):
+            try:
+                async with self._build_client() as client:
+                    result = await client.call_tool(
+                        _EXECUTOR, payload, raise_on_error=False
+                    )
+                break
+            except Exception as exc:  # noqa: BLE001 — boundary externo
+                ultimo_erro = exc
+                if tentativa < _MAX_TENTATIVAS - 1:
+                    espera = _BACKOFF_SEGUNDOS[tentativa]
+                    logger.info(
+                        "TrelloComposioAdapter retry tool=%s tentativa=%d/%d em %.1fs (%s)",
+                        tool_slug, tentativa + 1, _MAX_TENTATIVAS, espera,
+                        type(exc).__name__,
+                    )
+                    await asyncio.sleep(espera)
+        if result is None:
             logger.error(
-                "TrelloComposioAdapter transport error tool=%s type=%s",
-                tool_slug, type(exc).__name__,
+                "TrelloComposioAdapter transport error tool=%s type=%s apos %d tentativas",
+                tool_slug, type(ultimo_erro).__name__, _MAX_TENTATIVAS,
             )
             raise TrelloComposioError(
                 f"Trello tool '{tool_slug}' inacessível (erro de transporte)"
