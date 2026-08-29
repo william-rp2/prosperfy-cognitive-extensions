@@ -177,15 +177,29 @@ class TrelloComposioAdapter:
 
     @staticmethod
     def _as_list(data: Any) -> list[dict]:
-        """O toolkit as vezes devolve a lista direto, as vezes embrulhada em
-        {'details': [...]} ou {'items': [...]}."""
+        """Extrai a lista do envelope do toolkit.
+
+        Cada tool Trello do Composio embrulha com uma chave DIFERENTE:
+        boards vem em {'details': [...]}, listas em {'lists': [...]}, cards em
+        {'cards': [...]}. Verificado ao vivo — a versao anterior so conhecia
+        'details' e devolvia [] silenciosamente para as listas de um board que
+        tinha 8, o que faria o reconcile_poll varrer nada e nunca detectar
+        drift.
+
+        Em vez de manter uma lista de chaves conhecidas (que quebra de novo na
+        proxima tool), pega a primeira chave cujo valor e uma lista.
+        """
         if isinstance(data, list):
             return data
-        if isinstance(data, dict):
-            for chave in ("details", "items", "data", "result"):
-                valor = data.get(chave)
-                if isinstance(valor, list):
-                    return valor
+        if not isinstance(data, dict):
+            return []
+        for chave in ("details", "lists", "cards", "items", "result", "data"):
+            valor = data.get(chave)
+            if isinstance(valor, list):
+                return valor
+        for valor in data.values():
+            if isinstance(valor, list) and all(isinstance(x, dict) for x in valor):
+                return valor
         return []
 
     # ─── Boards / Lists ─────────────────────────────────────────────────
