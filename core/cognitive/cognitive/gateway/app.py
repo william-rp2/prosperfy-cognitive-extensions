@@ -333,12 +333,32 @@ async def _trello_background_loop(app: FastAPI) -> None:
     import asyncio
 
     interval = float(os.getenv("COGNITIVE_TRELLO_POLL_INTERVAL_SECONDS", "90"))
-    dev_tenant = os.getenv("COGNITIVE_DEV_TENANT_ID", "prosperfy")
     engine = app.state.trello_sync_engine
+
+    # O tenant do loop tem de ser o MESMO identificador que tenant_transaction
+    # usa. Em database mode isso e o UUID do tenant, nao o slug: usar
+    # COGNITIVE_DEV_TENANT_ID (default "prosperfy") faria toda iteracao rodar
+    # num tenant inexistente e no-opar em silencio — drain e reconcile
+    # retornariam zero para sempre sem nenhum erro visivel.
+    tenant_ref = os.getenv("COGNITIVE_DEV_TENANT_ID", "prosperfy")
+    if getattr(app.state, "use_db", False):
+        from ..db.repositories.tenancy_repo import TenantRepository
+
+        slug = os.getenv("COGNITIVE_TENANT_SLUG", "prosperfy-homolog")
+        tenant = await TenantRepository().get_by_slug(slug)
+        if tenant is None:
+            logger.error(
+                "trello_background_loop: tenant '%s' nao encontrado — loop encerrado "
+                "(ajuste COGNITIVE_TENANT_SLUG)", slug,
+            )
+            return
+        tenant_ref = str(tenant.id)
+        logger.info("trello_background_loop: tenant=%s (slug=%s) intervalo=%.0fs", tenant_ref, slug, interval)
+
     while True:
         try:
-            drained = await engine.drain_outbox_once(dev_tenant)
-            reconciled = await engine.reconcile_poll(dev_tenant)
+            drained = await engine.drain_outbox_once(tenant_ref)
+            reconciled = await engine.reconcile_poll(tenant_ref)
             if drained.get("processed") or reconciled.get("scanned"):
                 logger.info("trello_background_loop drained=%s reconciled=%s", drained, reconciled)
         except asyncio.CancelledError:
