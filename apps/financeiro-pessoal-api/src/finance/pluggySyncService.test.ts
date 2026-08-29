@@ -165,10 +165,12 @@ describe('PluggySyncService', () => {
     expect(transactions.list()).toHaveLength(1)
     expect(accounts.getByPluggyId('account-1')?.balance_cents).toBe(100050)
 
-    // Second run, same upstream data: must UPSERT (update), never duplicate.
+    // Second run, same upstream data: unchanged (idempotent upsert, no duplicate).
     const secondRun = await service.syncAll('manual')
     expect(secondRun.transactions_created).toBe(0)
-    expect(secondRun.transactions_updated).toBe(1)
+    expect(secondRun.transactions_updated).toBe(0)
+    const secondMeta = JSON.parse(secondRun.metadata ?? '{}')
+    expect(secondMeta.transactionsUnchanged).toBe(1)
     expect(transactions.list()).toHaveLength(1)
   })
 

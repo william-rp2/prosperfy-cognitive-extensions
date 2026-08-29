@@ -2,18 +2,21 @@ import cors from '@fastify/cors'
 import Fastify, { FastifyRequest } from 'fastify'
 import { z } from 'zod'
 
-import { AppConfig, getConfigStatus, loadConfig } from './config.js'
+import { AppConfig, getConfigStatus, loadConfig, resolveSyncIntervalMinutes } from './config.js'
 import { AccountsRepository } from './finance/accountsRepository.js'
 import { BudgetsRepository } from './finance/budgetsRepository.js'
 import { CategoriesRepository } from './finance/categoriesRepository.js'
 import { CategoryOverridesRepository } from './finance/categoryOverridesRepository.js'
+import { ClarificationsRepository } from './finance/clarificationsRepository.js'
+import { ClassificationService } from './finance/classificationService.js'
 import { openFinanceDb, type FinanceDb } from './finance/db.js'
+import { EnrichmentRepository } from './finance/enrichmentRepository.js'
 import { ItemsRepository } from './finance/itemsRepository.js'
 import { ManualTransactionsRepository } from './finance/manualTransactionsRepository.js'
 import { PluggySyncService } from './finance/pluggySyncService.js'
 import { ProductsRepository } from './finance/productsRepository.js'
 import { PluggySyncScheduler } from './finance/scheduler.js'
-import { SyncRunsRepository } from './finance/syncRunsRepository.js'
+import { SyncRunsRepository, SyncAlreadyRunningError } from './finance/syncRunsRepository.js'
 import { TransactionsRepository } from './finance/transactionsRepository.js'
 import { MissingPluggySecretsError, PluggyPort, PluggySyncClient, SdkPluggyPort } from './pluggy.js'
 import { registerFinanceRoutes } from './routes/finance.js'
@@ -100,6 +103,14 @@ export function createApp(options: CreateAppOptions = {}) {
   const manualTransactionsRepository = new ManualTransactionsRepository(financeDb)
   const categoryOverridesRepository = new CategoryOverridesRepository(financeDb)
   const budgetsRepository = new BudgetsRepository(financeDb)
+  const enrichmentRepository = new EnrichmentRepository(financeDb)
+  const clarificationsRepository = new ClarificationsRepository(financeDb)
+  const classificationService = new ClassificationService(
+    enrichmentRepository,
+    clarificationsRepository,
+    categoriesRepository,
+    categoryOverridesRepository,
+  )
 
   const app = Fastify({
     logger: {
@@ -120,11 +131,12 @@ export function createApp(options: CreateAppOptions = {}) {
     safetyWindowHours: config.PLUGGY_SYNC_SAFETY_WINDOW_HOURS,
     maxConcurrentItems: config.PLUGGY_SYNC_MAX_CONCURRENT_ITEMS,
     logger: app.log,
+    classification: classificationService,
   })
 
   const scheduler = new PluggySyncScheduler({
     enabled: config.PLUGGY_SYNC_ENABLED,
-    intervalHours: config.PLUGGY_SYNC_INTERVAL_HOURS,
+    intervalMinutes: resolveSyncIntervalMinutes(config),
     syncService,
     logger: app.log,
   })
@@ -149,6 +161,8 @@ export function createApp(options: CreateAppOptions = {}) {
     categoryOverrides: categoryOverridesRepository,
     budgets: budgetsRepository,
     products: productsRepository,
+    enrichment: enrichmentRepository,
+    clarifications: clarificationsRepository,
   })
 
   app.get('/health', async () => ({ ok: true, app: 'financeiro-pessoal-api' }))
@@ -198,6 +212,16 @@ export function createApp(options: CreateAppOptions = {}) {
     } catch (error) {
       app.log.warn({ err: error, itemId }, 'pluggy: não foi possível enriquecer item com dados do connector no registro; persistindo com dados mínimos')
       itemsRepository.upsertItem({ pluggyItemId: itemId, status: 'CREATED' })
+    }
+
+    try {
+      await syncService.syncOne(itemId, 'initial')
+    } catch (error) {
+      if (error instanceof SyncAlreadyRunningError) {
+        app.log.warn({ itemId }, 'pluggy: sync imediato pós-connect adiado — outro sync em andamento')
+      } else {
+        app.log.error({ err: error, itemId }, 'pluggy: sync imediato pós-connect falhou')
+      }
     }
 
     return reply.send({ item })

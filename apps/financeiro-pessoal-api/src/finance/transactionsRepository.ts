@@ -31,13 +31,27 @@ export interface TransactionFilters {
   offset?: number
 }
 
+export type UpsertDelta = 'created' | 'updated' | 'unchanged'
+
+export interface UpsertTransactionResult {
+  row: FinancialTransactionRow
+  delta: UpsertDelta
+}
+
 export class TransactionsRepository {
   constructor(private readonly db: FinanceDb) {}
 
-  /** Upserts a transaction. Returns whether it was newly created (for sync stats). */
-  upsertTransaction(input: UpsertTransactionInput): { row: FinancialTransactionRow; created: boolean } {
+  /** Upserts a transaction. Returns delta for sync stats (created / updated / unchanged). */
+  upsertTransaction(input: UpsertTransactionInput): UpsertTransactionResult {
     const now = new Date().toISOString()
     const existing = this.getByPluggyId(input.pluggyTransactionId)
+
+    if (existing && this.isUnchanged(existing, input)) {
+      this.db
+        .prepare('UPDATE financial_transactions SET last_synced_at = ? WHERE pluggy_transaction_id = ?')
+        .run(now, input.pluggyTransactionId)
+      return { row: this.getByPluggyId(input.pluggyTransactionId)!, delta: 'unchanged' }
+    }
 
     this.db
       .prepare(
@@ -79,7 +93,25 @@ export class TransactionsRepository {
         rawData: input.rawData !== undefined ? JSON.stringify(input.rawData) : null,
       })
 
-    return { row: this.getByPluggyId(input.pluggyTransactionId)!, created: !existing }
+    const delta: UpsertDelta = existing ? 'updated' : 'created'
+    return { row: this.getByPluggyId(input.pluggyTransactionId)!, delta }
+  }
+
+  private isUnchanged(existing: FinancialTransactionRow, input: UpsertTransactionInput): boolean {
+    const rawData = input.rawData !== undefined ? JSON.stringify(input.rawData) : null
+    return (
+      (existing.description ?? null) === (input.description ?? null) &&
+      (existing.description_raw ?? null) === (input.descriptionRaw ?? null) &&
+      existing.amount_cents === input.amountCents &&
+      (existing.currency_code ?? null) === (input.currencyCode ?? null) &&
+      existing.date === input.date &&
+      (existing.status ?? null) === (input.status ?? null) &&
+      (existing.type ?? null) === (input.type ?? null) &&
+      (existing.category_original ?? null) === (input.categoryOriginal ?? null) &&
+      (existing.merchant_original ?? null) === (input.merchantOriginal ?? null) &&
+      (existing.balance_cents ?? null) === (input.balanceCents ?? null) &&
+      (existing.raw_data ?? null) === rawData
+    )
   }
 
   tombstone(pluggyTransactionId: string) {

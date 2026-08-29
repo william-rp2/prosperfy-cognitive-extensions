@@ -38,6 +38,7 @@ beforeEach(async () => {
     FINANCE_DB_PATH: ':memory:',
     FINANCE_API_TOKEN: 'test-finance-token',
     PLUGGY_SYNC_ENABLED: false,
+    PLUGGY_SYNC_INTERVAL_MINUTES: undefined,
     PLUGGY_SYNC_INTERVAL_HOURS: 6,
     PLUGGY_SYNC_SAFETY_WINDOW_HOURS: 24,
     PLUGGY_SYNC_MAX_CONCURRENT_ITEMS: 3,

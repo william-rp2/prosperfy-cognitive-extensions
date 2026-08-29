@@ -1,12 +1,15 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 
 import type { AppConfig } from '../config.js'
+import { resolveSyncIntervalMinutes } from '../config.js'
 import type { AccountsRepository } from '../finance/accountsRepository.js'
 import type { BudgetWithStatus } from '../finance/budgetsRepository.js'
 import { assertValidMonth, BudgetsRepository, monthRange } from '../finance/budgetsRepository.js'
 import type { FinancialCategoryRow } from '../finance/categoriesRepository.js'
 import { CategoriesRepository } from '../finance/categoriesRepository.js'
 import type { CategoryOverridesRepository } from '../finance/categoryOverridesRepository.js'
+import type { ClarificationsRepository } from '../finance/clarificationsRepository.js'
+import type { EnrichmentRepository, EnrichmentRow } from '../finance/enrichmentRepository.js'
 import type { ItemsRepository } from '../finance/itemsRepository.js'
 import type { ManualDirection } from '../finance/manualTransactionsRepository.js'
 import { ManualTransactionsRepository } from '../finance/manualTransactionsRepository.js'
@@ -33,6 +36,8 @@ export interface FinanceRouteDeps {
   categoryOverrides: CategoryOverridesRepository
   budgets: BudgetsRepository
   products: ProductsRepository
+  enrichment: EnrichmentRepository
+  clarifications: ClarificationsRepository
 }
 
 function requireFinanceToken(request: FastifyRequest, config: AppConfig): boolean {
@@ -60,7 +65,29 @@ function serializeCategory(category: FinancialCategoryRow | undefined | null) {
   return { id: category.id, name: category.name, kind: category.kind }
 }
 
-function serializePluggyTransaction(row: FinancialTransactionRow, effectiveCategory: FinancialCategoryRow | null) {
+function serializeEnrichment(row: EnrichmentRow | undefined) {
+  if (!row) return null
+  return {
+    merchantNormalized: row.merchant_normalized,
+    categoryId: row.category_id,
+    categoryName: row.category_name,
+    canonicalType: row.canonical_type,
+    direction: row.direction,
+    rawType: row.raw_type,
+    paymentMethod: row.payment_method,
+    classificationStatus: row.classification_status,
+    classificationConfidence: row.classification_confidence,
+    classificationSource: row.classification_source,
+    notes: row.notes,
+    updatedAt: row.updated_at,
+  }
+}
+
+function serializePluggyTransaction(
+  row: FinancialTransactionRow,
+  effectiveCategory: FinancialCategoryRow | null,
+  enrichment?: EnrichmentRow,
+) {
   return {
     id: row.pluggy_transaction_id,
     source: 'pluggy' as const,
@@ -74,6 +101,7 @@ function serializePluggyTransaction(row: FinancialTransactionRow, effectiveCateg
     categoryOriginal: row.category_original,
     category: serializeCategory(effectiveCategory),
     merchant: row.merchant_original,
+    enrichment: serializeEnrichment(enrichment),
   }
 }
 
@@ -132,7 +160,21 @@ function resolveCategory(
 }
 
 export function registerFinanceRoutes(app: FastifyInstance, deps: FinanceRouteDeps) {
-  const { config, items, accounts, transactions, syncRuns, syncService, scheduler, categories, manualTransactions, categoryOverrides, budgets, products } = deps
+  const {
+    config,
+    items,
+    accounts,
+    transactions,
+    syncRuns,
+    syncService,
+    scheduler,
+    categories,
+    manualTransactions,
+    categoryOverrides,
+    budgets,
+    products,
+    enrichment,
+  } = deps
 
   // Everything under /api/finance/* requires the Cognitive service credential.
   // Encapsulated child scope so this preHandler never leaks onto /health,
@@ -160,6 +202,40 @@ export function registerFinanceRoutes(app: FastifyInstance, deps: FinanceRouteDe
         lastSyncStatus: latestRun?.status ?? null,
         nextSync: scheduler.getNextRunAt(),
         syncEnabled: config.PLUGGY_SYNC_ENABLED,
+        syncIntervalMinutes: resolveSyncIntervalMinutes(config),
+      }
+    })
+
+    financeApp.get('/api/finance/integrations', async () => {
+      const allItems = items.listAll()
+      const allAccounts = accounts.listAll()
+      const latestRun = syncRuns.getLatest()
+      return {
+        items: allItems.map(item => ({
+          id: item.pluggy_item_id,
+          connectorId: item.connector_id,
+          connectorName: item.connector_name,
+          status: item.status,
+          executionStatus: item.execution_status,
+          lastSyncedAt: item.last_synced_at,
+          lastSuccessfulUpdate: item.last_successful_update,
+          errorSummary: item.error_summary,
+          accountCount: allAccounts.filter(account => account.pluggy_item_id === item.pluggy_item_id).length,
+        })),
+        accounts: allAccounts.map(account => ({
+          id: account.pluggy_account_id,
+          itemId: account.pluggy_item_id,
+          type: account.type,
+          name: account.name,
+          balance: fromCents(account.balance_cents),
+          lastSyncedAt: account.last_synced_at,
+        })),
+        sync: {
+          enabled: config.PLUGGY_SYNC_ENABLED,
+          intervalMinutes: resolveSyncIntervalMinutes(config),
+          nextRunAt: scheduler.getNextRunAt(),
+          latestRun: latestRun ?? null,
+        },
       }
     })
 
@@ -244,7 +320,11 @@ export function registerFinanceRoutes(app: FastifyInstance, deps: FinanceRouteDe
             : row.category_original
               ? categories.findByName(row.category_original)[0] ?? null
               : null
-          return serializePluggyTransaction(row, effective)
+          return serializePluggyTransaction(
+            row,
+            effective,
+            enrichment.getByTransactionId(row.pluggy_transaction_id),
+          )
         }),
         ...manualRows.map(row => serializeManualTransaction(row, lookupCategory(row.category_id))),
       ].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
@@ -328,11 +408,21 @@ export function registerFinanceRoutes(app: FastifyInstance, deps: FinanceRouteDe
 
     financeApp.get('/api/finance/sync/status', async () => {
       const latest = syncRuns.getLatest()
+      const latestMetadata = latest?.metadata ? JSON.parse(latest.metadata) : null
       return {
         latest,
         recent: syncRuns.listRecent(10),
         nextSync: scheduler.getNextRunAt(),
         syncEnabled: config.PLUGGY_SYNC_ENABLED,
+        syncIntervalMinutes: resolveSyncIntervalMinutes(config),
+        metrics: latest
+          ? {
+              transactionsSeen: latestMetadata?.transactionsSeen ?? null,
+              transactionsCreated: latest.transactions_created,
+              transactionsUpdated: latest.transactions_updated,
+              transactionsUnchanged: latestMetadata?.transactionsUnchanged ?? null,
+            }
+          : null,
       }
     })
 
@@ -340,13 +430,16 @@ export function registerFinanceRoutes(app: FastifyInstance, deps: FinanceRouteDe
       const startedAt = Date.now()
       try {
         const run = await syncService.syncAll('manual')
+        const metadata = run.metadata ? JSON.parse(run.metadata) : {}
         return reply.send({
           success: run.status !== 'failed',
           status: run.status,
           items: run.items_processed,
           accounts: run.accounts_processed,
+          transactionsSeen: metadata.transactionsSeen ?? null,
           transactionsCreated: run.transactions_created,
           transactionsUpdated: run.transactions_updated,
+          transactionsUnchanged: metadata.transactionsUnchanged ?? null,
           errorCount: run.error_count,
           durationMs: Date.now() - startedAt,
         })
@@ -453,7 +546,7 @@ export function registerFinanceRoutes(app: FastifyInstance, deps: FinanceRouteDe
         const existing = transactions.getByPluggyId(explicitId)
         if (!existing) return reply.code(404).send({ error: 'transaction_not_found' })
         categoryOverrides.set(explicitId, targetCategory.id, existing.category_original)
-        return reply.send({ updated: serializePluggyTransaction(existing, targetCategory), category: serializeCategory(targetCategory) })
+        return reply.send({ updated: serializePluggyTransaction(existing, targetCategory, enrichment.getByTransactionId(explicitId)), category: serializeCategory(targetCategory) })
       }
 
       // No explicit id: resolve by free-text search across both sources.
@@ -495,7 +588,7 @@ export function registerFinanceRoutes(app: FastifyInstance, deps: FinanceRouteDe
       }
       const existing = transactions.getByPluggyId(match.id)!
       categoryOverrides.set(match.id, targetCategory.id, existing.category_original)
-      return reply.send({ updated: serializePluggyTransaction(existing, targetCategory), category: serializeCategory(targetCategory) })
+      return reply.send({ updated: serializePluggyTransaction(existing, targetCategory, enrichment.getByTransactionId(match.id)), category: serializeCategory(targetCategory) })
     })
 
     // finance.budget.read

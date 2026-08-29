@@ -4,7 +4,8 @@ import { SyncAlreadyRunningError } from './syncRunsRepository.js'
 
 export interface SchedulerOptions {
   enabled: boolean
-  intervalHours: number
+  /** Sync cadence in minutes (Finance V2 canonical unit). */
+  intervalMinutes: number
   syncService: PluggySyncService
   logger?: SyncLogger
 }
@@ -22,7 +23,7 @@ export class PluggySyncScheduler {
 
   start() {
     if (!this.opts.enabled) return
-    const intervalMs = this.opts.intervalHours * 60 * 60 * 1000
+    const intervalMs = this.opts.intervalMinutes * 60 * 1000
     this.scheduleNext(intervalMs)
     this.timer = setInterval(() => {
       this.scheduleNext(intervalMs)
@@ -45,6 +46,10 @@ export class PluggySyncScheduler {
 
   getNextRunAt(): string | null {
     return this.nextRunAt ? this.nextRunAt.toISOString() : null
+  }
+
+  getIntervalMinutes(): number {
+    return this.opts.intervalMinutes
   }
 
   private scheduleNext(intervalMs: number) {

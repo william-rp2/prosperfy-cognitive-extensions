@@ -26,8 +26,11 @@ const envSchema = z.object({
   // Sync architecture (Conector 200 / Meu Pluggy — sem webhooks, sem plano PRO).
   FINANCE_DB_PATH: z.string().default('./data/financeiro-pessoal.sqlite3'),
   FINANCE_API_TOKEN: z.string().optional(),
-  PLUGGY_SYNC_ENABLED: booleanFromEnv.default(false),
-  PLUGGY_SYNC_INTERVAL_HOURS: z.coerce.number().positive().default(6),
+  PLUGGY_SYNC_ENABLED: booleanFromEnv.default(true),
+  /** Canonical Finance V2 interval (minutes). Prefer over PLUGGY_SYNC_INTERVAL_HOURS. */
+  PLUGGY_SYNC_INTERVAL_MINUTES: z.coerce.number().int().positive().optional(),
+  /** @deprecated Use PLUGGY_SYNC_INTERVAL_MINUTES — kept for backward compatibility. */
+  PLUGGY_SYNC_INTERVAL_HOURS: z.coerce.number().positive().optional(),
   PLUGGY_SYNC_SAFETY_WINDOW_HOURS: z.coerce.number().nonnegative().default(24),
   PLUGGY_SYNC_MAX_CONCURRENT_ITEMS: z.coerce.number().int().positive().default(3),
   PLUGGY_SYNC_STALE_LOCK_MINUTES: z.coerce.number().positive().default(30),
@@ -37,6 +40,13 @@ export type AppConfig = z.infer<typeof envSchema>
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   return envSchema.parse(env)
+}
+
+/** Resolves sync cadence in minutes — MINUTES wins, then legacy HOURS, then F1 default 15. */
+export function resolveSyncIntervalMinutes(config: AppConfig): number {
+  if (config.PLUGGY_SYNC_INTERVAL_MINUTES != null) return config.PLUGGY_SYNC_INTERVAL_MINUTES
+  if (config.PLUGGY_SYNC_INTERVAL_HOURS != null) return Math.round(config.PLUGGY_SYNC_INTERVAL_HOURS * 60)
+  return 15
 }
 
 export function getConfigStatus(config: AppConfig) {

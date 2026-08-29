@@ -2,6 +2,7 @@ import type { CreditCardBills, Investment } from 'pluggy-sdk'
 
 import type { PluggySyncClient } from '../pluggy.js'
 import type { AccountsRepository } from './accountsRepository.js'
+import type { ClassificationService } from './classificationService.js'
 import { mapWithConcurrency } from './concurrency.js'
 import type { ItemsRepository } from './itemsRepository.js'
 import type { ProductsRepository } from './productsRepository.js'
@@ -28,13 +29,16 @@ export interface PluggySyncServiceOptions {
   safetyWindowHours: number
   maxConcurrentItems: number
   logger?: SyncLogger
+  classification?: ClassificationService
 }
 
 interface ItemSyncResult {
   itemId: string
   accountsProcessed: number
+  transactionsSeen: number
   transactionsCreated: number
   transactionsUpdated: number
+  transactionsUnchanged: number
   error?: string
 }
 
@@ -71,8 +75,10 @@ export class PluggySyncService {
 
   private finishRun(runId: string, itemsProcessed: number, results: ItemSyncResult[], startedAt: number) {
     const accountsProcessed = results.reduce((sum, r) => sum + r.accountsProcessed, 0)
+    const transactionsSeen = results.reduce((sum, r) => sum + r.transactionsSeen, 0)
     const transactionsCreated = results.reduce((sum, r) => sum + r.transactionsCreated, 0)
     const transactionsUpdated = results.reduce((sum, r) => sum + r.transactionsUpdated, 0)
+    const transactionsUnchanged = results.reduce((sum, r) => sum + r.transactionsUnchanged, 0)
     const errors = results.filter(r => r.error)
 
     let status: SyncStatus = 'success'
@@ -86,7 +92,11 @@ export class PluggySyncService {
       transactionsUpdated,
       errorCount: errors.length,
       errorSummary: errors.length ? errors.map(e => ({ itemId: e.itemId, message: e.error })) : undefined,
-      metadata: { durationMs: Date.now() - startedAt },
+      metadata: {
+        durationMs: Date.now() - startedAt,
+        transactionsSeen,
+        transactionsUnchanged,
+      },
     })
   }
 
@@ -100,7 +110,7 @@ export class PluggySyncService {
       const message = error instanceof Error ? error.message : 'Erro desconhecido'
       this.opts.logger?.error?.({ err: error, pluggyItemId }, 'pluggy sync: item failed')
       this.opts.items.setErrorSummary(pluggyItemId, message)
-      return { itemId: pluggyItemId, accountsProcessed: 0, transactionsCreated: 0, transactionsUpdated: 0, error: message }
+      return { itemId: pluggyItemId, accountsProcessed: 0, transactionsSeen: 0, transactionsCreated: 0, transactionsUpdated: 0, transactionsUnchanged: 0, error: message }
     }
   }
 
@@ -119,15 +129,17 @@ export class PluggySyncService {
 
     if (UNSYNCABLE_STATUSES.has(item.status)) {
       this.opts.items.touchSynced(pluggyItemId)
-      return { itemId: pluggyItemId, accountsProcessed: 0, transactionsCreated: 0, transactionsUpdated: 0 }
+      return { itemId: pluggyItemId, accountsProcessed: 0, transactionsSeen: 0, transactionsCreated: 0, transactionsUpdated: 0, transactionsUnchanged: 0 }
     }
 
     const accounts = await withRetry(() => this.opts.pluggy.fetchAccounts(pluggyItemId), {
       onRetry: this.logRetry(pluggyItemId, 'fetchAccounts'),
     })
 
+    let transactionsSeen = 0
     let transactionsCreated = 0
     let transactionsUpdated = 0
+    let transactionsUnchanged = 0
 
     for (const account of accounts) {
       this.opts.accounts.upsertAccount({
@@ -153,7 +165,7 @@ export class PluggySyncService {
       })
 
       for (const transaction of transactions) {
-        const { created } = this.opts.transactions.upsertTransaction({
+        const { delta, row } = this.opts.transactions.upsertTransaction({
           pluggyTransactionId: transaction.id,
           pluggyAccountId: account.id,
           description: transaction.description,
@@ -168,8 +180,14 @@ export class PluggySyncService {
           balanceCents: transaction.balance != null ? toCents(transaction.balance) : null,
           rawData: transaction,
         })
-        if (created) transactionsCreated += 1
-        else transactionsUpdated += 1
+        transactionsSeen += 1
+        if (delta === 'created') transactionsCreated += 1
+        else if (delta === 'updated') transactionsUpdated += 1
+        else transactionsUnchanged += 1
+
+        if (this.opts.classification && delta !== 'unchanged') {
+          this.opts.classification.classifyIfNeeded(row)
+        }
       }
 
       if (account.type === 'CREDIT') await this.syncCreditCardBills(pluggyItemId, account.id)
@@ -178,7 +196,14 @@ export class PluggySyncService {
     await this.syncInvestments(pluggyItemId)
 
     this.opts.items.touchSynced(pluggyItemId)
-    return { itemId: pluggyItemId, accountsProcessed: accounts.length, transactionsCreated, transactionsUpdated }
+    return {
+      itemId: pluggyItemId,
+      accountsProcessed: accounts.length,
+      transactionsSeen,
+      transactionsCreated,
+      transactionsUpdated,
+      transactionsUnchanged,
+    }
   }
 
   /** Not all connectors/plans expose bills — a failure here is logged and swallowed, never fails the whole item. */
