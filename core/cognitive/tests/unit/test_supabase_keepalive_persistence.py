@@ -113,3 +113,59 @@ async def test_sucesso_persiste_antes_do_backoff_do_projeto_que_falha(monkeypatc
 
     assert resultado.success_count == 1
     assert resultado.failure_count == 1
+
+class _ProjectRepoContador(_ProjectRepoFake):
+    """Conta quantas vezes record_run_result foi chamado por projeto — e o
+    unico ponto que incrementa consecutive_failures."""
+
+    def __init__(self, projetos):
+        super().__init__(projetos)
+        self.chamadas: list[tuple[str, str]] = []
+
+    async def record_run_result(self, **kwargs):
+        self.chamadas.append((kwargs["project_id"], kwargs["run_status"]))
+        return {"consecutive_failures": 1 if kwargs.get("run_status") != "success" else 0}
+
+
+@pytest.mark.asyncio
+async def test_consecutive_failures_incrementa_uma_vez_por_rodada_nao_por_tentativa(monkeypatch):
+    """Semantica exigida: 1 rodada + N tentativas falhas = +1 consecutive_failure.
+
+    record_run_result e o UNICO ponto que faz
+    `consecutive_failures = consecutive_failures + 1`. Se ele fosse chamado
+    por tentativa em vez de por resultado final, uma rodada com 4 passagens
+    falhas incrementaria +4 e dispararia o alerta de '2 falhas consecutivas'
+    dentro de uma unica rodada — falso positivo.
+    """
+    relogio: list[str] = []
+    projetos = [_projeto("cccccccccccccccccccc", "sempre-falha")]
+    repo = _ProjectRepoContador(projetos)
+
+    service = SupabaseKeepaliveService(
+        orchestrator=object(),
+        project_repo=repo,
+        run_repo=_RunRepoEspiao(relogio),
+        retry_delays_seconds=(0.01, 0.01, 0.01),
+    )
+
+    tentativas: list[int] = []
+
+    async def _attempt_fake(self, *, tenant_id, project, actor_id, profile, correlation_id):
+        tentativas.append(1)
+        return "failure", 0, "CONN_TIMEOUT_544", "timeout"
+
+    async def _sleep_noop(segundos: float) -> None:
+        return None
+
+    monkeypatch.setattr(SupabaseKeepaliveService, "_attempt_once", _attempt_fake, raising=True)
+    monkeypatch.setattr(asyncio, "sleep", _sleep_noop)
+
+    await service.run_all(tenant_id="t1")
+
+    assert len(tentativas) == 4, "esperado 4 tentativas (1 inicial + 3 retries)"
+    assert len(repo.chamadas) == 1, (
+        f"record_run_result chamado {len(repo.chamadas)}x — deve ser 1x por rodada, "
+        "nunca por tentativa, senao consecutive_failures inflaciona e o alerta "
+        "de 2 falhas consecutivas dispara dentro de uma unica rodada"
+    )
+    assert repo.chamadas[0][1] == "failure"
