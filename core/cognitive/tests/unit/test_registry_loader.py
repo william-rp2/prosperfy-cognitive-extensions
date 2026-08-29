@@ -85,15 +85,28 @@ def test_browser_read_is_allow_by_default():
     assert cap.tools[0]["name"] == "browser_read_links"
 
 
-def test_browser_act_and_account_are_deny_by_default():
-    """doc 00: browser.act/browser.account default_policy=deny -- grant
-    explicito obrigatorio (matriz 6.2 e enforced no worker, nao aqui)."""
+def test_browser_act_and_account_require_human_confirmation():
+    """browser.act/browser.account NUNCA executam sem passar por humano.
+
+    A track BH entregou os dois como default_policy=deny. O owner autorizou
+    habilita-los no Homolog em 29/08/2026, mas explicitamente NAO como allow:
+    passaram a "confirm". Nao e afrouxamento — em CONFIRM o PolicyEngine nao
+    chama o adapter, devolve pending_confirmation + audit_id e espera
+    aprovacao humana explicita (ver contracts/policy.py).
+
+    A propriedade de seguranca que este teste protege e "nunca allow": se
+    alguem promover qualquer uma das duas para allow, uma interacao de
+    browser (preencher formulario, criar conta) passaria a executar sozinha.
+    """
     caps = load_all_capabilities()
     by_id = {c.id: c for c in caps}
-    assert by_id["browser.act"].default_policy == "deny"
-    assert by_id["browser.account"].default_policy == "deny"
-    assert by_id["browser.act"].adapter == "browser_harness"
-    assert by_id["browser.account"].adapter == "browser_harness"
+    for cap_id in ("browser.act", "browser.account"):
+        assert by_id[cap_id].default_policy == "confirm"
+        assert by_id[cap_id].default_policy != "allow", (
+            f"{cap_id} nunca pode ser allow — executaria interacao de browser "
+            "sem confirmacao humana"
+        )
+        assert by_id[cap_id].adapter == "browser_harness"
 
 
 def test_browser_capabilities_redact_secret_like_fields():

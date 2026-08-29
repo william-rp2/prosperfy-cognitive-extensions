@@ -17,7 +17,14 @@ description: >
   qualquer sinal de cobranca/cartao/trial pago, ou exclusao de conta —
   nesses casos devolve blocked_reason e aguarda humano.
 adapter: "browser_harness"
-default_policy: "deny"
+# POLICY (decisao do owner, 29/08/2026): default_policy passou de "deny"
+# para "confirm". Nao e afrouxamento — o PolicyEngine em CONFIRM NAO
+# executa o adapter: devolve pending_confirmation + audit_id e espera
+# aprovacao humana explicita. Os limites duros do worker seguem valendo
+# DEPOIS da confirmacao: MFA, CAPTCHA, verificacao por e-mail, pagamento,
+# trial com cartao e termos atipicos param com submitted=false e
+# blocked_reason, e nunca sao contornados.
+default_policy: "confirm"
 
 required_scopes:
   - "browser:account"
