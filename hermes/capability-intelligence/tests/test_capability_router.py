@@ -96,6 +96,24 @@ cases = [
     # WORK_MANAGEMENT negativos (conceitual → NORMAL)
     ("O que é um projeto?", "NORMAL"),
     ("Como funciona um kanban?", "NORMAL"),
+    # FINANCE (P2 — doc 00 §7, contratos conversacionais)
+    ("Quanto gastei este mês?", "FINANCE"),
+    ("Quanto entrou esta semana?", "FINANCE"),
+    ("Registre R$ 89 de combustível hoje.", "FINANCE"),
+    ("Registre 120 reais, mas foi ontem.", "FINANCE"),
+    ("Quanto gastei com alimentação em agosto?", "FINANCE"),
+    ("Essa compra de 54,90 do X é Alimentação.", "FINANCE"),
+    ("Meu orçamento de alimentação este mês é R$ 800.", "FINANCE"),
+    ("Como está meu orçamento?", "FINANCE"),
+    ("Sincronize meus bancos.", "FINANCE"),
+    ("Quero ver meu extrato do mês.", "FINANCE"),
+    ("Qual o saldo da minha conta?", "FINANCE"),
+    ("Quais contas vencem esta semana?", "FINANCE"),
+    # FINANCE negativos (conceitual → NORMAL; nunca reivindica P0/P1)
+    ("O que é orçamento?", "NORMAL"),
+    ("Como funciona um extrato bancário?", "NORMAL"),
+    ("Pausar o projeto Supabase.", "NORMAL"),
+    ("Crie uma tarefa no kanban.", "NORMAL"),
 ]
 
 fails = 0
@@ -111,6 +129,7 @@ assert route_toolsets("MEMORY") == ["memory"]
 assert route_toolsets("SKILLS") == ["skills"]
 assert route_toolsets("SUPABASE_OPS") == ["supabase_ops"]
 assert route_toolsets("WORK_MANAGEMENT") == ["work_management"]
+assert route_toolsets("FINANCE") == ["finance"]
 
 print(f"TOTAL={len(cases)} FAILS={fails}")
 print("ROUTE_TOOLSETS_OK")

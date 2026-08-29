@@ -1,0 +1,46 @@
+# Capability: finance.sync.status
+# P2 — Financeiro pelo WhatsApp.
+
+id: "finance.sync.status"
+version: "1.0.0"
+domain: "finance"
+description: >
+  Consulta o status da última sincronização com o Pluggy e o histórico
+  recente de execuções.
+adapter: "finance_api"
+default_policy: "allow"
+
+required_scopes:
+  - "finance:read"
+
+input_schema:
+  type: object
+  properties: {}
+
+output_schema:
+  type: object
+  properties:
+    latest:
+      type: object
+    recent:
+      type: array
+    nextSync:
+      type: string
+    syncEnabled:
+      type: boolean
+
+tools: []
+
+idempotency_behavior: "return_cached"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"

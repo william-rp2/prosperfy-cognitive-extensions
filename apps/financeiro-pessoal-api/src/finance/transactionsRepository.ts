@@ -161,4 +161,57 @@ export class TransactionsRepository {
       .get(startDate, endDate) as { income: number; expense: number }
     return row
   }
+
+  /**
+   * Same as sumByDateRange but scoped to one internal category — "effective"
+   * category is the override (financial_category_overrides) when present,
+   * else a case-insensitive name match against Pluggy's own category_original.
+   * Unmatched rows (no override, no name match) are excluded — they still
+   * count in the unscoped sumByDateRange/general budget.
+   */
+  sumByEffectiveCategoryAndDateRange(categoryId: string, startDate: string, endDate: string): { income: number; expense: number } {
+    const row = this.db
+      .prepare(
+        `SELECT
+           COALESCE(SUM(CASE WHEN t.type = 'CREDIT' THEN ABS(t.amount_cents) ELSE 0 END), 0) as income,
+           COALESCE(SUM(CASE WHEN t.type = 'DEBIT' THEN ABS(t.amount_cents) ELSE 0 END), 0) as expense
+         FROM financial_transactions t
+         LEFT JOIN financial_category_overrides o ON o.pluggy_transaction_id = t.pluggy_transaction_id
+         LEFT JOIN financial_categories c ON lower(c.name) = lower(t.category_original)
+         WHERE t.deleted_at IS NULL AND t.date >= ? AND t.date <= ? AND COALESCE(o.category_id, c.id) = ?`,
+      )
+      .get(startDate, endDate, categoryId) as { income: number; expense: number }
+    return row
+  }
+
+  /** Same effective-category resolution as sumByEffectiveCategoryAndDateRange, for listing instead of summing. */
+  listByEffectiveCategory(
+    categoryId: string,
+    filters: { startDate?: string; endDate?: string; limit?: number; offset?: number } = {},
+  ): FinancialTransactionRow[] {
+    const conditions: string[] = ['t.deleted_at IS NULL', 'COALESCE(o.category_id, c.id) = @categoryId']
+    const params: Record<string, unknown> = { categoryId }
+
+    if (filters.startDate) {
+      conditions.push('t.date >= @startDate')
+      params.startDate = filters.startDate
+    }
+    if (filters.endDate) {
+      conditions.push('t.date <= @endDate')
+      params.endDate = filters.endDate
+    }
+
+    const limit = Math.min(filters.limit ?? 200, 1000)
+    const offset = filters.offset ?? 0
+
+    return this.db
+      .prepare(
+        `SELECT t.* FROM financial_transactions t
+         LEFT JOIN financial_category_overrides o ON o.pluggy_transaction_id = t.pluggy_transaction_id
+         LEFT JOIN financial_categories c ON lower(c.name) = lower(t.category_original)
+         WHERE ${conditions.join(' AND ')}
+         ORDER BY t.date DESC, t.id DESC LIMIT @limit OFFSET @offset`,
+      )
+      .all({ ...params, limit, offset }) as FinancialTransactionRow[]
+  }
 }

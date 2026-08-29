@@ -16,8 +16,11 @@ from contextlib import asynccontextmanager
 
 from ..adapters.browser_harness.client import BrowserAdapter
 from ..adapters.browser_harness.mock import MockBrowserAdapter
+from ..adapters.finance_api.client import FinanceApiAdapter
+from ..adapters.finance_api.mock import MockFinanceApiAdapter
 from ..adapters.prosperfy_skills.client import ProsperfySkillsAdapter
 from ..adapters.prosperfy_skills.mock import MockSkillsAdapter
+from ..adapters.routing import RoutingSkillsAdapter
 from ..audit.writer import InMemoryAuditWriter
 from ..config.runtime import is_database_mode, is_in_memory_mode, require_database_config
 from ..contracts.tenancy import CapabilityGrant
@@ -57,6 +60,23 @@ def _require_live_mcp_secret() -> None:
     )
 
 
+def _require_finance_api_token() -> None:
+    """
+    Fail-closed eager check (mesmo padrão de _require_live_mcp_secret): se
+    FINANCE_API_BASE_URL está configurado (sinal de "quero o FinanceApiAdapter
+    real"), FINANCE_API_TOKEN é obrigatório — recusa a inicialização do
+    gateway inteiro em vez de deixar toda chamada finance.* falhar em
+    runtime com 401. Nunca interpola valor parcial na mensagem.
+    """
+    if os.getenv("FINANCE_API_TOKEN", "").strip():
+        return
+    raise RuntimeError(
+        "FINANCE_API_BASE_URL configurado exige FINANCE_API_TOKEN (env var "
+        "ausente, vazia ou somente espaços) — mesmo service credential que "
+        "apps/financeiro-pessoal-api espera em Authorization: Bearer <token>."
+    )
+
+
 def _build_services(app: FastAPI) -> None:
     """Constrói e injeta todos os serviços no app.state."""
     require_database_config()
@@ -85,6 +105,31 @@ def _build_services(app: FastAPI) -> None:
         browser_adapter = BrowserAdapter(inner_adapter=skills_adapter, host=browser_worker_host)
     else:
         browser_adapter = MockBrowserAdapter()
+
+    # P2 (Financeiro pelo WhatsApp): capabilities finance.* falam HTTP com
+    # apps/financeiro-pessoal-api — terceiro transporte da arquitetura
+    # ("prosperfy_skills MCP / Composio MCP / HTTP").
+    #
+    # INTEGRAÇÃO: a track P2 chegou com um RoutingSkillsAdapter que
+    # embrulhava o skills_adapter e despachava por PREFIXO de tool_name.
+    # Era o QUARTO mecanismo de dispatch do programa, e desnecessário: os
+    # YAMLs de finance.* já declaram `adapter: "finance_api"`, então o
+    # registry por capability.adapter que as outras três tracks já
+    # compartilham resolve o mesmo problema sem uma segunda camada de
+    # roteamento. Registrado via adapter_registry (e não `adapters=`) porque
+    # é transporte HTTP externo e não pode receber `_ctx_actor_id` injetado.
+    #
+    # adapters/routing.py continua versionado e testado, mas fora do caminho
+    # do gateway — é útil se algum dia um adapter precisar de dispatch por
+    # prefixo dentro de um mesmo capability.adapter.
+    finance_base_url = os.getenv("FINANCE_API_BASE_URL", "").strip()
+    if finance_base_url:
+        _require_finance_api_token()
+        logger.info("FINANCE_API_BASE_URL configurada — usando FinanceApiAdapter real")
+        finance_adapter: FinanceApiAdapter | MockFinanceApiAdapter = FinanceApiAdapter(base_url=finance_base_url)
+    else:
+        logger.info("FINANCE_API_BASE_URL ausente — capabilities finance.* usam MockFinanceApiAdapter")
+        finance_adapter = MockFinanceApiAdapter()
 
     if use_db:
         from ..db.repositories.audit_repo import PostgresAuditWriter
@@ -231,7 +276,10 @@ def _build_services(app: FastAPI) -> None:
         adapters=extra_adapters,
         composio_adapter=composio_adapter,
         registry_adapter=supabase_registry_adapter,
-        adapter_registry={"browser_harness": browser_adapter},
+        adapter_registry={
+            "browser_harness": browser_adapter,
+            "finance_api": finance_adapter,
+        },
     )
 
     if is_in_memory_mode():

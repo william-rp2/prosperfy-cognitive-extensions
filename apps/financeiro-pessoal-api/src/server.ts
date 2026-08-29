@@ -4,8 +4,12 @@ import { z } from 'zod'
 
 import { AppConfig, getConfigStatus, loadConfig } from './config.js'
 import { AccountsRepository } from './finance/accountsRepository.js'
+import { BudgetsRepository } from './finance/budgetsRepository.js'
+import { CategoriesRepository } from './finance/categoriesRepository.js'
+import { CategoryOverridesRepository } from './finance/categoryOverridesRepository.js'
 import { openFinanceDb, type FinanceDb } from './finance/db.js'
 import { ItemsRepository } from './finance/itemsRepository.js'
+import { ManualTransactionsRepository } from './finance/manualTransactionsRepository.js'
 import { PluggySyncService } from './finance/pluggySyncService.js'
 import { ProductsRepository } from './finance/productsRepository.js'
 import { PluggySyncScheduler } from './finance/scheduler.js'
@@ -92,6 +96,10 @@ export function createApp(options: CreateAppOptions = {}) {
   const transactionsRepository = new TransactionsRepository(financeDb)
   const productsRepository = new ProductsRepository(financeDb)
   const syncRunsRepository = new SyncRunsRepository(financeDb)
+  const categoriesRepository = new CategoriesRepository(financeDb)
+  const manualTransactionsRepository = new ManualTransactionsRepository(financeDb)
+  const categoryOverridesRepository = new CategoryOverridesRepository(financeDb)
+  const budgetsRepository = new BudgetsRepository(financeDb)
 
   const app = Fastify({
     logger: {
@@ -136,6 +144,11 @@ export function createApp(options: CreateAppOptions = {}) {
     syncRuns: syncRunsRepository,
     syncService,
     scheduler,
+    categories: categoriesRepository,
+    manualTransactions: manualTransactionsRepository,
+    categoryOverrides: categoryOverridesRepository,
+    budgets: budgetsRepository,
+    products: productsRepository,
   })
 
   app.get('/health', async () => ({ ok: true, app: 'financeiro-pessoal-api' }))

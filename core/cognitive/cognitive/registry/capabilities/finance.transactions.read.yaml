@@ -1,0 +1,73 @@
+# Capability: finance.transactions.read
+# P2 — Financeiro pelo WhatsApp.
+#
+# Extrato: lista/filtra transações Pluggy + manuais (fonte marcada em cada
+# linha via campo "source"). Usado tanto para "quanto gastei com X" quanto
+# para a etapa de busca por texto/valor antes de finance.category.update.
+
+id: "finance.transactions.read"
+version: "1.0.0"
+domain: "finance"
+description: >
+  Lista/filtra transações (Pluggy + manuais) por período, categoria, conta
+  ou texto livre.
+adapter: "finance_api"
+default_policy: "allow"
+
+required_scopes:
+  - "finance:read"
+
+input_schema:
+  type: object
+  properties:
+    account:
+      type: string
+      description: "Filtra por id de conta Pluggy."
+    startDate:
+      type: string
+      description: "Data inicial (ISO 8601 ou YYYY-MM-DD)."
+    endDate:
+      type: string
+      description: "Data final (ISO 8601 ou YYYY-MM-DD)."
+    category:
+      type: string
+      description: "Nome livre de categoria interna (ex: 'Transporte')."
+    categoryId:
+      type: string
+      description: "Id de categoria interna, quando já conhecido."
+    minAmount:
+      type: number
+    maxAmount:
+      type: number
+    search:
+      type: string
+      description: "Busca por texto na descrição."
+    limit:
+      type: integer
+      minimum: 1
+      maximum: 1000
+    offset:
+      type: integer
+      minimum: 0
+
+output_schema:
+  type: object
+  properties:
+    transactions:
+      type: array
+
+tools: []
+
+idempotency_behavior: "return_cached"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"

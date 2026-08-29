@@ -1,0 +1,40 @@
+# Capability: finance.accounts.read
+# P2 — Financeiro pelo WhatsApp.
+
+id: "finance.accounts.read"
+version: "1.0.0"
+domain: "finance"
+description: >
+  Lista contas/cartões sincronizados via Pluggy: saldo, tipo, limite,
+  última sincronização.
+adapter: "finance_api"
+default_policy: "allow"
+
+required_scopes:
+  - "finance:read"
+
+input_schema:
+  type: object
+  properties: {}
+
+output_schema:
+  type: object
+  properties:
+    accounts:
+      type: array
+
+tools: []
+
+idempotency_behavior: "return_cached"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"

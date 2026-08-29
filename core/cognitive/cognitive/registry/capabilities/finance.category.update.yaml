@@ -1,0 +1,72 @@
+# Capability: finance.category.update
+# P2 — Financeiro pelo WhatsApp.
+#
+# Reclassifica UMA transação (Pluggy via override — nunca sobrescreve
+# category_original — ou manual via update direto). doc 00 §7.1: 2+
+# candidatos batendo a busca por texto/valor -> a Finance API responde 409
+# com uma lista curta e NADA é alterado; o specialist deve pedir escolha ao
+# usuário e chamar de novo com transactionId+source explícitos. Nunca
+# escolhe uma transação "no chute".
+
+id: "finance.category.update"
+version: "1.0.0"
+domain: "finance"
+description: >
+  Reclassifica a categoria de uma transação identificada por id, ou por
+  busca (descrição + valor) quando o id ainda não é conhecido.
+adapter: "finance_api"
+default_policy: "allow"
+
+required_scopes:
+  - "finance:write"
+
+input_schema:
+  type: object
+  properties:
+    transactionId:
+      type: string
+      description: "Id da transação (pluggy_transaction_id ou id manual). Se informado, 'source' é obrigatório."
+    source:
+      type: string
+      enum:
+        - "pluggy"
+        - "manual"
+    description:
+      type: string
+      description: "Usado para localizar a transação quando transactionId não é conhecido."
+    amount:
+      type: number
+      description: "Valor em reais, usado junto com description para desambiguar candidatos."
+    startDate:
+      type: string
+    endDate:
+      type: string
+    category:
+      type: string
+      description: "Nome livre da categoria alvo (ex: 'Alimentação')."
+    categoryId:
+      type: string
+
+output_schema:
+  type: object
+  properties:
+    updated:
+      type: object
+    category:
+      type: object
+
+tools: []
+
+idempotency_behavior: "return_cached"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"

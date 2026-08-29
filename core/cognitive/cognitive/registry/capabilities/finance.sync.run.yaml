@@ -1,0 +1,60 @@
+# Capability: finance.sync.run
+# P2 — Financeiro pelo WhatsApp.
+#
+# Dispara um sync manual contra o Pluggy (Meu Pluggy / Conector 200 — sem
+# webhook). Protegido por lock próprio na Finance API (financial_sync_runs,
+# um "running" por vez — segundo pedido concorrente recebe 409). Nunca
+# derruba a query de outros Items por causa de um LOGIN_ERROR isolado.
+
+id: "finance.sync.run"
+version: "1.0.0"
+domain: "finance"
+description: >
+  Dispara sincronização manual com o Pluggy e retorna um resumo (itens,
+  contas, transações criadas/atualizadas, erros). Bloqueado com 409 se já
+  houver um sync em andamento.
+adapter: "finance_api"
+default_policy: "allow"
+
+required_scopes:
+  - "finance:write"
+
+input_schema:
+  type: object
+  properties: {}
+
+output_schema:
+  type: object
+  properties:
+    success:
+      type: boolean
+    status:
+      type: string
+    items:
+      type: integer
+    accounts:
+      type: integer
+    transactionsCreated:
+      type: integer
+    transactionsUpdated:
+      type: integer
+    errorCount:
+      type: integer
+    durationMs:
+      type: integer
+
+tools: []
+
+idempotency_behavior: "reject"
+timeout_seconds: 60
+cost_class: "medium"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"
