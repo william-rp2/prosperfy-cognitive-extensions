@@ -342,18 +342,33 @@ async def _trello_background_loop(app: FastAPI) -> None:
     # retornariam zero para sempre sem nenhum erro visivel.
     tenant_ref = os.getenv("COGNITIVE_DEV_TENANT_ID", "prosperfy")
     if getattr(app.state, "use_db", False):
-        from ..db.repositories.tenancy_repo import TenantRepository
+        # Preferimos o UUID vindo de env a resolver por slug: TenantRepository
+        # .get_by_slug usa admin_connection(), e o processo da API NAO recebe
+        # COGNITIVE_DB_ADMIN_URL de proposito — dar BYPASSRLS ao gateway so
+        # para descobrir um id estavel seria privilegio desnecessario. O UUID
+        # do tenant nao e secret.
+        tenant_uuid = os.getenv("COGNITIVE_TENANT_ID", "").strip()
+        if not tenant_uuid:
+            try:
+                from ..db.repositories.tenancy_repo import TenantRepository
 
-        slug = os.getenv("COGNITIVE_TENANT_SLUG", "prosperfy-homolog")
-        tenant = await TenantRepository().get_by_slug(slug)
-        if tenant is None:
+                slug = os.getenv("COGNITIVE_TENANT_SLUG", "prosperfy-homolog")
+                tenant = await TenantRepository().get_by_slug(slug)
+                tenant_uuid = str(tenant.id) if tenant else ""
+            except Exception as exc:  # noqa: BLE001 — sem admin pool, por exemplo
+                logger.warning(
+                    "trello_background_loop: fallback de slug indisponivel (%s)",
+                    type(exc).__name__,
+                )
+                tenant_uuid = ""
+        if not tenant_uuid:
             logger.error(
-                "trello_background_loop: tenant '%s' nao encontrado — loop encerrado "
-                "(ajuste COGNITIVE_TENANT_SLUG)", slug,
+                "trello_background_loop: tenant nao resolvido — loop encerrado. "
+                "Defina COGNITIVE_TENANT_ID com o UUID do tenant."
             )
             return
-        tenant_ref = str(tenant.id)
-        logger.info("trello_background_loop: tenant=%s (slug=%s) intervalo=%.0fs", tenant_ref, slug, interval)
+        tenant_ref = tenant_uuid
+        logger.info("trello_background_loop: tenant=%s intervalo=%.0fs", tenant_ref, interval)
 
     while True:
         try:

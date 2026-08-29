@@ -57,13 +57,18 @@ def marca(gate: str, ok: bool, detalhe: str = "") -> None:
 
 async def main() -> int:
     await create_pools()
-    tenant = await TenantRepository().get_by_slug(
-        os.getenv("COGNITIVE_TENANT_SLUG", "prosperfy-homolog")
-    )
-    if tenant is None:
-        print("tenant nao encontrado")
-        return 1
-    tenant_id = str(tenant.id)
+    # get_by_slug usa admin_connection(); preferimos o UUID por env, igual ao
+    # loop do gateway, para nao exigir BYPASSRLS neste script.
+    tenant_id = os.getenv("COGNITIVE_TENANT_ID", "").strip()
+    if not tenant_id:
+        tenant = await TenantRepository().get_by_slug(
+            os.getenv("COGNITIVE_TENANT_SLUG", "prosperfy-homolog")
+        )
+        if tenant is None:
+            print("tenant nao encontrado")
+            return 1
+        tenant_id = str(tenant.id)
+    print("tenant:", tenant_id)
 
     binding_repo = TrelloBindingRepository()
     event_repo = WorkEventRepository()
