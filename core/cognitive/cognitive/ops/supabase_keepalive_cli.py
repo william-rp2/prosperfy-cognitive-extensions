@@ -118,7 +118,12 @@ async def _build_service():
         project_repo=SupabaseProjectRepository(),
         run_repo=SupabaseKeepaliveRunRepository(),
     )
-    return service, tenant.id
+    # TenantRepository devolve id como uuid.UUID. Todo o caminho abaixo
+    # (run_all -> repositories -> tenant_transaction) tipa tenant_id como str,
+    # e set_config('app.current_tenant_id', $1, true) exige TEXT — passar o
+    # UUID cru quebra com DataError no primeiro acesso ao banco. Coerção feita
+    # aqui, na fronteira, para o resto do fluxo receber o tipo que declara.
+    return service, str(tenant.id)
 
 
 async def _run() -> int:

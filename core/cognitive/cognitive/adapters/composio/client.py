@@ -47,6 +47,17 @@ from .guard import guard_arguments
 
 logger = logging.getLogger(__name__)
 
+# Meta-tool do Composio que executa as tools de toolkit. O endpoint MCP so
+# expoe meta-tools; ver comentario em invoke_tool.
+_COMPOSIO_EXECUTOR = "COMPOSIO_MULTI_EXECUTE_TOOL"
+
+# Nomes internos (validados pelo guard) -> nomes que o toolkit Composio espera.
+# O guard continua sendo a fronteira de seguranca e valida 'ref'; a traducao
+# acontece so no transporte.
+_COMPOSIO_ARG_ALIASES: dict[str, dict[str, str]] = {
+    "SUPABASE_RUN_READ_ONLY_QUERY": {"ref": "project_ref"},
+}
+
 _DEFAULT_TIMEOUT = 30.0
 _HEALTH_TIMEOUT = 5.0
 
@@ -115,13 +126,30 @@ class ComposioMcpAdapter:
             tool_name, tenant_id, correlation_id,
         )
 
-        payload = dict(composio_args)
+        # O endpoint MCP do Composio NAO expoe as tools de toolkit
+        # (SUPABASE_*) como tools MCP de primeira classe. Ele expoe 7
+        # meta-tools, e a execucao real passa por COMPOSIO_MULTI_EXECUTE_TOOL.
+        # Chamar SUPABASE_RUN_READ_ONLY_QUERY direto devolve
+        # "-32602 Tool not found" — foi exatamente o que quebrou a primeira
+        # rodada headless. Verificado ao vivo com list_tools() no endpoint.
+        tool_args = dict(composio_args)
+        for interno, externo in _COMPOSIO_ARG_ALIASES.get(tool_name, {}).items():
+            if interno in tool_args:
+                tool_args[externo] = tool_args.pop(interno)
+
+        item: dict[str, Any] = {"tool_slug": tool_name, "arguments": tool_args}
         if account:
-            payload["account"] = account
+            # Com varias contas do mesmo toolkit conectadas, o Composio exige
+            # `account` para desambiguar; sem ele responde "Multiple <toolkit>
+            # accounts connected".
+            item["account"] = account
+        payload = {"tools": [item], "sync_response_to_workbench": False}
 
         try:
             async with self._build_client() as client:
-                result = await client.call_tool(tool_name, payload, raise_on_error=False)
+                result = await client.call_tool(
+                    _COMPOSIO_EXECUTOR, payload, raise_on_error=False
+                )
         except Exception as exc:
             logger.error(
                 "ComposioMcpAdapter transport error tool=%s type=%s tenant=%s correlation=%s",
@@ -158,6 +186,34 @@ class ComposioMcpAdapter:
                 f"Compose MCP tool '{tool_name}' retornou payload em formato não "
                 "reconhecido (nem sucesso, nem envelope de erro esperado)"
             )
+
+        # Desembrulha o envelope do COMPOSIO_MULTI_EXECUTE_TOOL:
+        #   {"data": {"results": [{"response": {"successful": .., "data": ..},
+        #                          "error": ..}]}, "successful": ..}
+        # Um erro do toolkit chega DENTRO de results[0], com o envelope externo
+        # ainda podendo parecer bem-sucedido — por isso a inspecao e explicita,
+        # nunca "assumir sucesso se nao levantou".
+        inner = result_payload.get("data")
+        if isinstance(inner, dict) and isinstance(inner.get("results"), list):
+            results = inner["results"]
+            if not results:
+                raise RuntimeError(
+                    f"Compose MCP tool '{tool_name}': COMPOSIO_MULTI_EXECUTE_TOOL "
+                    "retornou results vazio"
+                )
+            first = results[0] or {}
+            item_error = first.get("error")
+            response = first.get("response") or {}
+            if item_error or response.get("successful") is False:
+                detalhe = str(item_error or response.get("error") or "tool call failed")
+                logger.error(
+                    "ComposioMcpAdapter toolkit-level error tool=%s tenant=%s correlation=%s",
+                    tool_name, tenant_id, correlation_id,
+                )
+                raise RuntimeError(
+                    f"Compose MCP tool '{tool_name}' negado/falhou: {detalhe[:200]}"
+                )
+            return {"success": True, "data": response.get("data", response)}
 
         if result_payload.get("status") == "error" or result_payload.get("successful") is False:
             error_info = result_payload.get("error")
