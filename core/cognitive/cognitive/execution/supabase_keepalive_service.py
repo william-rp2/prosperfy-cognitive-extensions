@@ -210,21 +210,30 @@ class SupabaseKeepaliveService:
                     )
                     if pass_index < last_pass:
                         still_pending.append(ref)
-            pending_refs = still_pending
+                        continue
 
-        for entry in state.values():
-            outcome = await self._finalize(
-                tenant_id=tenant_id,
-                project=entry["project"],
-                run_started_at=entry["run_started_at"],
-                status=entry["status"],
-                latency_ms=entry["latency_ms"],
-                error_code=entry["error_code"],
-                error_message=entry["error_message"],
-                triggered_by=triggered_by,
-                correlation_id=entry["correlation_id"],
-            )
-            result.outcomes.append(outcome)
+                # Persistência incremental: o resultado deste projeto já é
+                # FINAL (sucesso, ou falha na última passagem), então grava
+                # agora em vez de esperar a rodada inteira.
+                #
+                # Antes, todo o _finalize acontecia depois do último retry.
+                # Com a política 1m/5m/30m, 30 sucessos obtidos na passagem 1
+                # ficavam ~36 minutos apenas em memória, e um crash durante o
+                # backoff apagava a evidência de todos eles. O sucesso de um
+                # projeto não tem por que esperar o retry de outro.
+                outcome = await self._finalize(
+                    tenant_id=tenant_id,
+                    project=entry["project"],
+                    run_started_at=entry["run_started_at"],
+                    status=entry["status"],
+                    latency_ms=entry["latency_ms"],
+                    error_code=entry["error_code"],
+                    error_message=entry["error_message"],
+                    triggered_by=triggered_by,
+                    correlation_id=entry["correlation_id"],
+                )
+                result.outcomes.append(outcome)
+            pending_refs = still_pending
 
         result.ended_at = datetime.now(timezone.utc)
         logger.info(
