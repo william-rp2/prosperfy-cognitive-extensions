@@ -41,6 +41,16 @@ import { Card } from './components/ui/card'
 import { Input } from './components/ui/input'
 import { PluggyPocPage } from './components/PluggyPocPage'
 import {
+  ConnectedCardsScreen,
+  ConnectedDashboardScreen,
+  ConnectedIntegrationsScreen,
+  ConnectedMonthlyScreen,
+  ConnectedTransactionsScreen,
+  DeferredEmptyScreen,
+  financeDemoMode,
+  useCurrentMonthLabel,
+} from './components/finance/ConnectedScreens'
+import {
   cardBills,
   cardPurchases,
   categories,
@@ -388,31 +398,34 @@ function HermesPanel({ title = 'Análise do Hermes' }: { title?: string }) {
 }
 
 function DashboardScreen() {
-  return (
-    <div className="space-y-6">
-      <MetricGrid />
-      <div className="grid gap-6 xl:grid-cols-[1.4fr_0.8fr]">
-        <Card>
-          <p className="text-sm font-bold uppercase tracking-[0.18em] text-[#009688]">Evolução resumida</p>
-          <div className="mt-6 grid h-56 grid-cols-6 items-end gap-3">
-            {[44, 60, 52, 70, 64, 78].map((height, index) => (
-              <div key={index} className="rounded-t-3xl bg-gradient-to-t from-[#341539] to-[#00bcd4]" style={{ height: `${height}%` }} />
-            ))}
-          </div>
-          <p className="mt-4 text-sm text-[#76677d]">Gráfico fictício de saldo livre e reservas nos últimos 6 meses.</p>
-        </Card>
-        <div className="space-y-4">
-          <HermesPanel />
+  if (financeDemoMode) {
+    return (
+      <div className="space-y-6">
+        <MetricGrid />
+        <div className="grid gap-6 xl:grid-cols-[1.4fr_0.8fr]">
           <Card>
-            <p className="font-black text-[#231529]">Próximos compromissos</p>
-            {['Fatura Nubank — R$ 1.420', 'Parcela empréstimo — R$ 800', 'Material escolar — R$ 300'].map(item => (
-              <div key={item} className="mt-3 rounded-2xl border border-[#eadfec] bg-white/70 px-4 py-3 text-sm font-semibold text-[#4b1f52]">{item}</div>
-            ))}
+            <p className="text-sm font-bold uppercase tracking-[0.18em] text-[#009688]">Evolução resumida</p>
+            <div className="mt-6 grid h-56 grid-cols-6 items-end gap-3">
+              {[44, 60, 52, 70, 64, 78].map((height, index) => (
+                <div key={index} className="rounded-t-3xl bg-gradient-to-t from-[#341539] to-[#00bcd4]" style={{ height: `${height}%` }} />
+              ))}
+            </div>
+            <p className="mt-4 text-sm text-[#76677d]">Gráfico fictício de saldo livre e reservas nos últimos 6 meses.</p>
           </Card>
+          <div className="space-y-4">
+            <HermesPanel />
+            <Card>
+              <p className="font-black text-[#231529]">Próximos compromissos</p>
+              {['Fatura Nubank — R$ 1.420', 'Parcela empréstimo — R$ 800', 'Material escolar — R$ 300'].map(item => (
+                <div key={item} className="mt-3 rounded-2xl border border-[#eadfec] bg-white/70 px-4 py-3 text-sm font-semibold text-[#4b1f52]">{item}</div>
+              ))}
+            </Card>
+          </div>
         </div>
       </div>
-    </div>
-  )
+    )
+  }
+  return <ConnectedDashboardScreen />
 }
 
 function CardStat({ label, value, helper, tone }: { label: string; value: string; helper: string; tone?: string }) {
@@ -427,6 +440,9 @@ function CardStat({ label, value, helper, tone }: { label: string; value: string
 }
 
 function MonthlyScreen({ monthOffset, setMonthOffset }: { monthOffset: number; setMonthOffset: (n: number) => void }) {
+  const liveMonth = useCurrentMonthLabel(monthOffset)
+  if (!financeDemoMode) return <ConnectedMonthlyScreen month={liveMonth} />
+
   const [categoryFilter, setCategoryFilter] = useState('Todas')
   const [statusFilter, setStatusFilter] = useState('Todos')
   const [personFilter, setPersonFilter] = useState('Todos')
@@ -643,6 +659,9 @@ function MonthlyScreen({ monthOffset, setMonthOffset }: { monthOffset: number; s
 }
 
 function DecisionsScreen() {
+  if (!financeDemoMode) {
+    return <DeferredEmptyScreen title="Central de Decisões" description="Funcionalidade completa prevista para fases futuras. Nenhum dado fictício é exibido em runtime real." />
+  }
   return (
     <div className="space-y-4">
       {decisions.map(decision => (
@@ -668,6 +687,9 @@ function DecisionsScreen() {
 }
 
 function ReservesScreen() {
+  if (!financeDemoMode) {
+    return <DeferredEmptyScreen title="Reservas e Metas" description="Backend de reservas não faz parte da F1. Conecte contas e use Visão Mensal para dados reais de orçamento." />
+  }
   return (
     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
       {reserves.map(reserve => {
@@ -688,10 +710,16 @@ function ReservesScreen() {
 }
 
 function TransactionsScreen() {
-  return <DataTable columns={['Data', 'Descrição', 'Categoria', 'Destino financeiro', 'Instituição', 'Tipo', 'Valor', 'Origem', 'Vínculo']} rows={transactions.map(t => [t.date, t.description, t.category, t.destination, t.institution, t.type, t.value, t.origin, t.link])} />
+  if (financeDemoMode) {
+    return <DataTable columns={['Data', 'Descrição', 'Categoria', 'Destino financeiro', 'Instituição', 'Tipo', 'Valor', 'Origem', 'Vínculo']} rows={transactions.map(t => [t.date, t.description, t.category, t.destination, t.institution, t.type, t.value, t.origin, t.link])} />
+  }
+  return <ConnectedTransactionsScreen />
 }
 
 function DebtsScreen() {
+  if (!financeDemoMode) {
+    return <DeferredEmptyScreen title="Dívidas e Empréstimos" description="Recebíveis e settlements completos entram em fases futuras (F3+)." />
+  }
   const [tab, setTab] = useState<'receive' | 'loans'>('receive')
   return (
     <div className="space-y-5">
@@ -705,25 +733,31 @@ function DebtsScreen() {
 }
 
 function CardsScreen() {
-  return (
-    <div className="space-y-5">
-      <div className="grid gap-4 md:grid-cols-2">
-        {cardBills.map(card => (
-          <Card key={card.card} className="p-5">
-            <p className="text-xs font-black uppercase tracking-[0.18em] text-[#83358F]">{card.status}</p>
-            <h3 className="mt-2 text-xl font-black text-[#231529]">{card.card}</h3>
-            <p className="mt-3 text-sm text-[#76677d]">Limite {card.limit}</p>
-            <p className="mt-2 text-3xl font-black text-[#341539]">{card.current}</p>
-            <p className="text-sm text-[#76677d]">Próxima fatura {card.next}</p>
-          </Card>
-        ))}
+  if (financeDemoMode) {
+    return (
+      <div className="space-y-5">
+        <div className="grid gap-4 md:grid-cols-2">
+          {cardBills.map(card => (
+            <Card key={card.card} className="p-5">
+              <p className="text-xs font-black uppercase tracking-[0.18em] text-[#83358F]">{card.status}</p>
+              <h3 className="mt-2 text-xl font-black text-[#231529]">{card.card}</h3>
+              <p className="mt-3 text-sm text-[#76677d]">Limite {card.limit}</p>
+              <p className="mt-2 text-3xl font-black text-[#341539]">{card.current}</p>
+              <p className="text-sm text-[#76677d]">Próxima fatura {card.next}</p>
+            </Card>
+          ))}
+        </div>
+        <DataTable columns={['Compra', 'Cartão', 'Categoria', 'Parcela', 'Valor', 'Vínculo']} rows={cardPurchases.map(purchase => [purchase.purchase, purchase.card, purchase.category, purchase.installment, purchase.value, purchase.link])} />
       </div>
-      <DataTable columns={['Compra', 'Cartão', 'Categoria', 'Parcela', 'Valor', 'Vínculo']} rows={cardPurchases.map(purchase => [purchase.purchase, purchase.card, purchase.category, purchase.installment, purchase.value, purchase.link])} />
-    </div>
-  )
+    )
+  }
+  return <ConnectedCardsScreen />
 }
 
 function DocumentsScreen() {
+  if (!financeDemoMode) {
+    return <DeferredEmptyScreen title="Notas e Documentos" description="OCR, email e vision não fazem parte da F1." />
+  }
   return (
     <div className="grid gap-5 xl:grid-cols-[0.8fr_1.2fr]">
       <Card className="grid min-h-80 place-items-center border-dashed bg-[#fffafd]/70 text-center">
@@ -748,21 +782,24 @@ function DocumentsScreen() {
 }
 
 function IntegrationsScreen() {
-  return (
-    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-      {integrations.map(integration => (
-        <Card key={integration.name} className="p-5">
-          <Landmark className="h-6 w-6 text-[#83358F]" />
-          <h3 className="mt-4 text-xl font-black text-[#231529]">{integration.name}</h3>
-          <p className="mt-1 text-sm font-semibold text-[#009688]">{integration.kind}</p>
-          <p className="mt-4 text-sm text-[#76677d]">Status: {integration.status}</p>
-          <p className="text-sm text-[#76677d]">Última sync: {integration.sync}</p>
-          <p className="text-sm text-[#76677d]">Próxima: {integration.next}</p>
-          <Button className="mt-5 w-full" size="sm" type="button" variant="secondary">Atualizar agora</Button>
-        </Card>
-      ))}
-    </div>
-  )
+  if (financeDemoMode) {
+    return (
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {integrations.map(integration => (
+          <Card key={integration.name} className="p-5">
+            <Landmark className="h-6 w-6 text-[#83358F]" />
+            <h3 className="mt-4 text-xl font-black text-[#231529]">{integration.name}</h3>
+            <p className="mt-1 text-sm font-semibold text-[#009688]">{integration.kind}</p>
+            <p className="mt-4 text-sm text-[#76677d]">Status: {integration.status}</p>
+            <p className="text-sm text-[#76677d]">Última sync: {integration.sync}</p>
+            <p className="text-sm text-[#76677d]">Próxima: {integration.next}</p>
+            <Button className="mt-5 w-full" size="sm" type="button" variant="secondary">Atualizar agora</Button>
+          </Card>
+        ))}
+      </div>
+    )
+  }
+  return <ConnectedIntegrationsScreen />
 }
 
 function SettingsScreen() {
@@ -863,7 +900,11 @@ function AdminDashboard({ session, onLogout }: { session: AuthSession; onLogout:
             <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
               <div className="flex flex-col gap-2 min-w-0">
                 <div className="flex flex-wrap items-center gap-3">
-                  <p className="shrink-0 text-sm font-bold uppercase tracking-[0.22em] text-[#009688]">{activeScreen === 'monthly' ? `${monthNames[now.getMonth()]}/${now.getFullYear()} • cenário fictício` : 'Agosto/2026 • cenário fictício'}</p>
+                  <p className="shrink-0 text-sm font-bold uppercase tracking-[0.22em] text-[#009688]">
+                    {financeDemoMode
+                      ? (activeScreen === 'monthly' ? `${monthNames[now.getMonth()]}/${now.getFullYear()} • demo seed` : 'Agosto/2026 • demo seed')
+                      : (activeScreen === 'monthly' ? `${monthNames[now.getMonth()]}/${now.getFullYear()} • dados reais` : 'Finance V2 • dados reais')}
+                  </p>
                   <span className="h-5 w-px bg-[#eadfec]" />
                   <h2 className="text-xl font-black tracking-[-0.03em] text-[#231529]">{activeItem.subtitle}</h2>
                   {activeScreen === 'monthly' && (
@@ -895,7 +936,11 @@ function AdminDashboard({ session, onLogout }: { session: AuthSession; onLogout:
                     </div>
                   )}
                 </div>
-                <p className="max-w-3xl text-sm leading-6 text-[#76677d]">{activeScreen === 'monthly' ? 'Gastos previstos, realizados e saldo projetado.' : 'Protótipo navegável para validar experiência, regras e jornada. Não usa dados financeiros reais, banco definitivo, backend financeiro definitivo ou integrações reais.'}</p>
+                <p className="max-w-3xl text-sm leading-6 text-[#76677d]">
+                  {financeDemoMode
+                    ? (activeScreen === 'monthly' ? 'Gastos previstos, realizados e saldo projetado (seed demo).' : 'Protótipo com seed fictício — defina VITE_FINANCE_DEMO_MODE=false para API real.')
+                    : (activeScreen === 'monthly' ? 'Orçamento, receitas e despesas do backend Finance API.' : 'Telas conectadas à Finance API via proxy server-side (token nunca no browser).')}
+                </p>
               </div>
               <div className="flex flex-wrap gap-2 shrink-0">
                 <span className="rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.14em] text-emerald-700">William</span>
