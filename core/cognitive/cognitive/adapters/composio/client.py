@@ -32,6 +32,7 @@ Ativado apenas quando COGNITIVE_LIVE_COMPOSIO_MCP=1.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any
@@ -175,6 +176,19 @@ class ComposioMcpAdapter:
         result_payload = result.structured_content
         if result_payload is None and isinstance(result.data, dict):
             result_payload = result.data
+        if result_payload is None:
+            # O Composio devolve o envelope como JSON em content[0].text, com
+            # structured_content e data ambos None. Sem este fallback o adapter
+            # descartava uma resposta perfeitamente valida como "formato nao
+            # reconhecido" — comprovado ao vivo contra connect.composio.dev.
+            bruto = getattr(result.content[0], "text", None) if result.content else None
+            if bruto:
+                try:
+                    decodificado = json.loads(bruto)
+                except json.JSONDecodeError:
+                    decodificado = None
+                if isinstance(decodificado, dict):
+                    result_payload = decodificado
 
         if result_payload is None or not isinstance(result_payload, dict):
             logger.error(
