@@ -14,9 +14,10 @@ import { EnrichmentRepository } from './finance/enrichmentRepository.js'
 import { ItemsRepository } from './finance/itemsRepository.js'
 import { ManualTransactionsRepository } from './finance/manualTransactionsRepository.js'
 import { PluggySyncService } from './finance/pluggySyncService.js'
+import { PluggyItemRegistrationService } from './finance/pluggyItemRegistrationService.js'
 import { ProductsRepository } from './finance/productsRepository.js'
 import { PluggySyncScheduler } from './finance/scheduler.js'
-import { SyncRunsRepository, SyncAlreadyRunningError } from './finance/syncRunsRepository.js'
+import { SyncRunsRepository } from './finance/syncRunsRepository.js'
 import { TransactionsRepository } from './finance/transactionsRepository.js'
 import { MissingPluggySecretsError, PluggyPort, PluggySyncClient, SdkPluggyPort } from './pluggy.js'
 import { registerFinanceRoutes } from './routes/finance.js'
@@ -134,6 +135,15 @@ export function createApp(options: CreateAppOptions = {}) {
     classification: classificationService,
   })
 
+  const itemRegistrationService = new PluggyItemRegistrationService({
+    pluggy: pluggySync,
+    items: itemsRepository,
+    syncService,
+    store,
+    clientUserId: config.PLUGGY_CLIENT_USER_ID,
+    logger: app.log,
+  })
+
   const scheduler = new PluggySyncScheduler({
     enabled: config.PLUGGY_SYNC_ENABLED,
     intervalMinutes: resolveSyncIntervalMinutes(config),
@@ -163,6 +173,7 @@ export function createApp(options: CreateAppOptions = {}) {
     products: productsRepository,
     enrichment: enrichmentRepository,
     clarifications: clarificationsRepository,
+    itemRegistration: itemRegistrationService,
   })
 
   app.get('/health', async () => ({ ok: true, app: 'financeiro-pessoal-api' }))
@@ -196,35 +207,21 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_item_payload' })
     const { itemId } = parsed.data
 
-    const item = await store.upsertItem(itemId, config.PLUGGY_CLIENT_USER_ID)
-
-    try {
-      const pluggyItem = await pluggySync.fetchItem(itemId)
-      itemsRepository.upsertItem({
-        pluggyItemId: itemId,
-        connectorId: pluggyItem.connector?.id ?? null,
-        connectorName: pluggyItem.connector?.name ?? null,
-        status: pluggyItem.status,
-        executionStatus: pluggyItem.executionStatus,
-        lastSuccessfulUpdate: pluggyItem.lastUpdatedAt ? new Date(pluggyItem.lastUpdatedAt).toISOString() : null,
-        rawMetadata: { connector: pluggyItem.connector, statusDetail: pluggyItem.statusDetail },
-      })
-    } catch (error) {
-      app.log.warn({ err: error, itemId }, 'pluggy: não foi possível enriquecer item com dados do connector no registro; persistindo com dados mínimos')
-      itemsRepository.upsertItem({ pluggyItemId: itemId, status: 'CREATED' })
+    const result = await itemRegistrationService.registerItem(itemId)
+    if (result.outcome === 'invalid_id') {
+      return reply.code(400).send({ error: 'invalid_item_payload', message: 'ID inválido.' })
     }
 
-    try {
-      await syncService.syncOne(itemId, 'initial')
-    } catch (error) {
-      if (error instanceof SyncAlreadyRunningError) {
-        app.log.warn({ itemId }, 'pluggy: sync imediato pós-connect adiado — outro sync em andamento')
-      } else {
-        app.log.error({ err: error, itemId }, 'pluggy: sync imediato pós-connect falhou')
-      }
-    }
-
-    return reply.send({ item })
+    const item = await store.read().then(data => data.items[itemId] ?? { itemId, status: 'registered' })
+    return reply.send({
+      item,
+      registration: {
+        outcome: result.outcome,
+        connectorName: result.connectorName,
+        syncStatus: result.syncStatus ?? null,
+        message: result.message,
+      },
+    })
   })
 
   app.get('/api/pluggy/snapshot', async (request, reply) => {

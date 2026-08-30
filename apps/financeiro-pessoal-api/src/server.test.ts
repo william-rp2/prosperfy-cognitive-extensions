@@ -5,14 +5,17 @@ import { tmpdir } from 'node:os'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { AppConfig } from './config.js'
-import { PluggyPort } from './pluggy.js'
+import { PluggyPort, type PluggySyncClient } from './pluggy.js'
 import { createApp, CreateAppOptions } from './server.js'
 import { JsonPocStore } from './store.js'
+import type { Item } from 'pluggy-sdk'
 
 let dir: string
 let config: AppConfig
 let store: JsonPocStore
 let openApps: ReturnType<typeof createApp>[]
+
+const TEST_ITEM_UUID = '11111111-1111-4111-8111-111111111111'
 
 /**
  * Every test now opens a real (in-memory) better-sqlite3 handle via createApp. Leaving
@@ -70,6 +73,28 @@ const fakePluggy: PluggyPort = {
   },
 }
 
+const fakePluggySync: PluggySyncClient = {
+  async fetchItem(itemId: string) {
+    return { id: itemId, status: 'UPDATED', connector: { id: 200, name: 'Test Bank' } } as Item
+  },
+  async fetchAccounts() {
+    return []
+  },
+  async fetchAllTransactions() {
+    return []
+  },
+  async fetchCreditCardBills() {
+    return []
+  },
+  async fetchInvestments() {
+    return []
+  },
+}
+
+function buildPluggyApp() {
+  return buildApp({ config, store, pluggy: fakePluggy, pluggySync: fakePluggySync, disableScheduler: true })
+}
+
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'pluggy-poc-test-'))
   config = {
@@ -104,7 +129,7 @@ afterEach(async () => {
 
 describe('Pluggy POC API', () => {
   it('gera connect token sem aceitar clientUserId arbitrário do frontend', async () => {
-    const app = buildApp({ config, store, pluggy: fakePluggy })
+    const app = buildPluggyApp()
     const response = await app.inject({
       method: 'POST',
       url: '/api/connect-token',
@@ -116,19 +141,19 @@ describe('Pluggy POC API', () => {
   })
 
   it('persiste associação de item de forma idempotente por itemId', async () => {
-    const app = buildApp({ config, store, pluggy: fakePluggy })
+    const app = buildPluggyApp()
     for (let i = 0; i < 2; i += 1) {
-      const response = await app.inject({ method: 'POST', url: '/api/pluggy/items', payload: { itemId: 'item-1' } })
+      const response = await app.inject({ method: 'POST', url: '/api/pluggy/items', payload: { itemId: TEST_ITEM_UUID } })
       expect(response.statusCode).toBe(200)
     }
 
     const state = await store.read()
-    expect(Object.keys(state.items)).toEqual(['item-1'])
-    expect(state.items['item-1'].clientUserId).toBe('poc-william')
+    expect(Object.keys(state.items)).toEqual([TEST_ITEM_UUID])
+    expect(state.items[TEST_ITEM_UUID].clientUserId).toBe('poc-william')
   })
 
   it('recupera snapshot de contas, saldo e movimentações com filtro por período', async () => {
-    const app = buildApp({ config, store, pluggy: fakePluggy })
+    const app = buildPluggyApp()
     await store.upsertItem('item-1', 'poc-william')
 
     const response = await app.inject({ method: 'GET', url: '/api/pluggy/snapshot?itemId=item-1&dateFrom=2026-08-01' })
@@ -139,7 +164,7 @@ describe('Pluggy POC API', () => {
   })
 
   it('registra webhook válido, processa item/updated e preserva auditoria', async () => {
-    const app = buildApp({ config, store, pluggy: fakePluggy })
+    const app = buildPluggyApp()
     await store.upsertItem('item-1', 'poc-william')
 
     const response = await app.inject({
@@ -157,7 +182,7 @@ describe('Pluggy POC API', () => {
   })
 
   it('deduplica reenvio do mesmo eventId', async () => {
-    const app = buildApp({ config, store, pluggy: fakePluggy })
+    const app = buildPluggyApp()
     const payload = { eventId: 'event-dup', event: 'item/created', itemId: 'item-1' }
 
     await app.inject({ method: 'POST', url: '/api/webhooks/pluggy', headers: { 'content-type': 'application/json', 'x-pluggy-webhook-secret': 'test-secret' }, payload })
@@ -170,7 +195,7 @@ describe('Pluggy POC API', () => {
   })
 
   it('rejeita webhook com segredo inválido', async () => {
-    const app = buildApp({ config, store, pluggy: fakePluggy })
+    const app = buildPluggyApp()
     const response = await app.inject({
       method: 'POST',
       url: '/api/webhooks/pluggy',
@@ -182,7 +207,7 @@ describe('Pluggy POC API', () => {
   })
 
   it('responde 2xx para validação GET/HEAD/OPTIONS do cadastro de webhook', async () => {
-    const app = buildApp({ config, store, pluggy: fakePluggy })
+    const app = buildPluggyApp()
 
     const getResponse = await app.inject({ method: 'GET', url: '/api/webhooks/pluggy' })
     const headResponse = await app.inject({ method: 'HEAD', url: '/api/webhooks/pluggy' })
@@ -198,7 +223,7 @@ describe('Pluggy POC API', () => {
 
   it('aceita webhook sem header apenas quando modo temporário unsigned está habilitado', async () => {
     config.PLUGGY_ALLOW_UNSIGNED_WEBHOOKS = true
-    const app = buildApp({ config, store, pluggy: fakePluggy })
+    const app = buildPluggyApp()
     const response = await app.inject({
       method: 'POST',
       url: '/api/webhooks/pluggy',
@@ -213,7 +238,7 @@ describe('Pluggy POC API', () => {
   })
 
   it('rejeita webhook com payload inválido', async () => {
-    const app = buildApp({ config, store, pluggy: fakePluggy })
+    const app = buildPluggyApp()
     const response = await app.inject({
       method: 'POST',
       url: '/api/webhooks/pluggy',
@@ -225,7 +250,7 @@ describe('Pluggy POC API', () => {
   })
 
   it('registra item/error e waiting_user_action como estados tratáveis', async () => {
-    const app = buildApp({ config, store, pluggy: fakePluggy })
+    const app = buildPluggyApp()
     await store.upsertItem('item-1', 'poc-william')
 
     await app.inject({ method: 'POST', url: '/api/webhooks/pluggy', headers: { 'content-type': 'application/json', 'x-pluggy-webhook-secret': 'test-secret' }, payload: { eventId: 'event-error', event: 'item/error', itemId: 'item-1', data: { code: 'SAFE_ERROR' } } })
@@ -244,7 +269,7 @@ describe('Pluggy POC API', () => {
   })
 
   it('usa tombstone para transactions/deleted', async () => {
-    const app = buildApp({ config, store, pluggy: fakePluggy })
+    const app = buildPluggyApp()
     const response = await app.inject({
       method: 'POST',
       url: '/api/webhooks/pluggy',

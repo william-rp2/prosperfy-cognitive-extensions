@@ -2,7 +2,9 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 
 import type { AppConfig } from '../config.js'
 import { resolveSyncIntervalMinutes } from '../config.js'
+import { aggregateFinancialAssets, resolveAccountCanonicalType } from '../finance/accountAggregation.js'
 import type { AccountsRepository } from '../finance/accountsRepository.js'
+import { CASH_ASSET_TYPES, type CanonicalFinancialAssetType } from '../finance/financialAssetNormalizer.js'
 import type { BudgetWithStatus } from '../finance/budgetsRepository.js'
 import { assertValidMonth, BudgetsRepository, monthRange } from '../finance/budgetsRepository.js'
 import type { FinancialCategoryRow } from '../finance/categoriesRepository.js'
@@ -18,8 +20,9 @@ import type { PluggySyncScheduler } from '../finance/scheduler.js'
 import { SyncAlreadyRunningError } from '../finance/syncRunsRepository.js'
 import type { SyncRunsRepository } from '../finance/syncRunsRepository.js'
 import type { PluggySyncService } from '../finance/pluggySyncService.js'
+import type { PluggyItemRegistrationService } from '../finance/pluggyItemRegistrationService.js'
 import { fromCents, toCents } from '../finance/types.js'
-import type { FinancialTransactionRow } from '../finance/types.js'
+import type { FinancialAccountRow, FinancialInvestmentRow, FinancialTransactionRow } from '../finance/types.js'
 import type { TransactionsRepository } from '../finance/transactionsRepository.js'
 import { parseDate, safeCompare } from '../safe.js'
 
@@ -38,6 +41,7 @@ export interface FinanceRouteDeps {
   products: ProductsRepository
   enrichment: EnrichmentRepository
   clarifications: ClarificationsRepository
+  itemRegistration: PluggyItemRegistrationService
 }
 
 function requireFinanceToken(request: FastifyRequest, config: AppConfig): boolean {
@@ -159,6 +163,79 @@ function resolveCategory(
   return { kind: 'none' }
 }
 
+function serializeAccountAsset(account: FinancialAccountRow) {
+  const canonicalType = resolveAccountCanonicalType(account)
+  return {
+    id: account.pluggy_account_id,
+    itemId: account.pluggy_item_id,
+    sourceType: account.type,
+    sourceSubtype: account.subtype,
+    canonicalType,
+    name: account.name,
+    marketingName: account.marketing_name,
+    currencyCode: account.currency_code,
+    balance: fromCents(account.balance_cents),
+    numberMasked: account.number_masked,
+    creditLimit: fromCents(account.credit_limit_cents),
+    availableCreditLimit: fromCents(account.available_credit_limit_cents),
+    lastSyncedAt: account.last_synced_at,
+    classificationUncertain: Boolean(account.asset_classification_uncertain),
+  }
+}
+
+function serializeInvestmentAsset(investment: FinancialInvestmentRow) {
+  return {
+    id: investment.pluggy_investment_id,
+    itemId: investment.pluggy_item_id,
+    canonicalType: (investment.canonical_type ?? 'INVESTMENT') as CanonicalFinancialAssetType,
+    name: investment.name,
+    code: investment.code,
+    balance: fromCents(investment.balance_cents),
+    lastSyncedAt: investment.last_synced_at,
+  }
+}
+
+function groupItemAssets(
+  itemId: string,
+  allAccounts: FinancialAccountRow[],
+  allInvestments: FinancialInvestmentRow[],
+) {
+  const itemAccounts = allAccounts.filter(account => account.pluggy_item_id === itemId)
+  const itemInvestments = allInvestments.filter(investment => investment.pluggy_item_id === itemId)
+
+  const cashAccounts = itemAccounts.filter(account => CASH_ASSET_TYPES.has(resolveAccountCanonicalType(account)))
+  const creditCards = itemAccounts.filter(account => resolveAccountCanonicalType(account) === 'CREDIT_CARD')
+  const investmentAccounts = itemAccounts.filter(account => resolveAccountCanonicalType(account) === 'INVESTMENT')
+  const otherAccounts = itemAccounts.filter(account => {
+    const type = resolveAccountCanonicalType(account)
+    return !CASH_ASSET_TYPES.has(type) && type !== 'CREDIT_CARD' && type !== 'INVESTMENT'
+  })
+
+  return {
+    cashAccounts: cashAccounts.map(serializeAccountAsset),
+    creditCards: creditCards.map(serializeAccountAsset),
+    investments: [...itemInvestments.map(serializeInvestmentAsset), ...investmentAccounts.map(serializeAccountAsset)],
+    other: otherAccounts.map(serializeAccountAsset),
+  }
+}
+
+function registerItemUserMessage(outcome: string, fallback?: string): string {
+  switch (outcome) {
+    case 'created':
+      return fallback ?? 'Conexão adicionada.'
+    case 'already_registered':
+      return 'Conexão já cadastrada.'
+    case 'invalid_id':
+      return 'ID inválido.'
+    case 'not_accessible':
+      return 'Não foi possível acessar essa conexão.'
+    case 'sync_failed':
+      return 'Falha temporária ao sincronizar.'
+    default:
+      return fallback ?? 'Operação concluída.'
+  }
+}
+
 export function registerFinanceRoutes(app: FastifyInstance, deps: FinanceRouteDeps) {
   const {
     config,
@@ -174,6 +251,7 @@ export function registerFinanceRoutes(app: FastifyInstance, deps: FinanceRouteDe
     budgets,
     products,
     enrichment,
+    itemRegistration,
   } = deps
 
   // Everything under /api/finance/* requires the Cognitive service credential.
@@ -209,10 +287,12 @@ export function registerFinanceRoutes(app: FastifyInstance, deps: FinanceRouteDe
     financeApp.get('/api/finance/integrations', async () => {
       const allItems = items.listAll()
       const allAccounts = accounts.listAll()
+      const allInvestments = products.listAllInvestments()
       const latestRun = syncRuns.getLatest()
       return {
         items: allItems.map(item => ({
           id: item.pluggy_item_id,
+          idMasked: itemRegistration.maskItemId(item.pluggy_item_id),
           connectorId: item.connector_id,
           connectorName: item.connector_name,
           status: item.status,
@@ -220,15 +300,7 @@ export function registerFinanceRoutes(app: FastifyInstance, deps: FinanceRouteDe
           lastSyncedAt: item.last_synced_at,
           lastSuccessfulUpdate: item.last_successful_update,
           errorSummary: item.error_summary,
-          accountCount: allAccounts.filter(account => account.pluggy_item_id === item.pluggy_item_id).length,
-        })),
-        accounts: allAccounts.map(account => ({
-          id: account.pluggy_account_id,
-          itemId: account.pluggy_item_id,
-          type: account.type,
-          name: account.name,
-          balance: fromCents(account.balance_cents),
-          lastSyncedAt: account.last_synced_at,
+          groups: groupItemAssets(item.pluggy_item_id, allAccounts, allInvestments),
         })),
         sync: {
           enabled: config.PLUGGY_SYNC_ENABLED,
@@ -239,22 +311,43 @@ export function registerFinanceRoutes(app: FastifyInstance, deps: FinanceRouteDe
       }
     })
 
+    financeApp.post('/api/finance/integrations/add-existing', async (request, reply) => {
+      const body = (request.body ?? {}) as Record<string, unknown>
+      const itemId = typeof body.itemId === 'string' ? body.itemId.trim() : ''
+      if (!itemId) {
+        return reply.code(400).send({ error: 'invalid_item_id', message: 'Informe o ID da conexão Pluggy.' })
+      }
+
+      const result = await itemRegistration.registerItem(itemId)
+      const message = registerItemUserMessage(result.outcome, result.message)
+
+      if (result.outcome === 'invalid_id') {
+        return reply.code(400).send({ error: 'invalid_item_id', message })
+      }
+      if (result.outcome === 'not_accessible') {
+        return reply.code(404).send({ error: 'item_not_accessible', message })
+      }
+      if (result.outcome === 'already_registered') {
+        return reply.code(409).send({
+          error: 'item_already_registered',
+          message,
+          connectorName: result.connectorName,
+        })
+      }
+
+      const statusCode = result.outcome === 'sync_failed' ? 502 : 201
+      return reply.code(statusCode).send({
+        success: result.outcome === 'created',
+        outcome: result.outcome,
+        message,
+        connectorName: result.connectorName,
+        syncStatus: result.syncStatus ?? null,
+      })
+    })
+
     financeApp.get('/api/finance/accounts', async () => {
       return {
-        accounts: accounts.listAll().map(account => ({
-          id: account.pluggy_account_id,
-          itemId: account.pluggy_item_id,
-          type: account.type,
-          subtype: account.subtype,
-          name: account.name,
-          marketingName: account.marketing_name,
-          currencyCode: account.currency_code,
-          balance: fromCents(account.balance_cents),
-          numberMasked: account.number_masked,
-          creditLimit: fromCents(account.credit_limit_cents),
-          availableCreditLimit: fromCents(account.available_credit_limit_cents),
-          lastSyncedAt: account.last_synced_at,
-        })),
+        accounts: accounts.listAll().map(serializeAccountAsset),
       }
     })
 
@@ -365,23 +458,23 @@ export function registerFinanceRoutes(app: FastifyInstance, deps: FinanceRouteDe
       const expense = pluggySum.expense + manualSum.expense
 
       const allAccounts = accounts.listAll()
-      const totalBalance = allAccounts
-        .filter(account => account.type !== 'CREDIT')
-        .reduce((sum, account) => sum + (account.balance_cents ?? 0), 0)
-      const openCardBalance = allAccounts
-        .filter(account => account.type === 'CREDIT')
-        .reduce((sum, account) => sum + Math.abs(account.balance_cents ?? 0), 0)
+      const allInvestments = products.listAllInvestments()
+      const aggregation = aggregateFinancialAssets(allAccounts, allInvestments)
 
       const latestRun = syncRuns.getLatest()
 
       return {
         month,
         category: categoryId ? serializeCategory(categories.getById(categoryId)) : null,
-        totalBalance: fromCents(totalBalance),
+        totalBalance: fromCents(aggregation.cashBalanceCents),
+        cashBalance: fromCents(aggregation.cashBalanceCents),
+        investmentBalance: fromCents(aggregation.investmentValueCents),
+        financialWealth: fromCents(aggregation.financialWealthCents),
         monthIncome: fromCents(income),
         monthExpense: fromCents(expense),
         monthResult: fromCents(income - expense),
-        openCardBalance: fromCents(openCardBalance),
+        openCardBalance: fromCents(aggregation.creditCardInvoiceCents),
+        creditCardLimitTotal: fromCents(aggregation.creditCardLimitCents),
         lastSync: latestRun?.started_at ?? null,
       }
     })

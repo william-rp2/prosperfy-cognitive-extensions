@@ -2,19 +2,44 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import type { Item } from 'pluggy-sdk'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import type { AppConfig } from '../config.js'
 import { createApp, type CreateAppOptions } from '../server.js'
+import type { PluggySyncClient } from '../pluggy.js'
 
 let config: AppConfig
 let openApps: ReturnType<typeof createApp>[]
 let dir: string
 
 const AUTH = { authorization: 'Bearer test-finance-token' }
+const TEST_ITEM_UUID = '22222222-2222-4222-8222-222222222222'
+
+const fakePluggySync: PluggySyncClient = {
+  async fetchItem(itemId: string) {
+    return { id: itemId, status: 'UPDATED', connector: { id: 201, name: 'Bradesco' } } as Item
+  },
+  async fetchAccounts() {
+    return []
+  },
+  async fetchAllTransactions() {
+    return []
+  },
+  async fetchCreditCardBills() {
+    return []
+  },
+  async fetchInvestments() {
+    return []
+  },
+}
 
 function buildApp(overrides: Partial<AppConfig> = {}) {
-  const app = createApp({ config: { ...config, ...overrides }, disableScheduler: true } satisfies CreateAppOptions)
+  const app = createApp({
+    config: { ...config, ...overrides },
+    disableScheduler: true,
+    pluggySync: fakePluggySync,
+  } satisfies CreateAppOptions)
   openApps.push(app)
   return app
 }
@@ -336,5 +361,50 @@ describe('routes/finance — DELETE_GUARD', () => {
 
     const gone = await app.inject({ method: 'GET', url: '/api/finance/transactions', headers: AUTH })
     expect((gone.json().transactions as Array<{ id: string }>).some(row => row.id === id)).toBe(false)
+  })
+})
+
+describe('routes/finance — ADD_EXISTING_ITEM', () => {
+  it('rejeita Item ID inválido', async () => {
+    const app = buildApp()
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/finance/integrations/add-existing',
+      headers: AUTH,
+      payload: { itemId: 'not-a-uuid' },
+    })
+    expect(response.statusCode).toBe(400)
+    expect(response.json().message).toBe('ID inválido.')
+  })
+
+  it('registra Item válido e dispara syncOne', async () => {
+    const app = buildApp()
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/finance/integrations/add-existing',
+      headers: AUTH,
+      payload: { itemId: TEST_ITEM_UUID },
+    })
+    expect(response.statusCode).toBe(201)
+    expect(response.json().success).toBe(true)
+    expect(response.json().outcome).toBe('created')
+  })
+
+  it('retorna 409 quando Item já cadastrado', async () => {
+    const app = buildApp()
+    await app.inject({
+      method: 'POST',
+      url: '/api/finance/integrations/add-existing',
+      headers: AUTH,
+      payload: { itemId: TEST_ITEM_UUID },
+    })
+    const second = await app.inject({
+      method: 'POST',
+      url: '/api/finance/integrations/add-existing',
+      headers: AUTH,
+      payload: { itemId: TEST_ITEM_UUID },
+    })
+    expect(second.statusCode).toBe(409)
+    expect(second.json().message).toBe('Conexão já cadastrada.')
   })
 })
