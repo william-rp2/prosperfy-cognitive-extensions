@@ -55,6 +55,19 @@ function extractRawPaymentMethod(rawData: unknown): string | null {
   return typeof method === 'string' ? method : null
 }
 
+function extractOperationType(rawData: unknown): string | null {
+  if (!rawData || typeof rawData !== 'object') return null
+  const data = rawData as Record<string, unknown>
+  const operationType = data.operationType
+  return typeof operationType === 'string' ? operationType : null
+}
+
+function isStructuredPix(rawPaymentMethod: string | null, operationType: string | null): boolean {
+  const method = rawPaymentMethod?.trim().toUpperCase() ?? ''
+  const operation = operationType?.trim().toUpperCase() ?? ''
+  return method === 'PIX' || operation === 'PIX'
+}
+
 function textHints(description: string): {
   pix: boolean
   transfer: boolean
@@ -115,6 +128,9 @@ export function normalizePluggyTransaction(input: NormalizerInput): NormalizedTr
   const description = `${input.description || ''} ${input.descriptionRaw || ''}`.trim()
   const hints = textHints(description)
   const rawPaymentMethod = extractRawPaymentMethod(input.rawData)
+  const operationType = extractOperationType(input.rawData)
+  const structuredPix = isStructuredPix(rawPaymentMethod, operationType)
+  const pixDetected = hints.pix || structuredPix
   const merchantNormalized = normalizeMerchant(input.merchantOriginal || input.descriptionRaw || input.description)
   const accountType = input.accountCanonicalType ?? null
 
@@ -122,7 +138,7 @@ export function normalizePluggyTransaction(input: NormalizerInput): NormalizedTr
   const direction: CanonicalDirection = pluggyCredit ? 'IN' : 'OUT'
 
   let paymentMethod: CanonicalPaymentMethod = 'UNKNOWN'
-  if (hints.pix) paymentMethod = 'PIX'
+  if (pixDetected) paymentMethod = 'PIX'
   else if (hints.transfer) paymentMethod = 'TRANSFER'
   else if (hints.boleto) paymentMethod = 'BOLETO'
   else if (hasCreditCardEvidence(rawPaymentMethod, hints, accountType)) paymentMethod = 'CREDIT_CARD'
@@ -133,10 +149,11 @@ export function normalizePluggyTransaction(input: NormalizerInput): NormalizedTr
   if (hints.iof) {
     canonicalType = 'FEE'
     if (isCreditCardAsset(accountType)) paymentMethod = 'CREDIT_CARD'
-  } else if (hints.genericFee && !hints.pix && !hints.transfer) {
+  } else if (hints.genericFee && !pixDetected && !hints.transfer) {
     canonicalType = 'FEE'
-  } else if (hints.pix) {
+  } else if (pixDetected) {
     canonicalType = direction === 'IN' ? 'PIX_IN' : 'PIX_OUT'
+    paymentMethod = 'PIX'
   } else if (hints.transfer) {
     canonicalType = direction === 'IN' ? 'TRANSFER_IN' : 'TRANSFER_OUT'
   } else if (isCreditCardAsset(accountType) && direction === 'OUT' && hints.billPayment) {

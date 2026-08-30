@@ -50,6 +50,42 @@ describe('transactionNormalizer — payment semantics', () => {
     expect(pixOut.paymentMethod).toBe('PIX')
   })
 
+  it('PIX C6 estruturado sem descrição → PIX_OUT', () => {
+    const pixOut = normalizePluggyTransaction({
+      pluggyType: 'DEBIT',
+      amountCents: -5000,
+      description: 'Transferência instantânea',
+      accountCanonicalType: 'CHECKING_ACCOUNT',
+      rawData: { paymentData: { paymentMethod: 'PIX' }, operationType: 'PIX' },
+    })
+    expect(pixOut.canonicalType).toBe('PIX_OUT')
+    expect(pixOut.paymentMethod).toBe('PIX')
+  })
+
+  it('PIX IN estruturado via paymentMethod apenas', () => {
+    const pixIn = normalizePluggyTransaction({
+      pluggyType: 'CREDIT',
+      amountCents: 5000,
+      description: 'Recebimento',
+      accountCanonicalType: 'CHECKING_ACCOUNT',
+      rawData: { paymentData: { paymentMethod: 'PIX' } },
+    })
+    expect(pixIn.canonicalType).toBe('PIX_IN')
+    expect(pixIn.paymentMethod).toBe('PIX')
+  })
+
+  it('PIX IN estruturado via operationType apenas', () => {
+    const pixIn = normalizePluggyTransaction({
+      pluggyType: 'CREDIT',
+      amountCents: 5000,
+      description: 'Recebimento',
+      accountCanonicalType: 'CHECKING_ACCOUNT',
+      rawData: { operationType: 'PIX' },
+    })
+    expect(pixIn.canonicalType).toBe('PIX_IN')
+    expect(pixIn.paymentMethod).toBe('PIX')
+  })
+
   it('transfer out → transferência', () => {
     const transfer = normalizePluggyTransaction({
       pluggyType: 'DEBIT',
