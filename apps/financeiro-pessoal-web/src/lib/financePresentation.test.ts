@@ -5,8 +5,10 @@ import {
   formatTransactionAccountContext,
   formatTransactionDisplay,
   formatTransactionType,
+  isInfrastructureConnectorName,
   isRawEnumVisible,
   isTechnicalProductName,
+  resolveTransactionDisplayInput,
 } from '../lib/financePresentation'
 
 describe('financePresentation pt-BR', () => {
@@ -58,13 +60,35 @@ describe('financePresentation pt-BR', () => {
     expect(formatTransactionDisplay({ canonicalType: 'REFUND' }, 'CREDIT')).not.toBe('REFUND')
   })
 
-  it('F. REFUND com account context → institution/displayName', () => {
+  it('F. alias tem precedência no contexto da movimentação', () => {
     const ctx = formatTransactionAccountContext({
       displayName: 'Cartão C6',
       institutionName: 'C6 Bank',
       canonicalType: 'CREDIT_CARD',
+      last4: '5619',
     })
-    expect(ctx).toBe('C6 Bank · Cartão C6')
+    expect(ctx).toBe('Cartão C6 · •••• 5619')
+  })
+
+  it('E. MeuPluggy não aparece como instituição user-facing', () => {
+    expect(isInfrastructureConnectorName('MeuPluggy')).toBe(true)
+    expect(
+      formatAccountDisplayName({
+        name: 'BANDEIRADO',
+        institutionName: 'MeuPluggy',
+        canonicalType: 'CREDIT_CARD',
+      }),
+    ).toBe('Cartão de crédito')
+  })
+
+  it('PIX inferido quando enrichment histórico incompleto', () => {
+    const resolved = resolveTransactionDisplayInput(
+      { canonicalType: 'EXPENSE', paymentMethod: null, direction: 'OUT' },
+      'DEBIT',
+      { description: 'PIX ENVIADO JOAO' },
+    )
+    expect(resolved.canonicalType).toBe('PIX_OUT')
+    expect(formatTransactionDisplay(resolved, 'DEBIT', { description: 'PIX ENVIADO JOAO' })).toBe('PIX enviado')
   })
 
   it('G. alias tem prioridade sobre nome técnico', () => {

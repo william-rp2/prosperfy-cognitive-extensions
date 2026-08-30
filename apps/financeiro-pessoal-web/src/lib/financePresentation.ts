@@ -66,6 +66,8 @@ const BUDGET_STATUS: Record<string, string> = {
 
 const TECHNICAL_PRODUCT_NAMES = new Set(['BANDEIRADO', 'BRANDED', 'CREDIT_CARD', 'DEBIT_CARD'])
 
+const INFRASTRUCTURE_CONNECTOR_NAMES = new Set(['MEUPLUGGY', 'MEU PLUGGY', 'PLUGGY', 'OPEN FINANCE', 'OPENFINANCE'])
+
 const RAW_ENUM_PATTERN =
   /^(SUCCESS|UPDATED|FAILED|needs_clarification|CHECKING_ACCOUNT|CREDIT_CARD|INVESTMENT|INCOME|EXPENSE|CREDIT|DEBIT|IN|OUT|PARTIAL|RUNNING|PENDING|unknown|classified|BANDEIRADO|BRANDED|UNKNOWN|REFUND|FEE|TAX|PIX_IN|PIX_OUT|TRANSFER_IN|TRANSFER_OUT|DEBIT_PURCHASE|CREDIT_PURCHASE|CARD_PAYMENT|OTHER)$/i
 
@@ -99,6 +101,15 @@ export interface TransactionAccountContextInput {
   marketingName?: string | null
   institutionName?: string | null
   canonicalType?: string | null
+  last4?: string | null
+  cardBrand?: string | null
+}
+
+export function isInfrastructureConnectorName(value: string | null | undefined): boolean {
+  if (!value?.trim()) return false
+  const normalized = value.trim().toUpperCase().replace(/\s+/g, ' ')
+  return INFRASTRUCTURE_CONNECTOR_NAMES.has(normalized.replace(/\s/g, '')) ||
+    INFRASTRUCTURE_CONNECTOR_NAMES.has(normalized)
 }
 
 export function isTechnicalProductName(value: string | null | undefined): boolean {
@@ -126,22 +137,52 @@ export function formatTransactionType(value: string | null | undefined): string 
 }
 
 /**
- * Central user-facing transaction label (pt-BR).
- * Structured enrichment fields first; description only for strong IOF tokens.
+ * Merges persisted enrichment with strong description/account signals
+ * when historical rows lack payment_method/direction/canonical_type.
  */
-export function formatTransactionDisplay(
-  enrichment?: TransactionDisplayInput | null,
-  rawType?: string | null,
-  options?: { description?: string | null },
-): string {
-  const canonical = enrichment?.canonicalType ?? null
-  const paymentMethod = enrichment?.paymentMethod ?? null
-  const direction = inferDirection(rawType, enrichment?.direction ?? null)
+export function resolveTransactionDisplayInput(
+  enrichment: TransactionDisplayInput | null | undefined,
+  rawType: string | null | undefined,
+  options?: { description?: string | null; accountCanonicalType?: string | null },
+): TransactionDisplayInput {
   const description = options?.description ?? ''
+  const direction = inferDirection(rawType, enrichment?.direction ?? null)
+  let canonicalType = enrichment?.canonicalType ?? null
+  let paymentMethod = enrichment?.paymentMethod ?? null
+
+  if (canonicalType === 'REFUND' || /\bestorno\b|\brefund\b/i.test(description)) {
+    return { canonicalType: 'REFUND', paymentMethod, direction: direction ?? 'IN' }
+  }
+
+  if (isExplicitIof(description) || canonicalType === 'FEE') {
+    return { canonicalType: 'FEE', paymentMethod, direction: direction ?? 'OUT' }
+  }
+
+  if (/\bPIX\b/i.test(description) || paymentMethod === 'PIX' || canonicalType === 'PIX_IN' || canonicalType === 'PIX_OUT') {
+    const dir =
+      direction ??
+      (canonicalType === 'PIX_IN' ? 'IN' : canonicalType === 'PIX_OUT' ? 'OUT' : rawType === 'CREDIT' ? 'IN' : 'OUT')
+    return { canonicalType: dir === 'IN' ? 'PIX_IN' : 'PIX_OUT', paymentMethod: 'PIX', direction: dir }
+  }
+
+  if (
+    options?.accountCanonicalType === 'CREDIT_CARD' &&
+    rawType?.toUpperCase() === 'DEBIT' &&
+    (!paymentMethod || paymentMethod === 'UNKNOWN' || canonicalType === 'DEBIT_PURCHASE' || canonicalType === 'EXPENSE')
+  ) {
+    return { canonicalType: 'CREDIT_PURCHASE', paymentMethod: 'CREDIT_CARD', direction: 'OUT' }
+  }
+
+  return { canonicalType, paymentMethod, direction }
+}
+
+function formatTransactionDisplayFromResolved(resolved: TransactionDisplayInput, description?: string | null): string {
+  const canonical = resolved.canonicalType ?? null
+  const paymentMethod = resolved.paymentMethod ?? null
+  const direction = resolved.direction ?? null
 
   if (canonical === 'REFUND') return 'Estorno'
-
-  if (isExplicitIof(description) || (canonical === 'FEE' && isExplicitIof(description))) return 'IOF'
+  if (isExplicitIof(description) || (canonical === 'FEE' && isExplicitIof(description ?? ''))) return 'IOF'
   if (canonical === 'FEE' || canonical === 'TAX') return 'Taxa'
 
   if (paymentMethod === 'PIX' || canonical === 'PIX_IN' || canonical === 'PIX_OUT') {
@@ -154,39 +195,63 @@ export function formatTransactionDisplay(
   }
   if (canonical === 'CARD_PAYMENT') return 'Pagamento de cartão'
 
-  if (canonical === 'DEBIT_PURCHASE' || paymentMethod === 'DEBIT_CARD') {
-    return 'Compra no débito'
-  }
+  if (canonical === 'DEBIT_PURCHASE' || paymentMethod === 'DEBIT_CARD') return 'Compra no débito'
 
   if (paymentMethod === 'TRANSFER' || canonical === 'TRANSFER_IN' || canonical === 'TRANSFER_OUT') {
     return direction === 'IN' || canonical === 'TRANSFER_IN' ? 'Transferência recebida' : 'Transferência enviada'
   }
 
   if (paymentMethod === 'BOLETO') return 'Boleto'
-
   if (canonical === 'INCOME' || direction === 'IN') return 'Receita'
   if (canonical === 'EXPENSE' || direction === 'OUT') return 'Despesa'
   if (canonical === 'OTHER') return 'Outro'
 
-  const fromCanonical = formatTransactionType(canonical ?? rawType)
+  const fromCanonical = formatTransactionType(canonical)
   if (fromCanonical !== 'Outro' && fromCanonical !== 'Não identificado') return fromCanonical
-
   if (direction === 'IN') return 'Receita'
   if (direction === 'OUT') return 'Despesa'
   return 'Não identificado'
 }
 
+/**
+ * Central user-facing transaction label (pt-BR).
+ * Structured enrichment fields first; description only for strong IOF tokens.
+ */
+export function formatTransactionDisplay(
+  enrichment?: TransactionDisplayInput | null,
+  rawType?: string | null,
+  options?: { description?: string | null; accountCanonicalType?: string | null },
+): string {
+  const resolved = resolveTransactionDisplayInput(enrichment, rawType, options)
+  return formatTransactionDisplayFromResolved(resolved, options?.description)
+}
+
 /** Institution + asset label for transaction list/detail (no UUIDs or raw enums). */
 export function formatTransactionAccountContext(account?: TransactionAccountContextInput | null): string | null {
   if (!account) return null
-  const assetLabel = formatAccountDisplayName(account)
+
   const institution = account.institutionName?.trim()
-  if (!assetLabel && !institution) return null
-  if (institution && assetLabel) {
-    if (assetLabel.startsWith(`${institution} —`) || assetLabel.startsWith(`${institution} ·`)) return assetLabel
-    return `${institution} · ${assetLabel}`
+  const safeInstitution = institution && !isInfrastructureConnectorName(institution) ? institution : null
+
+  let mainLabel: string
+  if (account.displayName?.trim()) {
+    mainLabel = account.displayName.trim()
+  } else if (account.marketingName?.trim() && !isTechnicalProductName(account.marketingName)) {
+    mainLabel = account.marketingName.trim()
+  } else if (account.name?.trim() && !isTechnicalProductName(account.name)) {
+    mainLabel = account.name.trim()
+  } else if (safeInstitution) {
+    mainLabel = `${safeInstitution} · ${formatAssetType(account.canonicalType)}`
+  } else {
+    mainLabel = formatAssetType(account.canonicalType)
   }
-  return assetLabel || institution || null
+
+  const suffix: string[] = []
+  if (account.cardBrand?.trim()) suffix.push(account.cardBrand.trim())
+  if (account.last4?.trim()) suffix.push(`•••• ${account.last4.trim()}`)
+
+  if (suffix.length === 0) return mainLabel
+  return `${mainLabel} · ${suffix.join(' · ')}`
 }
 
 export function formatClassificationStatus(value: string | null | undefined): string {
@@ -210,7 +275,9 @@ export function formatAccountDisplayName(input: {
   const name = input.name?.trim()
   if (name && !isTechnicalProductName(name)) return name
   const typeLabel = formatAssetType(input.canonicalType)
-  if (input.institutionName) return `${input.institutionName} — ${typeLabel}`
+  if (input.institutionName && !isInfrastructureConnectorName(input.institutionName)) {
+    return `${input.institutionName} — ${typeLabel}`
+  }
   return typeLabel
 }
 
