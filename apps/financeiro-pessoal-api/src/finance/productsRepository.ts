@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import type { FinanceDb } from './db.js'
+import { normalizeInvestmentAsset } from './financialAssetNormalizer.js'
 import type { FinancialCreditCardBillRow, FinancialInvestmentRow } from './types.js'
 
 export interface UpsertCreditCardBillInput {
@@ -89,11 +90,16 @@ export class ProductsRepository {
   upsertInvestment(input: UpsertInvestmentInput): FinancialInvestmentRow {
     const now = new Date().toISOString()
     const existing = this.getInvestmentByPluggyId(input.pluggyInvestmentId)
+    const asset = normalizeInvestmentAsset({
+      pluggyType: input.type,
+      pluggySubtype: input.subtype,
+      name: input.name,
+    })
 
     this.db
       .prepare(
-        `INSERT INTO financial_investments (id, pluggy_investment_id, pluggy_item_id, type, subtype, name, code, balance_cents, quantity, rate, rate_type, reference_date, created_at, updated_at, last_synced_at, raw_data)
-         VALUES (@id, @pluggyInvestmentId, @pluggyItemId, @type, @subtype, @name, @code, @balanceCents, @quantity, @rate, @rateType, @referenceDate, @createdAt, @updatedAt, @lastSyncedAt, @rawData)
+        `INSERT INTO financial_investments (id, pluggy_investment_id, pluggy_item_id, type, subtype, name, code, balance_cents, quantity, rate, rate_type, reference_date, canonical_type, asset_classification_confidence, created_at, updated_at, last_synced_at, raw_data)
+         VALUES (@id, @pluggyInvestmentId, @pluggyItemId, @type, @subtype, @name, @code, @balanceCents, @quantity, @rate, @rateType, @referenceDate, @canonicalType, @assetClassificationConfidence, @createdAt, @updatedAt, @lastSyncedAt, @rawData)
          ON CONFLICT(pluggy_investment_id) DO UPDATE SET
            type = excluded.type,
            subtype = excluded.subtype,
@@ -104,6 +110,8 @@ export class ProductsRepository {
            rate = excluded.rate,
            rate_type = excluded.rate_type,
            reference_date = excluded.reference_date,
+           canonical_type = excluded.canonical_type,
+           asset_classification_confidence = excluded.asset_classification_confidence,
            updated_at = excluded.updated_at,
            last_synced_at = excluded.last_synced_at,
            raw_data = excluded.raw_data`,
@@ -121,6 +129,8 @@ export class ProductsRepository {
         rate: input.rate ?? null,
         rateType: input.rateType ?? null,
         referenceDate: input.referenceDate ?? null,
+        canonicalType: asset.canonicalType,
+        assetClassificationConfidence: asset.confidence,
         createdAt: existing?.created_at ?? now,
         updatedAt: now,
         lastSyncedAt: now,
@@ -134,5 +144,9 @@ export class ProductsRepository {
     return this.db
       .prepare('SELECT * FROM financial_investments WHERE pluggy_investment_id = ?')
       .get(pluggyInvestmentId) as FinancialInvestmentRow | undefined
+  }
+
+  listAllInvestments(): FinancialInvestmentRow[] {
+    return this.db.prepare('SELECT * FROM financial_investments ORDER BY name ASC').all() as FinancialInvestmentRow[]
   }
 }

@@ -27,6 +27,9 @@ export interface FinancialAccountRow {
   owner: string | null
   credit_limit_cents: number | null
   available_credit_limit_cents: number | null
+  canonical_type: string | null
+  asset_classification_confidence: number | null
+  asset_classification_uncertain: number | null
   created_at: string
   updated_at: string
   last_synced_at: string | null
@@ -82,6 +85,8 @@ export interface FinancialInvestmentRow {
   rate: number | null
   rate_type: string | null
   reference_date: string | null
+  canonical_type: string | null
+  asset_classification_confidence: number | null
   created_at: string
   updated_at: string
   last_synced_at: string | null

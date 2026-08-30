@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import type { FinanceDb } from './db.js'
+import { normalizeFinancialAccount } from './financialAssetNormalizer.js'
 import type { FinancialAccountRow } from './types.js'
 
 export interface UpsertAccountInput {
@@ -17,6 +18,9 @@ export interface UpsertAccountInput {
   creditLimitCents?: number | null
   availableCreditLimitCents?: number | null
   rawData?: unknown
+  canonicalType?: string | null
+  assetClassificationConfidence?: number | null
+  assetClassificationUncertain?: boolean | null
 }
 
 export class AccountsRepository {
@@ -25,11 +29,22 @@ export class AccountsRepository {
   upsertAccount(input: UpsertAccountInput): FinancialAccountRow {
     const now = new Date().toISOString()
     const existing = this.getByPluggyId(input.pluggyAccountId)
+    const asset = normalizeFinancialAccount({
+      pluggyType: input.type,
+      pluggySubtype: input.subtype,
+      name: input.name,
+      marketingName: input.marketingName,
+      creditLimitCents: input.creditLimitCents,
+      rawData: input.rawData,
+    })
+    const canonicalType = input.canonicalType ?? asset.canonicalType
+    const confidence = input.assetClassificationConfidence ?? asset.confidence
+    const uncertain = input.assetClassificationUncertain ?? asset.classificationUncertain
 
     this.db
       .prepare(
-        `INSERT INTO financial_accounts (id, pluggy_account_id, pluggy_item_id, type, subtype, name, marketing_name, currency_code, balance_cents, number_masked, owner, credit_limit_cents, available_credit_limit_cents, created_at, updated_at, last_synced_at, raw_data)
-         VALUES (@id, @pluggyAccountId, @pluggyItemId, @type, @subtype, @name, @marketingName, @currencyCode, @balanceCents, @numberMasked, @owner, @creditLimitCents, @availableCreditLimitCents, @createdAt, @updatedAt, @lastSyncedAt, @rawData)
+        `INSERT INTO financial_accounts (id, pluggy_account_id, pluggy_item_id, type, subtype, name, marketing_name, currency_code, balance_cents, number_masked, owner, credit_limit_cents, available_credit_limit_cents, canonical_type, asset_classification_confidence, asset_classification_uncertain, created_at, updated_at, last_synced_at, raw_data)
+         VALUES (@id, @pluggyAccountId, @pluggyItemId, @type, @subtype, @name, @marketingName, @currencyCode, @balanceCents, @numberMasked, @owner, @creditLimitCents, @availableCreditLimitCents, @canonicalType, @assetClassificationConfidence, @assetClassificationUncertain, @createdAt, @updatedAt, @lastSyncedAt, @rawData)
          ON CONFLICT(pluggy_account_id) DO UPDATE SET
            type = excluded.type,
            subtype = excluded.subtype,
@@ -41,6 +56,9 @@ export class AccountsRepository {
            owner = excluded.owner,
            credit_limit_cents = excluded.credit_limit_cents,
            available_credit_limit_cents = excluded.available_credit_limit_cents,
+           canonical_type = excluded.canonical_type,
+           asset_classification_confidence = excluded.asset_classification_confidence,
+           asset_classification_uncertain = excluded.asset_classification_uncertain,
            updated_at = excluded.updated_at,
            last_synced_at = excluded.last_synced_at,
            raw_data = excluded.raw_data`,
@@ -59,6 +77,9 @@ export class AccountsRepository {
         owner: input.owner ?? null,
         creditLimitCents: input.creditLimitCents ?? null,
         availableCreditLimitCents: input.availableCreditLimitCents ?? null,
+        canonicalType,
+        assetClassificationConfidence: confidence,
+        assetClassificationUncertain: uncertain ? 1 : 0,
         createdAt: existing?.created_at ?? now,
         updatedAt: now,
         lastSyncedAt: now,
