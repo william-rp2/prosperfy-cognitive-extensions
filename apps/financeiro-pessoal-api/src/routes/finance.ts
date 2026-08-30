@@ -108,6 +108,7 @@ function serializePluggyTransaction(
     source: 'pluggy' as const,
     accountId: row.pluggy_account_id,
     description: row.description,
+    descriptionRaw: row.description_raw,
     amount: fromCents(row.amount_cents),
     currencyCode: row.currency_code,
     date: row.date,
@@ -189,7 +190,8 @@ function serializeAccountAsset(
   const pref = ctx.preferencesByAccountId.get(account.pluggy_account_id)
   const item = ctx.itemsById.get(account.pluggy_item_id)
   const institutionName = resolveInstitutionName(account, item)
-  const displayName = pref?.display_alias ?? defaultAccountLabel(account, institutionName, canonicalType)
+  const displayAlias = pref?.display_alias ?? null
+  const displayName = displayAlias ?? defaultAccountLabel(account, institutionName, canonicalType)
   return {
     id: account.pluggy_account_id,
     itemId: account.pluggy_item_id,
@@ -199,6 +201,7 @@ function serializeAccountAsset(
     canonicalType,
     name: account.name,
     marketingName: account.marketing_name,
+    displayAlias,
     displayName,
     isFavorite: Boolean(pref?.is_favorite),
     responsibleLabel: pref?.responsible_label ?? null,

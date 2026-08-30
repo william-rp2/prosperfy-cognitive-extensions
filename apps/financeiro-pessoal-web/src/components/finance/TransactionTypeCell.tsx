@@ -2,6 +2,7 @@ import type { FinanceAccount, FinanceTransaction } from '../../api/finance'
 import {
   formatTransactionAccountContext,
   formatTransactionDisplay,
+  normalizeFinanceEnrichment,
 } from '../../lib/financePresentation'
 
 /** Same rendering path used by ConnectedTransactionsScreen "Tipo" column. */
@@ -9,19 +10,32 @@ export function TransactionTypeCell({
   transaction,
   account,
 }: {
-  transaction: Pick<FinanceTransaction, 'enrichment' | 'type' | 'description' | 'accountId'>
+  transaction: Pick<
+    FinanceTransaction,
+    'enrichment' | 'type' | 'description' | 'descriptionRaw' | 'accountId'
+  >
   account?: Pick<
     FinanceAccount,
-    'displayName' | 'name' | 'marketingName' | 'institutionName' | 'canonicalType' | 'last4' | 'cardBrand'
+    | 'displayAlias'
+    | 'displayName'
+    | 'name'
+    | 'marketingName'
+    | 'institutionName'
+    | 'canonicalType'
+    | 'last4'
+    | 'cardBrand'
   > | null
 }) {
-  const label = formatTransactionDisplay(transaction.enrichment, transaction.type, {
+  const enrichment = normalizeFinanceEnrichment(transaction.enrichment) ?? transaction.enrichment ?? null
+  const label = formatTransactionDisplay(enrichment, transaction.type, {
     description: transaction.description,
+    descriptionRaw: transaction.descriptionRaw,
     accountCanonicalType: account?.canonicalType,
   })
   const context =
     transaction.accountId && account
       ? formatTransactionAccountContext({
+          displayAlias: account.displayAlias,
           displayName: account.displayName,
           name: account.name,
           marketingName: account.marketingName,
@@ -33,19 +47,30 @@ export function TransactionTypeCell({
       : null
 
   return (
-    <div>
-      <p className="font-semibold text-[#231529]">{label}</p>
-      {context ? <p className="mt-0.5 text-xs text-[#76677d]">{context}</p> : null}
+    <div data-testid="transaction-type-cell">
+      <p className="font-semibold text-[#231529]" data-testid="transaction-type-label">
+        {label}
+      </p>
+      {context ? (
+        <p className="mt-0.5 text-xs text-[#76677d]" data-testid="transaction-account-context">
+          {context}
+        </p>
+      ) : null}
     </div>
   )
 }
 
 export function transactionTypeLabel(
-  transaction: Pick<FinanceTransaction, 'enrichment' | 'type' | 'description' | 'accountId'>,
+  transaction: Pick<
+    FinanceTransaction,
+    'enrichment' | 'type' | 'description' | 'descriptionRaw' | 'accountId'
+  >,
   account?: Pick<FinanceAccount, 'canonicalType'> | null,
 ): string {
-  return formatTransactionDisplay(transaction.enrichment, transaction.type, {
+  const enrichment = normalizeFinanceEnrichment(transaction.enrichment) ?? transaction.enrichment ?? null
+  return formatTransactionDisplay(enrichment, transaction.type, {
     description: transaction.description,
+    descriptionRaw: transaction.descriptionRaw,
     accountCanonicalType: account?.canonicalType,
   })
 }

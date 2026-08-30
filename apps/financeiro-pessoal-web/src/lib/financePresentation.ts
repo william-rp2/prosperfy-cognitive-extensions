@@ -95,7 +95,14 @@ export interface TransactionDisplayInput {
   direction?: string | null
 }
 
+export interface TransactionDisplayOptions {
+  description?: string | null
+  descriptionRaw?: string | null
+  accountCanonicalType?: string | null
+}
+
 export interface TransactionAccountContextInput {
+  displayAlias?: string | null
   displayName?: string | null
   name?: string | null
   marketingName?: string | null
@@ -104,6 +111,40 @@ export interface TransactionAccountContextInput {
   last4?: string | null
   cardBrand?: string | null
 }
+
+function readString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+/** Accept API camelCase or legacy snake_case enrichment payloads. */
+export function normalizeFinanceEnrichment(raw: unknown): TransactionDisplayInput | null {
+  if (!raw || typeof raw !== 'object') return null
+  const row = raw as Record<string, unknown>
+  const canonicalType = readString(row.canonicalType ?? row.canonical_type)
+  const paymentMethod = readString(row.paymentMethod ?? row.payment_method)
+  const direction = readString(row.direction)
+  if (!canonicalType && !paymentMethod && !direction) return null
+  return { canonicalType, paymentMethod, direction }
+}
+
+function combinedDescription(options?: TransactionDisplayOptions): string {
+  return `${options?.description ?? ''} ${options?.descriptionRaw ?? ''}`.trim()
+}
+
+const SPECIFIC_CANONICAL_TYPES = new Set([
+  'PIX_IN',
+  'PIX_OUT',
+  'FEE',
+  'TAX',
+  'REFUND',
+  'TRANSFER_IN',
+  'TRANSFER_OUT',
+  'CREDIT_PURCHASE',
+  'DEBIT_PURCHASE',
+  'CARD_PAYMENT',
+  'INCOME',
+  'EXPENSE',
+])
 
 export function isInfrastructureConnectorName(value: string | null | undefined): boolean {
   if (!value?.trim()) return false
@@ -143,22 +184,28 @@ export function formatTransactionType(value: string | null | undefined): string 
 export function resolveTransactionDisplayInput(
   enrichment: TransactionDisplayInput | null | undefined,
   rawType: string | null | undefined,
-  options?: { description?: string | null; accountCanonicalType?: string | null },
+  options?: TransactionDisplayOptions,
 ): TransactionDisplayInput {
-  const description = options?.description ?? ''
-  const direction = inferDirection(rawType, enrichment?.direction ?? null)
-  let canonicalType = enrichment?.canonicalType ?? null
-  let paymentMethod = enrichment?.paymentMethod ?? null
+  const normalized = normalizeFinanceEnrichment(enrichment) ?? enrichment ?? null
+  const description = combinedDescription(options)
+  const direction = inferDirection(rawType, normalized?.direction ?? null)
+  let canonicalType = normalized?.canonicalType ?? null
+  let paymentMethod = normalized?.paymentMethod ?? null
 
   if (canonicalType === 'REFUND' || /\bestorno\b|\brefund\b/i.test(description)) {
     return { canonicalType: 'REFUND', paymentMethod, direction: direction ?? 'IN' }
+  }
+
+  if (canonicalType === 'PIX_IN' || canonicalType === 'PIX_OUT') {
+    const dir = canonicalType === 'PIX_IN' ? 'IN' : 'OUT'
+    return { canonicalType, paymentMethod: paymentMethod ?? 'PIX', direction: dir }
   }
 
   if (isExplicitIof(description) || canonicalType === 'FEE') {
     return { canonicalType: 'FEE', paymentMethod, direction: direction ?? 'OUT' }
   }
 
-  if (/\bPIX\b/i.test(description) || paymentMethod === 'PIX' || canonicalType === 'PIX_IN' || canonicalType === 'PIX_OUT') {
+  if (/\bPIX\b/i.test(description) || paymentMethod === 'PIX') {
     const dir =
       direction ??
       (canonicalType === 'PIX_IN' ? 'IN' : canonicalType === 'PIX_OUT' ? 'OUT' : rawType === 'CREDIT' ? 'IN' : 'OUT')
@@ -168,6 +215,7 @@ export function resolveTransactionDisplayInput(
   if (
     options?.accountCanonicalType === 'CREDIT_CARD' &&
     rawType?.toUpperCase() === 'DEBIT' &&
+    !SPECIFIC_CANONICAL_TYPES.has(canonicalType ?? '') &&
     (!paymentMethod || paymentMethod === 'UNKNOWN' || canonicalType === 'DEBIT_PURCHASE' || canonicalType === 'EXPENSE')
   ) {
     return { canonicalType: 'CREDIT_PURCHASE', paymentMethod: 'CREDIT_CARD', direction: 'OUT' }
@@ -176,14 +224,19 @@ export function resolveTransactionDisplayInput(
   return { canonicalType, paymentMethod, direction }
 }
 
-function formatTransactionDisplayFromResolved(resolved: TransactionDisplayInput, description?: string | null): string {
+function formatTransactionDisplayFromResolved(
+  resolved: TransactionDisplayInput,
+  descriptionText?: string | null,
+): string {
   const canonical = resolved.canonicalType ?? null
   const paymentMethod = resolved.paymentMethod ?? null
   const direction = resolved.direction ?? null
+  const text = descriptionText ?? ''
 
   if (canonical === 'REFUND') return 'Estorno'
-  if (isExplicitIof(description) || (canonical === 'FEE' && isExplicitIof(description ?? ''))) return 'IOF'
-  if (canonical === 'FEE' || canonical === 'TAX') return 'Taxa'
+  if (canonical === 'FEE' || canonical === 'TAX') {
+    return isExplicitIof(text) ? 'IOF' : 'Taxa'
+  }
 
   if (paymentMethod === 'PIX' || canonical === 'PIX_IN' || canonical === 'PIX_OUT') {
     if (direction === 'IN' || canonical === 'PIX_IN') return 'PIX recebido'
@@ -220,38 +273,54 @@ function formatTransactionDisplayFromResolved(resolved: TransactionDisplayInput,
 export function formatTransactionDisplay(
   enrichment?: TransactionDisplayInput | null,
   rawType?: string | null,
-  options?: { description?: string | null; accountCanonicalType?: string | null },
+  options?: TransactionDisplayOptions,
 ): string {
-  const resolved = resolveTransactionDisplayInput(enrichment, rawType, options)
-  return formatTransactionDisplayFromResolved(resolved, options?.description)
+  const normalized = normalizeFinanceEnrichment(enrichment) ?? enrichment ?? null
+  const resolved = resolveTransactionDisplayInput(normalized, rawType, options)
+  return formatTransactionDisplayFromResolved(resolved, combinedDescription(options))
+}
+
+/** Diagnostic helper for OpenCode/live comparison (not user-facing). */
+export function diagnoseTransactionDisplay(input: {
+  enrichment?: unknown
+  type?: string | null
+  description?: string | null
+  descriptionRaw?: string | null
+  accountCanonicalType?: string | null
+}) {
+  const normalized = normalizeFinanceEnrichment(input.enrichment)
+  return {
+    apiCanonical: normalized?.canonicalType ?? null,
+    apiPayment: normalized?.paymentMethod ?? null,
+    apiDirection: normalized?.direction ?? null,
+    uiResolvedLabel: formatTransactionDisplay(normalized, input.type ?? null, {
+      description: input.description,
+      descriptionRaw: input.descriptionRaw,
+      accountCanonicalType: input.accountCanonicalType,
+    }),
+  }
 }
 
 /** Institution + asset label for transaction list/detail (no UUIDs or raw enums). */
 export function formatTransactionAccountContext(account?: TransactionAccountContextInput | null): string | null {
   if (!account) return null
 
-  const institution = account.institutionName?.trim()
-  const safeInstitution = institution && !isInfrastructureConnectorName(institution) ? institution : null
-
-  let mainLabel: string
-  if (account.displayName?.trim()) {
-    mainLabel = account.displayName.trim()
-  } else if (account.marketingName?.trim() && !isTechnicalProductName(account.marketingName)) {
-    mainLabel = account.marketingName.trim()
-  } else if (account.name?.trim() && !isTechnicalProductName(account.name)) {
-    mainLabel = account.name.trim()
-  } else if (safeInstitution) {
-    mainLabel = `${safeInstitution} · ${formatAssetType(account.canonicalType)}`
-  } else {
-    mainLabel = formatAssetType(account.canonicalType)
+  if (account.displayAlias?.trim()) {
+    return account.displayAlias.trim()
   }
 
-  const suffix: string[] = []
-  if (account.cardBrand?.trim()) suffix.push(account.cardBrand.trim())
-  if (account.last4?.trim()) suffix.push(`•••• ${account.last4.trim()}`)
+  const institution = account.institutionName?.trim()
+  const safeInstitution = institution && !isInfrastructureConnectorName(institution) ? institution : null
+  const typeLabel = formatAssetType(account.canonicalType)
 
-  if (suffix.length === 0) return mainLabel
-  return `${mainLabel} · ${suffix.join(' · ')}`
+  if (safeInstitution) {
+    if (account.last4?.trim()) {
+      return `${safeInstitution} · ${typeLabel} · •••• ${account.last4.trim()}`
+    }
+    return `${safeInstitution} · ${typeLabel}`
+  }
+
+  return typeLabel
 }
 
 export function formatClassificationStatus(value: string | null | undefined): string {

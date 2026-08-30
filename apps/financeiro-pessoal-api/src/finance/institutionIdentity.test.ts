@@ -82,5 +82,28 @@ describe('institutionIdentity', () => {
     expect(caps.cardBrandAvailable).toBe(true)
     expect(caps.cardholderAvailable).toBe(false)
     expect(caps.transactionCardIdentifierAvailable).toBe(true)
+  it('owner não vira institutionName user-facing', () => {
+    const item: FinancialItemRow = {
+      pluggy_item_id: 'item-1',
+      connector_id: 200,
+      connector_name: 'MeuPluggy',
+      status: 'UPDATED',
+      execution_status: null,
+      last_synced_at: null,
+      last_successful_update: null,
+      error_summary: null,
+      raw_metadata: null,
+    }
+    const resolved = resolveInstitutionName(
+      account({
+        owner: 'WILLIAM RODRIGO PAULINO',
+        name: 'BANDEIRADO',
+        marketing_name: null,
+        raw_data: JSON.stringify({ bankData: { bankName: 'C6 Bank' } }),
+      }),
+      item,
+    )
+    expect(resolved).toBe('C6 Bank')
+    expect(resolved).not.toBe('WILLIAM RODRIGO PAULINO')
   })
 })

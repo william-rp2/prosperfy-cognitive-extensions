@@ -19,6 +19,7 @@ export interface FinanceTransaction {
   source: 'pluggy' | 'manual'
   accountId: string | null
   description: string | null
+  descriptionRaw?: string | null
   amount: number | null
   currencyCode: string | null
   date: string
@@ -59,6 +60,7 @@ export interface FinanceAccount {
   name: string | null
   marketingName?: string | null
   displayName?: string | null
+  displayAlias?: string | null
   isFavorite?: boolean
   responsibleLabel?: string | null
   cardBrand?: string | null
@@ -78,6 +80,7 @@ export interface FinanceAsset {
   name: string | null
   marketingName?: string | null
   displayName?: string | null
+  displayAlias?: string | null
   isFavorite?: boolean
   balance: number | null
   creditLimit?: number | null

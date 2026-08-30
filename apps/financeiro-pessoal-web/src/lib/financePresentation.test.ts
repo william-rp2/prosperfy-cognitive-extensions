@@ -62,12 +62,14 @@ describe('financePresentation pt-BR', () => {
 
   it('F. alias tem precedência no contexto da movimentação', () => {
     const ctx = formatTransactionAccountContext({
-      displayName: 'Cartão C6',
+      displayAlias: 'C6 — William físico',
+      displayName: 'C6 — William físico',
       institutionName: 'C6 Bank',
       canonicalType: 'CREDIT_CARD',
       last4: '5619',
+      cardBrand: 'Visa',
     })
-    expect(ctx).toBe('Cartão C6 · •••• 5619')
+    expect(ctx).toBe('C6 — William físico')
   })
 
   it('E. MeuPluggy não aparece como instituição user-facing', () => {
@@ -79,6 +81,31 @@ describe('financePresentation pt-BR', () => {
         canonicalType: 'CREDIT_CARD',
       }),
     ).toBe('Cartão de crédito')
+  })
+
+  it('IOF com canonical FEE usa descriptionRaw', () => {
+    expect(
+      formatTransactionDisplay(
+        { canonicalType: 'FEE', direction: 'OUT', paymentMethod: 'UNKNOWN' },
+        'DEBIT',
+        { description: 'LIMITE CONTA', descriptionRaw: 'IOF LIMITE CONTA' },
+      ),
+    ).toBe('IOF')
+  })
+
+  it('FEE genérico sem IOF → Taxa', () => {
+    expect(
+      formatTransactionDisplay({ canonicalType: 'FEE', direction: 'OUT' }, 'DEBIT', { description: 'TARIFA DOC' }),
+    ).toBe('Taxa')
+  })
+
+  it('normalizeFinanceEnrichment aceita snake_case', () => {
+    expect(
+      formatTransactionDisplay(
+        { canonical_type: 'PIX_OUT', payment_method: 'PIX', direction: 'OUT' } as Record<string, string>,
+        'DEBIT',
+      ),
+    ).toBe('PIX enviado')
   })
 
   it('PIX inferido quando enrichment histórico incompleto', () => {

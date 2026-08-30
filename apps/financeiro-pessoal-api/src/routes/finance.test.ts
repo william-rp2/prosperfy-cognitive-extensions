@@ -476,6 +476,7 @@ describe('routes/finance — INSTITUTION_IDENTITY / ANNOTATIONS', () => {
     expect(response.statusCode).toBe(200)
     const account = response.json().accounts[0]
     expect(account.institutionName).toBe('C6 Bank')
+    expect(account.displayAlias).toBeNull()
     expect(account.last4).toBe('5619')
     expect(account.cardBrand).toBe('Visa')
     expect(String(account.institutionName)).not.toMatch(/pluggy/i)

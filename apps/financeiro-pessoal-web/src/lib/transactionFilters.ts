@@ -27,6 +27,7 @@ export function filterTransactions(
     const alias = account?.displayName ?? ''
     const typeLabel = formatTransactionDisplay(tx.enrichment, tx.type, {
       description: tx.description,
+      descriptionRaw: tx.descriptionRaw,
       accountCanonicalType: account?.canonicalType,
     })
 

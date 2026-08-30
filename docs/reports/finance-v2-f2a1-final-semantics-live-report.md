@@ -1,0 +1,64 @@
+# F2A.1 FINAL SEMANTICS LIVE REPORT
+
+> Branch `dev/finance-v2-f2a` @ `43f20b2d092f28484280537f2679cf9956fc03b8` (não mergeada).
+> Homolog: Prosperfy. **LIVE_READY=YES** — 3 casos do Human Acceptance (IOF/PIX/Estorno) validados live.
+
+```
+SOURCE_SHA=43f20b2d092f28484280537f2679cf9956fc03b8 · SOURCE_SHA_MATCH=YES
+SQLITE_BACKUP=PASS (backups/financeiro-pessoal-final-*.sqlite3, 3448832 B, prefix 925e12c585aba908)
+
+API_TESTS=114 (18 files) · WEB_TESTS=16 (3 files) · BUILD=PASS · NEW_REGRESSIONS=0
+
+TX_TOTAL_BEFORE=1320 · TX_TOTAL_AFTER=1320 (source intacto; cursor/Items/scheduler intocados)
+
+DRY_RUN_PROCESSED=1320 · UPDATED=31 · FAILED=0 · DRY_RUN_WRITES=NO
+FIRST_RUN_PROCESSED=1320 · UPDATED=31 · FAILED=0 · ACCOUNT_CONTEXT_MISSING=0
+SECOND_RUN_UPDATED=0 · SECOND_RUN_FAILED=0 · SECOND_RUN_CLARIFICATIONS_CREATED=0
+SECOND_RUN_IDEMPOTENT=PASS
+
+FEE_COUNT_BEFORE=0 · FEE_COUNT_AFTER=24
+
+IOF_CANONICAL=FEE
+IOF_DISPLAY=IOF (caso real "TRANSFERÊNCIA INTERNACIONAL/IOF" → canonical FEE + display "IOF";
+  demais 23 taxas → "Taxa")
+IOF_DISPLAYED_AS_TRANSFER=NO
+FALSE_IOF_TRANSFER_COUNT=0 (nenhuma transferência real convertida; único hint de transfer
+  não-transfer = o próprio caso IOF, intencional)
+
+PIX_OUT_DISPLAY=PASS ("PIX enviado" ×2) · PIX_IN_DISPLAY=PASS ("PIX recebido" ×1)
+PIX_OUT_GENERIC_EXPENSE=NO
+
+REFUND_DISPLAY=Estorno (×2)
+RAW_REFUND_VISIBLE=NO
+INSTITUTION_CONTEXT_VISIBLE=YES (estornos na conta/cartão com displayName+instituição)
+ACCOUNT_OR_CARD_CONTEXT_VISIBLE=YES (ambos estornos no MESMO CREDIT_CARD — hash 0c0573ba56)
+
+CREDIT_CARD_DISPLAYED_AS_DEBIT=0 (blocker crédito/débito NÃO reaberto)
+CREDIT_PURCHASE_DISPLAY=PASS (1143 × CREDIT_PURCHASE OUT, payment=CREDIT_CARD)
+
+OPEN_CLARIFICATIONS=1320 · MULTI_OPEN_CLARIFICATIONS=0
+
+PLUGGY_ITEM_COUNT=3 · MULTI_ITEM_SYNC=PASS (items=3, acc=6, err=0) · SCHEDULER_INTERVAL=15
+FAVORITE_PERSISTENCE=PASS (prefs sobreviveram reprocess+sync) · ALIAS_PERSISTENCE=PASS
+BANDEIRADO_VISIBLE=NO · FINANCE_TECH_BANNER_VISIBLE=NO · PT_BR_UI=PASS
+CASH_AGGREGATION=PASS · CREDIT_LIMIT_IN_CASH=NO
+
+PAYMENT_CAPABILITY_PRESENT=NO · SECRETS_EXPOSED=NO (bundle=0, logs=0)
+
+CODE_CHANGED=NO · PRODUCTION_TOUCHED=NO
+CODE_READY=YES · LIVE_READY=YES · HUMAN_PASS=NO
+HUMAN_BLOCKERS=none
+```
+
+## Distribuição final (1320 tx)
+```
+PAYMENT: CREDIT_CARD=1182 · UNKNOWN=135 · PIX=3
+CANONICAL: CREDIT_PURCHASE=1143 · EXPENSE=116 · FEE=24 · INCOME=20 · CARD_PAYMENT=12 ·
+  REFUND=2 · PIX_OUT=2 · PIX_IN=1
+```
+
+## Human Acceptance (owner — visual final)
+Frontend disponível: `ssh -L 5175:127.0.0.1:5175 will@177.7.50.182` → http://127.0.0.1:5175
+→ Movimentações: conferir 1) IOF ("IOF"), 2) PIX ("PIX enviado"/"PIX recebido"), 3) Estorno ("Estorno" + contexto cartão).
+
+STOP. F2B não iniciado. Não mergeado. Production intocada.

@@ -54,10 +54,8 @@ export function resolveInstitutionName(
   const candidates: unknown[] = [
     bankData?.bankName,
     bankData?.name,
-    creditData?.brand, // sometimes institution appears here incorrectly — filtered below if card brand only
     account.marketing_name,
     account.name,
-    account.owner,
     connector?.institutionName,
     connector?.name,
     item?.connector_name,
