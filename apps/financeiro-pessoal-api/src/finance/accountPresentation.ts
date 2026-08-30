@@ -1,4 +1,5 @@
 import type { FinancialAccountRow } from './types.js'
+import { isInfrastructureConnectorName } from './institutionIdentity.js'
 
 const TECHNICAL_PRODUCT_NAMES = new Set(['BANDEIRADO', 'BRANDED', 'CREDIT_CARD', 'DEBIT_CARD'])
 
@@ -29,7 +30,9 @@ export function defaultAccountLabel(
   if (name && !isTechnicalProductName(name)) return name
 
   const typeLabel = ASSET_TYPE_LABELS[canonicalType] ?? 'Produto'
-  if (institutionName) return `${institutionName} — ${typeLabel}`
+  if (institutionName && !isInfrastructureConnectorName(institutionName)) {
+    return `${institutionName} — ${typeLabel}`
+  }
   return typeLabel
 }
 

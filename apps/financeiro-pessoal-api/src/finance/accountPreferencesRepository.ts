@@ -4,6 +4,7 @@ export interface FinancialAccountPreferenceRow {
   pluggy_account_id: string
   display_alias: string | null
   is_favorite: number
+  responsible_label: string | null
   created_at: string
   updated_at: string
 }
@@ -28,7 +29,7 @@ export class AccountPreferencesRepository {
 
   upsert(
     pluggyAccountId: string,
-    input: { displayAlias?: string | null; isFavorite?: boolean },
+    input: { displayAlias?: string | null; isFavorite?: boolean; responsibleLabel?: string | null },
   ): FinancialAccountPreferenceRow {
     const now = new Date().toISOString()
     const existing = this.get(pluggyAccountId)
@@ -36,17 +37,22 @@ export class AccountPreferencesRepository {
       input.displayAlias !== undefined ? input.displayAlias?.trim() || null : (existing?.display_alias ?? null)
     const isFavorite =
       input.isFavorite !== undefined ? (input.isFavorite ? 1 : 0) : (existing?.is_favorite ?? 0)
+    const responsibleLabel =
+      input.responsibleLabel !== undefined
+        ? input.responsibleLabel?.trim() || null
+        : (existing?.responsible_label ?? null)
 
     this.db
       .prepare(
-        `INSERT INTO financial_account_preferences (pluggy_account_id, display_alias, is_favorite, created_at, updated_at)
-         VALUES (@pluggyAccountId, @displayAlias, @isFavorite, @now, @now)
+        `INSERT INTO financial_account_preferences (pluggy_account_id, display_alias, is_favorite, responsible_label, created_at, updated_at)
+         VALUES (@pluggyAccountId, @displayAlias, @isFavorite, @responsibleLabel, @now, @now)
          ON CONFLICT(pluggy_account_id) DO UPDATE SET
            display_alias = excluded.display_alias,
            is_favorite = excluded.is_favorite,
+           responsible_label = excluded.responsible_label,
            updated_at = excluded.updated_at`,
       )
-      .run({ pluggyAccountId, displayAlias, isFavorite, now })
+      .run({ pluggyAccountId, displayAlias, isFavorite, responsibleLabel, now })
 
     return this.get(pluggyAccountId)!
   }

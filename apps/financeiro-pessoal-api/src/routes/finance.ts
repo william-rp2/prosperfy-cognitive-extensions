@@ -7,6 +7,11 @@ import type { AccountPreferencesRepository } from '../finance/accountPreferences
 import { defaultAccountLabel, sortAccountsByPreference } from '../finance/accountPresentation.js'
 import type { AccountsRepository } from '../finance/accountsRepository.js'
 import { CASH_ASSET_TYPES, type CanonicalFinancialAssetType } from '../finance/financialAssetNormalizer.js'
+import {
+  extractCardBrand,
+  extractLast4,
+  resolveInstitutionName,
+} from '../finance/institutionIdentity.js'
 import type { BudgetWithStatus } from '../finance/budgetsRepository.js'
 import { assertValidMonth, BudgetsRepository, monthRange } from '../finance/budgetsRepository.js'
 import type { FinancialCategoryRow } from '../finance/categoriesRepository.js'
@@ -26,6 +31,7 @@ import type { PluggyItemRegistrationService } from '../finance/pluggyItemRegistr
 import { fromCents, toCents } from '../finance/types.js'
 import type { FinancialAccountRow, FinancialInvestmentRow, FinancialTransactionRow } from '../finance/types.js'
 import type { TransactionsRepository } from '../finance/transactionsRepository.js'
+import type { TransactionAnnotationsRepository } from '../finance/transactionAnnotationsRepository.js'
 import { parseDate, safeCompare } from '../safe.js'
 
 export interface FinanceRouteDeps {
@@ -45,6 +51,7 @@ export interface FinanceRouteDeps {
   clarifications: ClarificationsRepository
   itemRegistration: PluggyItemRegistrationService
   accountPreferences: AccountPreferencesRepository
+  annotations: TransactionAnnotationsRepository
 }
 
 function requireFinanceToken(request: FastifyRequest, config: AppConfig): boolean {
@@ -94,6 +101,7 @@ function serializePluggyTransaction(
   row: FinancialTransactionRow,
   effectiveCategory: FinancialCategoryRow | null,
   enrichment?: EnrichmentRow,
+  note?: string | null,
 ) {
   return {
     id: row.pluggy_transaction_id,
@@ -109,6 +117,7 @@ function serializePluggyTransaction(
     category: serializeCategory(effectiveCategory),
     merchant: row.merchant_original,
     enrichment: serializeEnrichment(enrichment),
+    note: note ?? null,
   }
 }
 
@@ -168,8 +177,8 @@ function resolveCategory(
 
 function buildAccountContext(preferences: AccountPreferencesRepository, items: ItemsRepository) {
   const preferencesByAccountId = new Map(preferences.listAll().map(row => [row.pluggy_account_id, row]))
-  const institutionByItemId = new Map(items.listAll().map(item => [item.pluggy_item_id, item.connector_name]))
-  return { preferencesByAccountId, institutionByItemId }
+  const itemsById = new Map(items.listAll().map(item => [item.pluggy_item_id, item]))
+  return { preferencesByAccountId, itemsById }
 }
 
 function serializeAccountAsset(
@@ -178,7 +187,8 @@ function serializeAccountAsset(
 ) {
   const canonicalType = resolveAccountCanonicalType(account)
   const pref = ctx.preferencesByAccountId.get(account.pluggy_account_id)
-  const institutionName = ctx.institutionByItemId.get(account.pluggy_item_id) ?? null
+  const item = ctx.itemsById.get(account.pluggy_item_id)
+  const institutionName = resolveInstitutionName(account, item)
   const displayName = pref?.display_alias ?? defaultAccountLabel(account, institutionName, canonicalType)
   return {
     id: account.pluggy_account_id,
@@ -191,6 +201,9 @@ function serializeAccountAsset(
     marketingName: account.marketing_name,
     displayName,
     isFavorite: Boolean(pref?.is_favorite),
+    responsibleLabel: pref?.responsible_label ?? null,
+    cardBrand: extractCardBrand(account.raw_data),
+    last4: extractLast4(account.number_masked),
     currencyCode: account.currency_code,
     balance: fromCents(account.balance_cents),
     numberMasked: account.number_masked,
@@ -280,6 +293,7 @@ export function registerFinanceRoutes(app: FastifyInstance, deps: FinanceRouteDe
     enrichment,
     itemRegistration,
     accountPreferences,
+    annotations,
   } = deps
 
   // Everything under /api/finance/* requires the Cognitive service credential.
@@ -395,17 +409,57 @@ export function registerFinanceRoutes(app: FastifyInstance, deps: FinanceRouteDe
             ? body.displayAlias
             : undefined
       const isFavorite = typeof body.isFavorite === 'boolean' ? body.isFavorite : undefined
+      const responsibleLabel =
+        body.responsibleLabel === null
+          ? null
+          : typeof body.responsibleLabel === 'string'
+            ? body.responsibleLabel
+            : undefined
 
-      if (displayAlias === undefined && isFavorite === undefined) {
-        return reply.code(400).send({ error: 'invalid_payload', message: 'Informe displayAlias ou isFavorite.' })
+      if (displayAlias === undefined && isFavorite === undefined && responsibleLabel === undefined) {
+        return reply.code(400).send({ error: 'invalid_payload', message: 'Informe displayAlias, isFavorite ou responsibleLabel.' })
       }
 
-      const pref = accountPreferences.upsert(accountId, { displayAlias, isFavorite })
+      const pref = accountPreferences.upsert(accountId, { displayAlias, isFavorite, responsibleLabel })
       const accountCtx = buildAccountContext(accountPreferences, items)
       return reply.send({ account: serializeAccountAsset(account, accountCtx), preferences: {
         displayAlias: pref.display_alias,
         isFavorite: Boolean(pref.is_favorite),
+        responsibleLabel: pref.responsible_label,
       } })
+    })
+
+    financeApp.put('/api/finance/transactions/:transactionId/annotation', async (request, reply) => {
+      const { transactionId } = request.params as { transactionId: string }
+      const row = transactions.getByPluggyId(transactionId)
+      if (!row || row.deleted_at) {
+        return reply.code(404).send({ error: 'transaction_not_found', message: 'Transação não encontrada.' })
+      }
+      const body = (request.body ?? {}) as Record<string, unknown>
+      const note = typeof body.note === 'string' ? body.note : ''
+      try {
+        const saved = annotations.upsert(transactionId, note)
+        return reply.send({ note: saved.note, updatedAt: saved.updated_at })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'invalid_note'
+        if (message === 'note_required') {
+          return reply.code(400).send({ error: 'note_required', message: 'Informe uma observação não vazia.' })
+        }
+        if (message === 'note_too_long') {
+          return reply.code(400).send({ error: 'note_too_long', message: 'Observação excede o limite de 500 caracteres.' })
+        }
+        throw error
+      }
+    })
+
+    financeApp.delete('/api/finance/transactions/:transactionId/annotation', async (request, reply) => {
+      const { transactionId } = request.params as { transactionId: string }
+      const row = transactions.getByPluggyId(transactionId)
+      if (!row || row.deleted_at) {
+        return reply.code(404).send({ error: 'transaction_not_found', message: 'Transação não encontrada.' })
+      }
+      annotations.delete(transactionId)
+      return reply.send({ deleted: true })
     })
 
     // finance.transactions.read — merges Pluggy history with manual entries
@@ -431,17 +485,19 @@ export function registerFinanceRoutes(app: FastifyInstance, deps: FinanceRouteDe
 
       const limit = query.limit ? Number(query.limit) : undefined
       const offset = query.offset ? Number(query.offset) : undefined
+      const freeText = query.q?.trim() || query.search?.trim() || undefined
 
       const pluggyRows = effectiveCategoryId
         ? transactions.listByEffectiveCategory(effectiveCategoryId, { startDate: query.startDate, endDate: query.endDate, limit, offset })
         : transactions.list({
-            accountId: query.account,
+            accountId: query.accountId || query.account,
             startDate: query.startDate,
             endDate: query.endDate,
             category: query.categoryOriginal,
             minAmountCents: query.minAmount ? Math.round(Number(query.minAmount) * 100) : undefined,
             maxAmountCents: query.maxAmount ? Math.round(Number(query.maxAmount) * 100) : undefined,
-            search: query.search,
+            search: freeText,
+            direction: query.direction === 'IN' || query.direction === 'OUT' ? query.direction : undefined,
             limit,
             offset,
           })
@@ -474,6 +530,7 @@ export function registerFinanceRoutes(app: FastifyInstance, deps: FinanceRouteDe
             row,
             effective,
             enrichment.getByTransactionId(row.pluggy_transaction_id),
+            annotations.get(row.pluggy_transaction_id)?.note ?? null,
           )
         }),
         ...manualRows.map(row => serializeManualTransaction(row, lookupCategory(row.category_id))),

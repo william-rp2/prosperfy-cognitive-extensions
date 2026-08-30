@@ -19,6 +19,7 @@ import { PluggyItemRegistrationService } from './finance/pluggyItemRegistrationS
 import { ProductsRepository } from './finance/productsRepository.js'
 import { PluggySyncScheduler } from './finance/scheduler.js'
 import { SyncRunsRepository } from './finance/syncRunsRepository.js'
+import { TransactionAnnotationsRepository } from './finance/transactionAnnotationsRepository.js'
 import { TransactionsRepository } from './finance/transactionsRepository.js'
 import { MissingPluggySecretsError, PluggyPort, PluggySyncClient, SdkPluggyPort } from './pluggy.js'
 import { registerFinanceRoutes } from './routes/finance.js'
@@ -108,6 +109,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const budgetsRepository = new BudgetsRepository(financeDb)
   const enrichmentRepository = new EnrichmentRepository(financeDb)
   const clarificationsRepository = new ClarificationsRepository(financeDb)
+  const transactionAnnotationsRepository = new TransactionAnnotationsRepository(financeDb)
   const classificationService = new ClassificationService(
     enrichmentRepository,
     clarificationsRepository,
@@ -178,6 +180,7 @@ export function createApp(options: CreateAppOptions = {}) {
     clarifications: clarificationsRepository,
     itemRegistration: itemRegistrationService,
     accountPreferences: accountPreferencesRepository,
+    annotations: transactionAnnotationsRepository,
   })
 
   app.get('/health', async () => ({ ok: true, app: 'financeiro-pessoal-api' }))
