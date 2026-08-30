@@ -6,6 +6,11 @@ import type { Item } from 'pluggy-sdk'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import type { AppConfig } from '../config.js'
+import { AccountsRepository } from '../finance/accountsRepository.js'
+import { ItemsRepository } from '../finance/itemsRepository.js'
+import { openFinanceDb } from '../finance/db.js'
+import { TransactionsRepository } from '../finance/transactionsRepository.js'
+import { TransactionAnnotationsRepository } from '../finance/transactionAnnotationsRepository.js'
 import { createApp, type CreateAppOptions } from '../server.js'
 import type { PluggySyncClient } from '../pluggy.js'
 
@@ -430,5 +435,106 @@ describe('routes/finance — ACCOUNT_PREFERENCES', () => {
       payload: {},
     })
     expect(response.statusCode).toBe(404)
+  })
+})
+
+describe('routes/finance — INSTITUTION_IDENTITY / ANNOTATIONS', () => {
+  it('F. accounts API não expõe MeuPluggy como institutionName', async () => {
+    const db = openFinanceDb(':memory:')
+    const items = new ItemsRepository(db)
+    const accounts = new AccountsRepository(db)
+    items.upsertItem({
+      pluggyItemId: 'item-c6',
+      connectorId: 200,
+      connectorName: 'MeuPluggy',
+      status: 'UPDATED',
+      executionStatus: null,
+      lastSuccessfulUpdate: null,
+      rawMetadata: null,
+    })
+    accounts.upsertAccount({
+      pluggyAccountId: 'card-c6',
+      pluggyItemId: 'item-c6',
+      name: 'BANDEIRADO',
+      marketingName: 'C6 Bank',
+      type: 'CREDIT',
+      subtype: 'CREDIT_CARD',
+      balanceCents: -5000,
+      numberMasked: '****5619',
+      rawData: { creditData: { brand: 'Visa' }, bankData: { bankName: 'C6 Bank' } },
+    })
+
+    const app = createApp({
+      config,
+      financeDb: db,
+      disableScheduler: true,
+      pluggySync: fakePluggySync,
+    } satisfies CreateAppOptions)
+    openApps.push(app)
+
+    const response = await app.inject({ method: 'GET', url: '/api/finance/accounts', headers: AUTH })
+    expect(response.statusCode).toBe(200)
+    const account = response.json().accounts[0]
+    expect(account.institutionName).toBe('C6 Bank')
+    expect(account.last4).toBe('5619')
+    expect(account.cardBrand).toBe('Visa')
+    expect(String(account.institutionName)).not.toMatch(/pluggy/i)
+  })
+
+  it('K. annotation create/read/delete via API', async () => {
+    const db = openFinanceDb(':memory:')
+    const items = new ItemsRepository(db)
+    const accounts = new AccountsRepository(db)
+    const transactions = new TransactionsRepository(db)
+    const annotations = new TransactionAnnotationsRepository(db)
+
+    items.upsertItem({ pluggyItemId: 'item-1', status: 'UPDATED' })
+    accounts.upsertAccount({
+      pluggyAccountId: 'acc-1',
+      pluggyItemId: 'item-1',
+      type: 'BANK',
+      subtype: 'CHECKING_ACCOUNT',
+      name: 'Conta',
+      balanceCents: 10000,
+    })
+    transactions.upsertTransaction({
+      pluggyTransactionId: 'tx-pluggy-1',
+      pluggyAccountId: 'acc-1',
+      amountCents: -1000,
+      type: 'DEBIT',
+      description: 'Mercado',
+      date: '2026-08-01T12:00:00.000Z',
+      status: 'POSTED',
+    })
+    annotations.upsert('tx-pluggy-1', 'Compra Prosperfy')
+
+    const app = createApp({
+      config,
+      financeDb: db,
+      disableScheduler: true,
+      pluggySync: fakePluggySync,
+    } satisfies CreateAppOptions)
+    openApps.push(app)
+
+    const list = await app.inject({ method: 'GET', url: '/api/finance/transactions', headers: AUTH })
+    expect(list.json().transactions[0].note).toBe('Compra Prosperfy')
+
+    const put = await app.inject({
+      method: 'PUT',
+      url: '/api/finance/transactions/tx-pluggy-1/annotation',
+      headers: AUTH,
+      payload: { note: 'Reembolsável' },
+    })
+    expect(put.statusCode).toBe(200)
+
+    const search = await app.inject({ method: 'GET', url: '/api/finance/transactions?q=Reembols', headers: AUTH })
+    expect(search.json().transactions.some((row: { id: string }) => row.id === 'tx-pluggy-1')).toBe(true)
+
+    const del = await app.inject({
+      method: 'DELETE',
+      url: '/api/finance/transactions/tx-pluggy-1/annotation',
+      headers: AUTH,
+    })
+    expect(del.statusCode).toBe(200)
   })
 })

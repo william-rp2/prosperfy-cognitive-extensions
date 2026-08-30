@@ -36,6 +36,7 @@ export interface FinanceTransaction {
     classificationSource: string | null
     categoryName: string | null
   } | null
+  note?: string | null
 }
 
 export interface FinanceBill {
@@ -59,6 +60,9 @@ export interface FinanceAccount {
   marketingName?: string | null
   displayName?: string | null
   isFavorite?: boolean
+  responsibleLabel?: string | null
+  cardBrand?: string | null
+  last4?: string | null
   balance: number | null
   creditLimit: number | null
   availableCreditLimit: number | null
@@ -190,11 +194,25 @@ export async function addExistingConnection(itemId: string) {
 
 export async function updateAccountPreferences(
   accountId: string,
-  body: { displayAlias?: string | null; isFavorite?: boolean },
+  body: { displayAlias?: string | null; isFavorite?: boolean; responsibleLabel?: string | null },
 ) {
-  return apiRequest<{ account: FinanceAccount; preferences: { displayAlias: string | null; isFavorite: boolean } }>(
+  return apiRequest<{ account: FinanceAccount; preferences: { displayAlias: string | null; isFavorite: boolean; responsibleLabel?: string | null } }>(
     `/api/finance/accounts/${encodeURIComponent(accountId)}/preferences`,
     { method: 'PATCH', body: JSON.stringify(body) },
+  )
+}
+
+export async function upsertTransactionAnnotation(transactionId: string, note: string) {
+  return apiRequest<{ note: string; updatedAt: string }>(
+    `/api/finance/transactions/${encodeURIComponent(transactionId)}/annotation`,
+    { method: 'PUT', body: JSON.stringify({ note }) },
+  )
+}
+
+export async function deleteTransactionAnnotation(transactionId: string) {
+  return apiRequest<{ deleted: boolean }>(
+    `/api/finance/transactions/${encodeURIComponent(transactionId)}/annotation`,
+    { method: 'DELETE' },
   )
 }
 

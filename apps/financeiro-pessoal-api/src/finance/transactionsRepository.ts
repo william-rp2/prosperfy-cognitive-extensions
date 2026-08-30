@@ -27,6 +27,7 @@ export interface TransactionFilters {
   minAmountCents?: number
   maxAmountCents?: number
   search?: string
+  direction?: 'IN' | 'OUT'
   limit?: number
   offset?: number
 }
@@ -155,8 +156,15 @@ export class TransactionsRepository {
       params.maxAmountCents = filters.maxAmountCents
     }
     if (filters.search) {
-      conditions.push('(description LIKE @search OR description_raw LIKE @search)')
+      conditions.push(
+        `(description LIKE @search OR description_raw LIKE @search OR merchant_original LIKE @search OR pluggy_transaction_id IN (SELECT pluggy_transaction_id FROM financial_transaction_annotations WHERE note LIKE @search))`,
+      )
       params.search = `%${filters.search}%`
+    }
+    if (filters.direction === 'IN') {
+      conditions.push("type = 'CREDIT'")
+    } else if (filters.direction === 'OUT') {
+      conditions.push("type = 'DEBIT'")
     }
 
     const limit = Math.min(filters.limit ?? 200, 1000)

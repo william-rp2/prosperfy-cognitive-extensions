@@ -4,6 +4,7 @@ import { PluggyConnect } from 'react-pluggy-connect'
 
 import {
   addExistingConnection,
+  deleteTransactionAnnotation,
   fetchAccounts,
   fetchBills,
   fetchBudgets,
@@ -12,6 +13,7 @@ import {
   fetchTransactions,
   triggerSync,
   updateAccountPreferences,
+  upsertTransactionAnnotation,
   type FinanceAccount,
   type FinanceBill,
   type FinanceBudget,
@@ -19,6 +21,8 @@ import {
   type FinanceTransaction,
 } from '../../api/finance'
 import { apiRequest } from '../../lib/api'
+import { FinanceFilterBar, SearchableSelect } from './FinanceFilterBar'
+import { TransactionTypeCell, transactionTypeLabel } from './TransactionTypeCell'
 import {
   formatAssetType,
   formatAccountDisplayName,
@@ -27,11 +31,17 @@ import {
   formatItemStatus,
   formatMaskedNumber,
   formatSyncStatus,
-  formatTransactionDisplay,
-  formatTransactionAccountContext,
+  isInfrastructureConnectorName,
   onboardingMessage,
   onboardingStateLabel,
 } from '../../lib/financePresentation'
+import {
+  accountFilterLabel,
+  filterAccounts,
+  filterTransactions,
+  uniqueInstitutions,
+  type TransactionFilterState,
+} from '../../lib/transactionFilters'
 import { useAsyncData } from '../../hooks/useAsyncData'
 import { Button } from '../ui/button'
 import { Card } from '../ui/card'
@@ -85,12 +95,19 @@ function AssetPreferenceActions({
   account,
   onUpdated,
 }: {
-  account: Pick<FinanceAccount, 'id' | 'displayName' | 'isFavorite'>
+  account: FinanceAccount
   onUpdated: () => void
 }) {
   const [editing, setEditing] = useState(false)
   const [alias, setAlias] = useState(account.displayName ?? '')
+  const [responsible, setResponsible] = useState(account.responsibleLabel ?? '')
   const [busy, setBusy] = useState(false)
+
+  const institution =
+    account.institutionName && !isInfrastructureConnectorName(account.institutionName)
+      ? account.institutionName
+      : '—'
+  const masked = account.last4 ? `•••• ${account.last4}` : formatMaskedNumber(account.numberMasked)
 
   async function toggleFavorite() {
     setBusy(true)
@@ -102,10 +119,13 @@ function AssetPreferenceActions({
     }
   }
 
-  async function saveAlias() {
+  async function savePreferences() {
     setBusy(true)
     try {
-      await updateAccountPreferences(account.id, { displayAlias: alias.trim() || null })
+      await updateAccountPreferences(account.id, {
+        displayAlias: alias.trim() || null,
+        responsibleLabel: responsible.trim() || null,
+      })
       setEditing(false)
       await onUpdated()
     } finally {
@@ -114,22 +134,33 @@ function AssetPreferenceActions({
   }
 
   return (
-    <div className="mt-3 flex flex-wrap items-center gap-2">
-      <Button aria-label={account.isFavorite ? 'Remover dos favoritos' : 'Favoritar'} disabled={busy} onClick={() => void toggleFavorite()} size="sm" type="button" variant="secondary">
-        <Star className={`h-4 w-4 ${account.isFavorite ? 'fill-amber-400 text-amber-500' : ''}`} />
-        {account.isFavorite ? 'Favorito' : 'Favoritar'}
-      </Button>
+    <div className="mt-3 space-y-3">
       {editing ? (
-        <>
-          <Input aria-label="Nome amigável" className="max-w-[220px]" onChange={event => setAlias(event.target.value)} value={alias} />
-          <Button disabled={busy} onClick={() => void saveAlias()} size="sm" type="button">Salvar</Button>
-          <Button disabled={busy} onClick={() => setEditing(false)} size="sm" type="button" variant="secondary">Cancelar</Button>
-        </>
-      ) : (
-        <Button disabled={busy} onClick={() => { setAlias(account.displayName ?? ''); setEditing(true) }} size="sm" type="button" variant="secondary">
-          Editar nome
+        <div className="rounded-xl border border-[#eadfec] bg-[#fffafd] p-3 text-xs text-[#76677d]">
+          <p><span className="font-bold">Instituição:</span> {institution}</p>
+          <p className="mt-1"><span className="font-bold">Tipo:</span> {formatAssetType(account.canonicalType)}</p>
+          {masked ? <p className="mt-1"><span className="font-bold">Final:</span> {masked}</p> : null}
+          {account.cardBrand ? <p className="mt-1"><span className="font-bold">Bandeira:</span> {account.cardBrand}</p> : null}
+        </div>
+      ) : null}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button aria-label={account.isFavorite ? 'Remover dos favoritos' : 'Favoritar'} disabled={busy} onClick={() => void toggleFavorite()} size="sm" type="button" variant="secondary">
+          <Star className={`h-4 w-4 ${account.isFavorite ? 'fill-amber-400 text-amber-500' : ''}`} />
+          {account.isFavorite ? 'Favorito' : 'Favoritar'}
         </Button>
-      )}
+        {editing ? (
+          <>
+            <Input aria-label="Apelido" className="max-w-[220px]" onChange={event => setAlias(event.target.value)} placeholder="Apelido" value={alias} />
+            <Input aria-label="Responsável" className="max-w-[160px]" onChange={event => setResponsible(event.target.value)} placeholder="Responsável" value={responsible} />
+            <Button disabled={busy} onClick={() => void savePreferences()} size="sm" type="button">Salvar</Button>
+            <Button disabled={busy} onClick={() => setEditing(false)} size="sm" type="button" variant="secondary">Cancelar</Button>
+          </>
+        ) : (
+          <Button disabled={busy} onClick={() => { setAlias(account.displayName ?? ''); setResponsible(account.responsibleLabel ?? ''); setEditing(true) }} size="sm" type="button" variant="secondary">
+            Editar nome
+          </Button>
+        )}
+      </div>
     </div>
   )
 }
@@ -272,48 +303,157 @@ export function ConnectedMonthlyScreen({ month }: { month: string }) {
 }
 
 export function ConnectedTransactionsScreen() {
+  const [filters, setFilters] = useState<TransactionFilterState>({
+    q: '',
+    institution: '',
+    accountId: '',
+    movementType: '',
+    category: '',
+    direction: '',
+    dateFrom: '',
+    dateTo: '',
+    minAmount: '',
+    maxAmount: '',
+  })
+  const [noteDraft, setNoteDraft] = useState<{ id: string; text: string } | null>(null)
+
   const { data, loading, error, refresh } = useAsyncData(async () => {
-    const [transactions, accounts] = await Promise.all([fetchTransactions({ limit: 200 }), fetchAccounts()])
+    const [transactions, accounts] = await Promise.all([
+      fetchTransactions({ limit: 5000 }),
+      fetchAccounts(),
+    ])
     const accountById = new Map(accounts.map(account => [account.id, account]))
-    return { transactions, accountById }
+    return { transactions, accounts, accountById }
   }, [])
+
+  const movementTypes = useMemo(() => {
+    if (!data) return []
+    const set = new Set<string>()
+    for (const tx of data.transactions) {
+      const account = tx.accountId ? data.accountById.get(tx.accountId) : undefined
+      set.add(transactionTypeLabel(tx, account))
+    }
+    return [...set].sort((a, b) => a.localeCompare(b, 'pt-BR'))
+  }, [data])
+
+  const categories = useMemo(() => {
+    if (!data) return []
+    const set = new Set<string>()
+    for (const tx of data.transactions) {
+      const cat = tx.category?.name ?? tx.enrichment?.categoryName
+      if (cat) set.add(cat)
+    }
+    return [...set].sort((a, b) => a.localeCompare(b, 'pt-BR'))
+  }, [data])
+
+  const filteredRows = useMemo(() => {
+    if (!data) return []
+    return filterTransactions(data.transactions, filters, data.accountById)
+  }, [data, filters])
 
   if (loading) return <LoadingCard label="movimentações" />
   if (error) return <ErrorCard message={error} onRetry={refresh} />
 
-  const rows = data?.transactions ?? []
+  const accounts = data?.accounts ?? []
   const accountById = data?.accountById ?? new Map<string, FinanceAccount>()
+
+  async function saveNote() {
+    if (!noteDraft) return
+    if (noteDraft.text.trim()) {
+      await upsertTransactionAnnotation(noteDraft.id, noteDraft.text.trim())
+    } else {
+      await deleteTransactionAnnotation(noteDraft.id)
+    }
+    setNoteDraft(null)
+    await refresh()
+  }
+
   return (
     <Card className="overflow-hidden p-0">
-      {rows.length === 0 ? (
-        <p className="p-6 text-sm text-[#76677d]">Nenhuma movimentação sincronizada ainda.</p>
+      <FinanceFilterBar freeText={filters.q} onFreeTextChange={value => setFilters(prev => ({ ...prev, q: value }))}>
+        <SearchableSelect
+          label="Instituição"
+          onChange={value => setFilters(prev => ({ ...prev, institution: value }))}
+          options={uniqueInstitutions(accounts).map(name => ({ value: name, label: name }))}
+          value={filters.institution}
+        />
+        <SearchableSelect
+          label="Conta / cartão"
+          onChange={value => setFilters(prev => ({ ...prev, accountId: value }))}
+          options={accounts.map(account => ({ value: account.id, label: accountFilterLabel(account) }))}
+          value={filters.accountId}
+        />
+        <SearchableSelect
+          label="Tipo de movimentação"
+          onChange={value => setFilters(prev => ({ ...prev, movementType: value }))}
+          options={movementTypes.map(label => ({ value: label, label }))}
+          value={filters.movementType}
+        />
+        <SearchableSelect
+          label="Categoria"
+          onChange={value => setFilters(prev => ({ ...prev, category: value }))}
+          options={categories.map(label => ({ value: label, label }))}
+          value={filters.category}
+        />
+        <label className="block text-xs font-semibold text-[#76677d]">
+          Direção
+          <select
+            className="mt-1 w-full rounded-xl border border-[#eadfec] bg-white px-3 py-2 text-sm"
+            onChange={event => setFilters(prev => ({ ...prev, direction: event.target.value as TransactionFilterState['direction'] }))}
+            value={filters.direction}
+          >
+            <option value="">Todas</option>
+            <option value="IN">Entrada</option>
+            <option value="OUT">Saída</option>
+          </select>
+        </label>
+        <label className="block text-xs font-semibold text-[#76677d]">
+          De
+          <Input className="mt-1" onChange={event => setFilters(prev => ({ ...prev, dateFrom: event.target.value }))} type="date" value={filters.dateFrom} />
+        </label>
+        <label className="block text-xs font-semibold text-[#76677d]">
+          Até
+          <Input className="mt-1" onChange={event => setFilters(prev => ({ ...prev, dateTo: event.target.value }))} type="date" value={filters.dateTo} />
+        </label>
+      </FinanceFilterBar>
+
+      <p className="px-4 py-2 text-xs text-[#76677d]">
+        Exibindo {filteredRows.length} de {data?.transactions.length ?? 0} movimentações
+      </p>
+
+      {filteredRows.length === 0 ? (
+        <p className="p-6 text-sm text-[#76677d]">Nenhuma movimentação encontrada com os filtros atuais.</p>
       ) : (
         <div className="overflow-auto max-h-[520px]">
           <table className="w-full border-collapse text-left text-sm">
             <thead className="bg-[#fffafd] text-xs uppercase tracking-[0.14em] text-[#76677d]">
               <tr>
-                {['Data', 'Descrição', 'Merchant', 'Tipo', 'Categoria', 'Status', 'Valor'].map(col => (
+                {['Data', 'Descrição', 'Merchant', 'Tipo', 'Categoria', 'Obs.', 'Status', 'Valor'].map(col => (
                   <th key={col} className="px-4 py-3 font-black">{col}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {rows.map(tx => (
+              {filteredRows.map(tx => (
                 <tr key={`${tx.source}-${tx.id}`} className="border-t border-[#eadfec]">
                   <td className="px-4 py-3 whitespace-nowrap">{formatDate(tx.date)}</td>
                   <td className="px-4 py-3">{tx.description ?? '—'}</td>
                   <td className="px-4 py-3">{tx.merchant ?? tx.enrichment?.merchantNormalized ?? '—'}</td>
                   <td className="px-4 py-3">
-                    <p className="font-semibold text-[#231529]">
-                      {formatTransactionDisplay(tx.enrichment, tx.type, { description: tx.description })}
-                    </p>
-                    {tx.accountId ? (
-                      <p className="mt-0.5 text-xs text-[#76677d]">
-                        {formatTransactionAccountContext(accountById.get(tx.accountId) ?? null) ?? '—'}
-                      </p>
-                    ) : null}
+                    <TransactionTypeCell account={tx.accountId ? accountById.get(tx.accountId) : null} transaction={tx} />
                   </td>
                   <td className="px-4 py-3">{tx.category?.name ?? tx.enrichment?.categoryName ?? '—'}</td>
+                  <td className="px-4 py-3">
+                    {tx.note ? <span className="text-xs text-[#009688]" title={tx.note}>●</span> : null}
+                    <Button
+                      onClick={() => setNoteDraft({ id: tx.id, text: tx.note ?? '' })}
+                      size="sm"
+                      type="button"
+                      variant="secondary"
+                    >
+                      {tx.note ? 'Editar obs.' : 'Obs.'}
+                    </Button>
+                  </td>
                   <td className="px-4 py-3">{formatClassificationStatus(tx.enrichment?.classificationStatus)}</td>
                   <td className="px-4 py-3 font-bold">{money(tx.amount)}</td>
                 </tr>
@@ -322,11 +462,29 @@ export function ConnectedTransactionsScreen() {
           </table>
         </div>
       )}
+
+      {noteDraft ? (
+        <div className="border-t border-[#eadfec] bg-[#fffafd] p-4">
+          <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#76677d]">Observação</p>
+          <textarea
+            className="mt-2 min-h-[80px] w-full rounded-xl border border-[#eadfec] bg-white px-3 py-2 text-sm"
+            maxLength={500}
+            onChange={event => setNoteDraft({ ...noteDraft, text: event.target.value })}
+            value={noteDraft.text}
+          />
+          <div className="mt-2 flex gap-2">
+            <Button onClick={() => void saveNote()} size="sm" type="button">Salvar</Button>
+            <Button onClick={() => setNoteDraft(null)} size="sm" type="button" variant="secondary">Cancelar</Button>
+          </div>
+        </div>
+      ) : null}
     </Card>
   )
 }
 
 export function ConnectedCardsScreen() {
+  const [filterQ, setFilterQ] = useState('')
+
   const { data, loading, error, refresh } = useAsyncData(async () => {
     const [bills, accounts] = await Promise.all([fetchBills(), fetchAccounts()])
     return {
@@ -335,6 +493,11 @@ export function ConnectedCardsScreen() {
       accountNames: new Map(accounts.map(account => [account.id, formatAccountDisplayName(account)])),
     }
   }, [])
+
+  const filteredCards = useMemo(() => {
+    if (!data) return []
+    return filterAccounts(data.creditAccounts, filterQ)
+  }, [data, filterQ])
 
   if (loading) return <LoadingCard label="cartões e faturas" />
   if (error || !data) return <ErrorCard message={error ?? 'Sem dados'} onRetry={refresh} />
@@ -350,18 +513,40 @@ export function ConnectedCardsScreen() {
           <p className="mt-1 text-sm text-[#76677d]">Soma apenas de faturas sincronizadas com vencimento informado.</p>
         </Card>
       ) : null}
+      <Card className="overflow-hidden p-0">
+        <FinanceFilterBar freeText={filterQ} onFreeTextChange={setFilterQ}>
+          <SearchableSelect
+            label="Instituição"
+            onChange={value => setFilterQ(value)}
+            options={uniqueInstitutions(data.creditAccounts).map(name => ({ value: name, label: name }))}
+            value=""
+          />
+        </FinanceFilterBar>
+      </Card>
       <div className="grid gap-4 md:grid-cols-2">
         {data.creditAccounts.length === 0 ? (
           <Card className="p-5 text-sm text-[#76677d]">Nenhum cartão sincronizado.</Card>
-        ) : data.creditAccounts.map(card => {
-          const masked = formatMaskedNumber(card.numberMasked)
+        ) : filteredCards.length === 0 ? (
+          <Card className="p-5 text-sm text-[#76677d]">Nenhum cartão corresponde à busca.</Card>
+        ) : filteredCards.map(card => {
+          const institution =
+            card.institutionName && !isInfrastructureConnectorName(card.institutionName)
+              ? card.institutionName
+              : null
+          const masked = card.last4 ? `•••• ${card.last4}` : formatMaskedNumber(card.numberMasked)
+          const brandLine = [card.cardBrand, masked].filter(Boolean).join(' · ')
           const openBalance = card.balance != null ? Math.abs(card.balance) : null
           return (
             <Card key={card.id} className="p-5">
-              <p className="text-xs font-black uppercase tracking-[0.18em] text-[#83358F]">{card.institutionName ?? 'Instituição'}</p>
+              {institution ? (
+                <p className="text-xs font-black uppercase tracking-[0.18em] text-[#83358F]">{institution}</p>
+              ) : null}
               <h3 className="mt-2 text-xl font-black text-[#231529]">{formatAccountDisplayName(card)}</h3>
               <p className="mt-1 text-sm font-semibold text-[#009688]">{formatAssetType(card.canonicalType)}</p>
-              {masked ? <p className="mt-2 text-sm text-[#76677d]">{masked}</p> : null}
+              {brandLine ? <p className="mt-2 text-sm text-[#76677d]">{brandLine}</p> : null}
+              {card.responsibleLabel ? (
+                <p className="mt-1 text-xs text-[#76677d]">Responsável: {card.responsibleLabel}</p>
+              ) : null}
               <div className="mt-4 space-y-2 text-sm">
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-[#76677d]">Limite total</span>
@@ -512,7 +697,7 @@ export function ConnectedIntegrationsScreen() {
         </div>
         <div className="rounded-2xl border border-[#eadfec] bg-[#fffafd] p-4">
           <p className="text-sm font-bold text-[#341539]">Adicionar conexão existente</p>
-          <p className="mt-1 text-xs text-[#76677d]">Conecte o banco no MeuPluggy e cole aqui o ID da conexão.</p>
+          <p className="mt-1 text-xs text-[#76677d]">Conecte o banco no portal Pluggy e cole aqui o ID da conexão.</p>
           <div className="mt-3 flex flex-col gap-3 sm:flex-row">
             <Input
               aria-label="ID da conexão Pluggy"
@@ -556,13 +741,29 @@ export function ConnectedIntegrationsScreen() {
   )
 }
 
+function resolveIntegrationInstitutionLabel(item: FinanceIntegrationItem): string {
+  const assets = [
+    ...item.groups.cashAccounts,
+    ...item.groups.creditCards,
+    ...item.groups.investments,
+    ...item.groups.other,
+  ]
+  for (const asset of assets) {
+    const name = asset.institutionName?.trim()
+    if (name && !isInfrastructureConnectorName(name)) return name
+  }
+  const connector = item.connectorName?.trim()
+  if (connector && !isInfrastructureConnectorName(connector)) return connector
+  return 'Instituição conectada'
+}
+
 function IntegrationItemCard({ item }: { item: FinanceIntegrationItem }) {
   return (
     <Card className="p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <Landmark className="h-6 w-6 text-[#83358F]" />
-          <h3 className="mt-4 text-xl font-black text-[#231529]">{item.connectorName ?? 'Instituição'}</h3>
+          <h3 className="mt-4 text-xl font-black text-[#231529]">{resolveIntegrationInstitutionLabel(item)}</h3>
           <p className="mt-1 text-sm font-semibold text-[#009688]">{formatItemStatus(item.status)}</p>
           <p className="mt-2 text-xs text-[#76677d]">Ref. {item.idMasked}</p>
         </div>
