@@ -71,7 +71,6 @@ import {
   type Metric,
 } from './data/finance-seed'
 import { authenticate, getCurrentSession, getStoredAuthRecord, logout, resetLocalCredentials, type AuthSession } from './lib/auth'
-import { databaseNamespace } from './lib/database'
 
 type ScreenId =
   | 'dashboard'
@@ -276,18 +275,23 @@ function Sidebar({ activeScreen, collapsed, isOpen, onClose, onSelect, onToggleC
               ) : null}
             </button>
           ))}
-          <a className={`flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left text-sm font-semibold text-white/74 transition hover:bg-white/10 hover:text-white ${collapsed ? 'justify-center' : ''}`} href="/poc/pluggy" title="POC Pluggy">
-            <Plug className="h-5 w-5 shrink-0" />
-            {!collapsed ? <span>POC Pluggy</span> : null}
-          </a>
         </nav>
 
         {!collapsed ? (
           <div className="mt-auto rounded-3xl border border-white/10 bg-white/8 p-4 text-sm text-white/72">
-            <p className="font-bold text-white">Protótipo sem dados reais</p>
-            <p className="mt-2 text-xs leading-5 text-white/70">Banco definitivo, backend financeiro e integrações reais ficam fora desta etapa.</p>
-            <p className="mt-2 text-xs leading-5 text-white/70">Seed: {financeSeedMetadata.version} • fonte {financeSeedMetadata.source}</p>
-            <p className="mt-3 font-mono text-[11px] text-white/55">{databaseNamespace.recommendedSchema}</p>
+            {financeDemoMode ? (
+              <>
+                <p className="font-bold text-white">Modo demonstração</p>
+                <p className="mt-2 text-xs leading-5 text-white/70">Dados fictícios para protótipo visual.</p>
+                <p className="mt-2 text-xs leading-5 text-white/70">Seed: {financeSeedMetadata.version}</p>
+              </>
+            ) : (
+              <>
+                <p className="font-bold text-white">Finance V2</p>
+                <p className="mt-2 text-xs leading-5 text-white/70">Dados reais via Open Finance (Pluggy).</p>
+                <p className="mt-2 text-xs leading-5 text-white/70">Sincronização automática a cada 15 min.</p>
+              </>
+            )}
           </div>
         ) : null}
       </aside>
@@ -304,7 +308,7 @@ function Header({ activeItem, displayName, mode, onLogout, onMenu, onModeChange 
             <Menu className="h-5 w-5" />
           </Button>
           <div className="min-w-0">
-            <p className="text-xs font-bold uppercase tracking-[0.22em] text-[#83358F]">Protótipo navegável</p>
+            <p className="text-xs font-bold uppercase tracking-[0.22em] text-[#83358F]">{financeDemoMode ? 'Protótipo navegável' : 'Finance V2'}</p>
             <h1 className="truncate text-xl font-black tracking-[-0.03em] text-[#231529] sm:text-2xl">{activeItem.label}</h1>
           </div>
         </div>
@@ -882,7 +886,7 @@ function AdminDashboard({ session, onLogout }: { session: AuthSession; onLogout:
   const [mode, setMode] = useState<UiMode>('normal')
   const [monthOffset, setMonthOffset] = useState(0)
   const displayName = useMemo(() => session.username.split('@')[0] || session.username, [session.username])
-  const isPluggyPoc = window.location.pathname === '/poc/pluggy'
+  const isPluggyPoc = window.location.pathname === '/poc/pluggy' && import.meta.env.VITE_FINANCE_ADMIN_POC === 'true'
   const activeItem = navItems.find(item => item.id === activeScreen) ?? navItems[0]
 
   if (isPluggyPoc) return <PluggyPocPage />
