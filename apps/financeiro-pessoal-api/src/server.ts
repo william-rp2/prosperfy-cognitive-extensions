@@ -3,6 +3,7 @@ import Fastify, { FastifyRequest } from 'fastify'
 import { z } from 'zod'
 
 import { AppConfig, getConfigStatus, loadConfig, resolveSyncIntervalMinutes } from './config.js'
+import { AccountPreferencesRepository } from './finance/accountPreferencesRepository.js'
 import { AccountsRepository } from './finance/accountsRepository.js'
 import { BudgetsRepository } from './finance/budgetsRepository.js'
 import { CategoriesRepository } from './finance/categoriesRepository.js'
@@ -103,6 +104,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const categoriesRepository = new CategoriesRepository(financeDb)
   const manualTransactionsRepository = new ManualTransactionsRepository(financeDb)
   const categoryOverridesRepository = new CategoryOverridesRepository(financeDb)
+  const accountPreferencesRepository = new AccountPreferencesRepository(financeDb)
   const budgetsRepository = new BudgetsRepository(financeDb)
   const enrichmentRepository = new EnrichmentRepository(financeDb)
   const clarificationsRepository = new ClarificationsRepository(financeDb)
@@ -111,6 +113,7 @@ export function createApp(options: CreateAppOptions = {}) {
     clarificationsRepository,
     categoriesRepository,
     categoryOverridesRepository,
+    accountsRepository,
   )
 
   const app = Fastify({
@@ -174,6 +177,7 @@ export function createApp(options: CreateAppOptions = {}) {
     enrichment: enrichmentRepository,
     clarifications: clarificationsRepository,
     itemRegistration: itemRegistrationService,
+    accountPreferences: accountPreferencesRepository,
   })
 
   app.get('/health', async () => ({ ok: true, app: 'financeiro-pessoal-api' }))

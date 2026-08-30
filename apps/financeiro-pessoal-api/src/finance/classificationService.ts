@@ -1,3 +1,5 @@
+import type { AccountsRepository } from './accountsRepository.js'
+import { resolveAccountCanonicalType } from './accountAggregation.js'
 import type { CategoryOverridesRepository } from './categoryOverridesRepository.js'
 import type { CategoriesRepository } from './categoriesRepository.js'
 import type { ClarificationsRepository } from './clarificationsRepository.js'
@@ -17,6 +19,7 @@ export class ClassificationService {
     private readonly clarifications: ClarificationsRepository,
     private readonly categories: CategoriesRepository,
     private readonly overrides: CategoryOverridesRepository,
+    private readonly accounts?: AccountsRepository,
   ) {}
 
   /** Skips re-classification when enrichment is already confirmed (manual/historical/rules). */
@@ -37,6 +40,9 @@ export class ClassificationService {
   }
 
   classifyPluggyTransaction(row: FinancialTransactionRow): ClassificationResult {
+    const account = this.accounts?.getByPluggyId(row.pluggy_account_id)
+    const accountCanonicalType = account ? resolveAccountCanonicalType(account) : null
+
     const normalized = normalizePluggyTransaction({
       pluggyType: row.type,
       amountCents: row.amount_cents,
@@ -44,6 +50,7 @@ export class ClassificationService {
       descriptionRaw: row.description_raw,
       merchantOriginal: row.merchant_original,
       rawData: row.raw_data ? JSON.parse(row.raw_data) : undefined,
+      accountCanonicalType,
     })
 
     const override = this.overrides.get(row.pluggy_transaction_id)

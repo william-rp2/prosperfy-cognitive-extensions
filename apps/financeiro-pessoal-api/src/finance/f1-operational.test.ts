@@ -132,7 +132,7 @@ describe('F1 — multi-item sync & delta', () => {
     syncRuns = new SyncRunsRepository(db)
     enrichment = new EnrichmentRepository(db)
     clarifications = new ClarificationsRepository(db)
-    classification = new ClassificationService(enrichment, clarifications, new CategoriesRepository(db), new CategoryOverridesRepository(db))
+    classification = new ClassificationService(enrichment, clarifications, new CategoriesRepository(db), new CategoryOverridesRepository(db), new AccountsRepository(db))
   })
 
   afterEach(() => db.close())
