@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react'
 import { PluggyConnect } from 'react-pluggy-connect'
 
 import {
+  addExistingConnection,
   fetchAccounts,
   fetchBills,
   fetchBudgets,
@@ -10,15 +11,26 @@ import {
   fetchSummary,
   fetchTransactions,
   triggerSync,
-  type FinanceAccount,
   type FinanceBill,
   type FinanceBudget,
+  type FinanceIntegrationItem,
   type FinanceTransaction,
 } from '../../api/finance'
 import { apiRequest } from '../../lib/api'
+import {
+  formatAssetType,
+  formatBudgetStatus,
+  formatClassificationStatus,
+  formatItemStatus,
+  formatSyncStatus,
+  formatTransactionType,
+  onboardingMessage,
+  onboardingStateLabel,
+} from '../../lib/financePresentation'
 import { useAsyncData } from '../../hooks/useAsyncData'
 import { Button } from '../ui/button'
 import { Card } from '../ui/card'
+import { Input } from '../ui/input'
 
 export const financeDemoMode = import.meta.env.VITE_FINANCE_DEMO_MODE === 'true'
 
@@ -57,7 +69,7 @@ function ErrorCard({ message, onRetry }: { message: string; onRetry?: () => void
 export function DeferredEmptyScreen({ title, description }: { title: string; description: string }) {
   return (
     <Card className="p-8 text-center">
-      <p className="text-xs font-black uppercase tracking-[0.18em] text-[#76677d]">Fora do escopo F1</p>
+      <p className="text-xs font-black uppercase tracking-[0.18em] text-[#76677d]">Em breve</p>
       <h3 className="mt-2 text-xl font-black text-[#231529]">{title}</h3>
       <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-[#76677d]">{description}</p>
     </Card>
@@ -92,23 +104,29 @@ export function ConnectedDashboardScreen() {
   if (error || !data) return <ErrorCard message={error ?? 'Sem dados'} onRetry={refresh} />
 
   const { summary, accounts } = data
+  const cashAccounts = accounts.filter(account => account.canonicalType !== 'CREDIT_CARD' && account.canonicalType !== 'INVESTMENT')
   return (
     <div className="space-y-6">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCard label="Saldo total" value={money(summary.totalBalance)} helper="Contas bancárias (exclui cartão)" tone="blue" />
+        <MetricCard label="Saldo em contas" value={money(summary.cashBalance ?? summary.totalBalance)} helper="Conta corrente, pagamento e poupança" tone="blue" />
+        <MetricCard label="Investimentos" value={money(summary.investmentBalance)} helper="Patrimônio financeiro separado do caixa" tone="purple" />
+        <MetricCard label="Patrimônio financeiro" value={money(summary.financialWealth)} helper="Caixa + investimentos (sem limites de cartão)" tone="green" />
+        <MetricCard label="Faturas em cartão" value={money(summary.openCardBalance)} helper="Valor em aberto — não é saldo bancário" tone="red" />
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <MetricCard label="Receitas do mês" value={money(summary.monthIncome)} helper={`Referência ${summary.month}`} tone="green" />
         <MetricCard label="Despesas do mês" value={money(summary.monthExpense)} helper="Pluggy + manual" tone="red" />
-        <MetricCard label="Resultado do mês" value={money(summary.monthResult)} helper={summary.lastSync ? `Último sync ${formatDate(summary.lastSync)}` : 'Aguardando sync'} tone={(summary.monthResult ?? 0) < 0 ? 'red' : 'green'} />
+        <MetricCard label="Resultado do mês" value={money(summary.monthResult)} helper={summary.lastSync ? `Última sync ${formatDate(summary.lastSync)}` : 'Aguardando sync'} tone={(summary.monthResult ?? 0) < 0 ? 'red' : 'green'} />
       </div>
       <Card className="p-5">
         <p className="text-sm font-bold uppercase tracking-[0.18em] text-[#009688]">Contas conectadas</p>
-        {accounts.length === 0 ? (
-          <p className="mt-4 text-sm text-[#76677d]">Nenhuma conta sincronizada ainda. Conecte um banco em Contas e Integrações.</p>
+        {cashAccounts.length === 0 ? (
+          <p className="mt-4 text-sm text-[#76677d]">Nenhuma conta bancária sincronizada ainda. Conecte um banco em Contas e Integrações.</p>
         ) : (
           <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {accounts.map(account => (
+            {cashAccounts.map(account => (
               <div key={account.id} className="rounded-2xl border border-[#eadfec] bg-white/75 px-4 py-3">
-                <p className="text-xs font-black uppercase tracking-[0.14em] text-[#76677d]">{account.type ?? 'conta'}</p>
+                <p className="text-xs font-black uppercase tracking-[0.14em] text-[#76677d]">{formatAssetType(account.canonicalType)}</p>
                 <p className="font-black text-[#231529]">{account.name ?? account.id}</p>
                 <p className="mt-1 text-lg font-black text-[#341539]">{money(account.balance)}</p>
               </div>
@@ -165,7 +183,7 @@ export function ConnectedMonthlyScreen({ month }: { month: string }) {
                   <td className="px-4 py-3">{money(budget.limitAmount)}</td>
                   <td className="px-4 py-3">{money(budget.spentAmount)}</td>
                   <td className="px-4 py-3">{money(budget.remainingAmount)}</td>
-                  <td className="px-4 py-3">{budget.status}</td>
+                  <td className="px-4 py-3">{formatBudgetStatus(budget.status)}</td>
                 </tr>
               ))}
             </tbody>
@@ -221,9 +239,9 @@ export function ConnectedTransactionsScreen() {
                   <td className="px-4 py-3 whitespace-nowrap">{formatDate(tx.date)}</td>
                   <td className="px-4 py-3">{tx.description ?? '—'}</td>
                   <td className="px-4 py-3">{tx.merchant ?? tx.enrichment?.merchantNormalized ?? '—'}</td>
-                  <td className="px-4 py-3">{tx.enrichment?.canonicalType ?? tx.type ?? '—'}</td>
+                  <td className="px-4 py-3">{formatTransactionType(tx.enrichment?.canonicalType ?? tx.type)}</td>
                   <td className="px-4 py-3">{tx.category?.name ?? tx.enrichment?.categoryName ?? '—'}</td>
-                  <td className="px-4 py-3">{tx.enrichment?.classificationStatus ?? '—'}</td>
+                  <td className="px-4 py-3">{formatClassificationStatus(tx.enrichment?.classificationStatus)}</td>
                   <td className="px-4 py-3 font-bold">{money(tx.amount)}</td>
                 </tr>
               ))}
@@ -238,7 +256,7 @@ export function ConnectedTransactionsScreen() {
 export function ConnectedCardsScreen() {
   const { data, loading, error, refresh } = useAsyncData(async () => {
     const [bills, accounts] = await Promise.all([fetchBills(), fetchAccounts()])
-    return { bills, creditAccounts: accounts.filter(a => a.type === 'CREDIT') }
+    return { bills, creditAccounts: accounts.filter(a => a.canonicalType === 'CREDIT_CARD') }
   }, [])
 
   if (loading) return <LoadingCard label="cartões e faturas" />
@@ -253,8 +271,9 @@ export function ConnectedCardsScreen() {
           <Card key={card.id} className="p-5">
             <p className="text-xs font-black uppercase tracking-[0.18em] text-[#83358F]">Cartão</p>
             <h3 className="mt-2 text-xl font-black text-[#231529]">{card.name ?? card.id}</h3>
-            <p className="mt-3 text-sm text-[#76677d]">Limite {money(card.creditLimit)}</p>
-            <p className="mt-2 text-3xl font-black text-[#341539]">{money(card.balance)}</p>
+            <p className="mt-3 text-sm text-[#76677d]">Limite total {money(card.creditLimit)}</p>
+            <p className="mt-2 text-3xl font-black text-[#341539]">{money(Math.abs(card.balance ?? 0))}</p>
+            <p className="text-sm text-[#76677d]">Fatura/saldo em aberto (não é patrimônio)</p>
           </Card>
         ))}
       </div>
@@ -291,40 +310,76 @@ export function ConnectedIntegrationsScreen() {
   const [connectToken, setConnectToken] = useState<string | null>(null)
   const [widgetOpen, setWidgetOpen] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null)
   const [syncing, setSyncing] = useState(false)
+  const [existingItemId, setExistingItemId] = useState('')
+  const [onboardingState, setOnboardingState] = useState<'idle' | 'validating' | 'syncing' | 'done' | 'error'>('idle')
 
   const { data, loading, error, refresh } = useAsyncData(() => fetchIntegrations(), [])
 
   async function openConnect() {
     setActionError(null)
+    setActionSuccess(null)
     try {
       const response = await apiRequest<{ accessToken: string }>('/api/connect-token', { method: 'POST', body: JSON.stringify({}) })
       setConnectToken(response.accessToken)
       setWidgetOpen(true)
     } catch (caught) {
-      setActionError(caught instanceof Error ? caught.message : 'Erro ao abrir Pluggy Connect.')
+      setActionError(caught instanceof Error ? caught.message : 'Erro ao abrir conexão Pluggy.')
     }
   }
 
   async function handleConnectSuccess(itemData: unknown) {
     const itemId = (itemData as { item?: { id?: string } })?.item?.id
     if (!itemId) {
-      setActionError('Connect retornou sem item.id')
+      setActionError('Não foi possível concluir a conexão.')
       return
     }
-    await apiRequest('/api/pluggy/items', { method: 'POST', body: JSON.stringify({ itemId }) })
-    setWidgetOpen(false)
-    await refresh()
+    setOnboardingState('syncing')
+    try {
+      await apiRequest('/api/pluggy/items', { method: 'POST', body: JSON.stringify({ itemId }) })
+      setWidgetOpen(false)
+      setActionSuccess('Conexão adicionada.')
+      setOnboardingState('done')
+      await refresh()
+    } catch (caught) {
+      setOnboardingState('error')
+      setActionError(caught instanceof Error ? caught.message : 'Falha temporária ao sincronizar.')
+    }
+  }
+
+  async function addExistingItem() {
+    const trimmed = existingItemId.trim()
+    if (!trimmed) {
+      setActionError('Informe o ID da conexão Pluggy.')
+      return
+    }
+    setActionError(null)
+    setActionSuccess(null)
+    setOnboardingState('validating')
+    try {
+      const result = await addExistingConnection(trimmed)
+      setOnboardingState(result.success ? 'done' : 'error')
+      setActionSuccess(result.message || onboardingMessage(result.outcome))
+      setExistingItemId('')
+      await refresh()
+    } catch (caught) {
+      setOnboardingState('error')
+      const message = caught instanceof Error ? caught.message : 'Não foi possível acessar essa conexão.'
+      setActionError(message)
+    }
   }
 
   async function syncNow() {
     setSyncing(true)
     setActionError(null)
+    setActionSuccess(null)
     try {
       await triggerSync()
+      setActionSuccess('Sincronização iniciada.')
       await refresh()
     } catch (caught) {
-      setActionError(caught instanceof Error ? caught.message : 'Falha ao sincronizar.')
+      setActionError(caught instanceof Error ? caught.message : 'Falha temporária ao sincronizar.')
     } finally {
       setSyncing(false)
     }
@@ -335,12 +390,40 @@ export function ConnectedIntegrationsScreen() {
 
   return (
     <div className="space-y-5">
-      <Card className="flex flex-wrap items-center gap-3 p-5">
-        <Button onClick={() => void openConnect()} type="button"><Plug className="h-4 w-4" />Conectar conta</Button>
-        <Button disabled={syncing} onClick={() => void syncNow()} type="button" variant="secondary"><RefreshCw className="h-4 w-4" />Atualizar agora</Button>
-        <p className="text-sm text-[#76677d]">Sync automático: {data.sync.enabled ? `a cada ${data.sync.intervalMinutes} min` : 'desligado'}</p>
+      <Card className="space-y-4 p-5">
+        <div className="flex flex-wrap items-center gap-3">
+          <Button onClick={() => void openConnect()} type="button"><Plug className="h-4 w-4" />Conectar nova conta</Button>
+          <Button disabled={syncing} onClick={() => void syncNow()} type="button" variant="secondary">
+            <RefreshCw className="h-4 w-4" />{syncing ? 'Sincronizando...' : 'Atualizar agora'}
+          </Button>
+          <p className="text-sm text-[#76677d]">
+            Sync automático: {data.sync.enabled ? `a cada ${data.sync.intervalMinutes} min` : 'desligado'}
+            {data.sync.latestRun ? ` • ${formatSyncStatus(data.sync.latestRun.status)}` : ''}
+          </p>
+        </div>
+        <div className="rounded-2xl border border-[#eadfec] bg-[#fffafd] p-4">
+          <p className="text-sm font-bold text-[#341539]">Adicionar conexão existente</p>
+          <p className="mt-1 text-xs text-[#76677d]">Conecte o banco no MeuPluggy e cole aqui o ID da conexão.</p>
+          <div className="mt-3 flex flex-col gap-3 sm:flex-row">
+            <Input
+              aria-label="ID da conexão Pluggy"
+              onChange={event => setExistingItemId(event.target.value)}
+              placeholder="ID da conexão Pluggy"
+              value={existingItemId}
+            />
+            <Button disabled={onboardingState === 'validating' || onboardingState === 'syncing'} onClick={() => void addExistingItem()} type="button">
+              Adicionar conexão
+            </Button>
+          </div>
+          {onboardingState !== 'idle' ? (
+            <p className="mt-2 text-xs font-semibold text-[#009688]">{onboardingStateLabel(onboardingState)}</p>
+          ) : null}
+        </div>
       </Card>
       {actionError ? <ErrorCard message={actionError} /> : null}
+      {actionSuccess ? (
+        <Card className="border-emerald-100 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800">{actionSuccess}</Card>
+      ) : null}
       {connectToken && widgetOpen ? (
         <PluggyConnect
           connectToken={connectToken}
@@ -353,20 +436,74 @@ export function ConnectedIntegrationsScreen() {
           onSuccess={itemData => void handleConnectSuccess(itemData)}
         />
       ) : null}
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <div className="space-y-4">
         {data.items.length === 0 ? (
-          <Card className="p-5 text-sm text-[#76677d]">Nenhum Item Pluggy conectado.</Card>
+          <Card className="p-5 text-sm text-[#76677d]">Nenhuma instituição conectada.</Card>
         ) : data.items.map(item => (
-          <Card key={item.id} className="p-5">
-            <Landmark className="h-6 w-6 text-[#83358F]" />
-            <h3 className="mt-4 text-xl font-black text-[#231529]">{item.connectorName ?? item.id}</h3>
-            <p className="mt-1 text-sm font-semibold text-[#009688]">{item.status}</p>
-            <p className="mt-4 text-sm text-[#76677d]">Contas: {item.accountCount}</p>
-            <p className="text-sm text-[#76677d]">Última sync: {item.lastSyncedAt ? formatDate(item.lastSyncedAt) : '—'}</p>
-            {item.errorSummary ? <p className="mt-2 text-sm font-semibold text-rose-700">{item.errorSummary}</p> : null}
-          </Card>
+          <IntegrationItemCard key={item.id} item={item} />
         ))}
       </div>
+    </div>
+  )
+}
+
+function IntegrationItemCard({ item }: { item: FinanceIntegrationItem }) {
+  return (
+    <Card className="p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <Landmark className="h-6 w-6 text-[#83358F]" />
+          <h3 className="mt-4 text-xl font-black text-[#231529]">{item.connectorName ?? 'Instituição'}</h3>
+          <p className="mt-1 text-sm font-semibold text-[#009688]">{formatItemStatus(item.status)}</p>
+          <p className="mt-2 text-xs text-[#76677d]">Ref. {item.idMasked}</p>
+        </div>
+        <div className="text-right text-sm text-[#76677d]">
+          <p>Última sync: {item.lastSyncedAt ? formatDate(item.lastSyncedAt) : '—'}</p>
+        </div>
+      </div>
+      {item.errorSummary ? <p className="mt-3 text-sm font-semibold text-rose-700">Erro na sincronização. Tente reconectar.</p> : null}
+      <div className="mt-5 grid gap-4 md:grid-cols-2">
+        <AssetGroup title="Contas" assets={item.groups.cashAccounts} valueLabel="Saldo" />
+        <AssetGroup title="Cartões" assets={item.groups.creditCards} valueLabel="Fatura em aberto" showLimit />
+        <AssetGroup title="Investimentos" assets={item.groups.investments} valueLabel="Valor" />
+        {item.groups.other.length > 0 ? <AssetGroup title="Outros" assets={item.groups.other} valueLabel="Saldo" /> : null}
+      </div>
+    </Card>
+  )
+}
+
+function AssetGroup({
+  title,
+  assets,
+  valueLabel,
+  showLimit = false,
+}: {
+  title: string
+  assets: FinanceIntegrationItem['groups']['cashAccounts']
+  valueLabel: string
+  showLimit?: boolean
+}) {
+  if (assets.length === 0) return null
+  return (
+    <div className="rounded-2xl border border-[#eadfec] bg-white/70 p-4">
+      <p className="text-xs font-black uppercase tracking-[0.14em] text-[#76677d]">{title}</p>
+      <div className="mt-3 space-y-2">
+        {assets.map(asset => (
+          <div key={asset.id} className="flex items-start justify-between gap-3 text-sm">
+            <div>
+              <p className="font-semibold text-[#231529]">{asset.name ?? 'Produto'}</p>
+              <p className="text-xs text-[#76677d]">{formatAssetType(asset.canonicalType)}</p>
+            </div>
+            <div className="text-right">
+              <p className="font-bold text-[#341539]">{money(showLimit ? Math.abs(asset.balance ?? 0) : asset.balance)}</p>
+              {showLimit && asset.creditLimit != null ? (
+                <p className="text-xs text-[#76677d]">Limite {money(asset.creditLimit)}</p>
+              ) : null}
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="mt-2 text-[10px] uppercase tracking-[0.12em] text-[#76677d]">{valueLabel}</p>
     </div>
   )
 }

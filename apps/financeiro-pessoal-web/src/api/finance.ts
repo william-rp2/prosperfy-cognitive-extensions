@@ -3,10 +3,14 @@ import { apiRequest } from '../lib/api'
 export interface FinanceSummary {
   month: string
   totalBalance: number | null
+  cashBalance: number | null
+  investmentBalance: number | null
+  financialWealth: number | null
   monthIncome: number | null
   monthExpense: number | null
   monthResult: number | null
   openCardBalance: number | null
+  creditCardLimitTotal: number | null
   lastSync: string | null
 }
 
@@ -46,12 +50,40 @@ export interface FinanceBill {
 export interface FinanceAccount {
   id: string
   itemId: string
-  type: string | null
-  subtype: string | null
+  sourceType: string | null
+  sourceSubtype: string | null
+  canonicalType: string | null
   name: string | null
   balance: number | null
   creditLimit: number | null
+  availableCreditLimit: number | null
   lastSyncedAt: string | null
+}
+
+export interface FinanceAsset {
+  id: string
+  itemId: string
+  canonicalType: string | null
+  name: string | null
+  balance: number | null
+  creditLimit?: number | null
+  availableCreditLimit?: number | null
+  lastSyncedAt: string | null
+}
+
+export interface FinanceIntegrationItem {
+  id: string
+  idMasked: string
+  connectorName: string | null
+  status: string
+  lastSyncedAt: string | null
+  errorSummary: string | null
+  groups: {
+    cashAccounts: FinanceAsset[]
+    creditCards: FinanceAsset[]
+    investments: FinanceAsset[]
+    other: FinanceAsset[]
+  }
 }
 
 export interface FinanceBudget {
@@ -65,14 +97,7 @@ export interface FinanceBudget {
 }
 
 export interface FinanceIntegrationsResponse {
-  items: Array<{
-    id: string
-    connectorName: string | null
-    status: string
-    lastSyncedAt: string | null
-    errorSummary: string | null
-    accountCount: number
-  }>
+  items: FinanceIntegrationItem[]
   sync: {
     enabled: boolean
     intervalMinutes: number
@@ -90,8 +115,7 @@ export interface FinanceSyncStatus {
 
 export async function fetchSummary(month?: string) {
   const query = month ? `?month=${encodeURIComponent(month)}` : ''
-  const data = await apiRequest<{ month: string; totalBalance: number | null; monthIncome: number | null; monthExpense: number | null; monthResult: number | null; openCardBalance: number | null; lastSync: string | null }>(`/api/finance/summary${query}`)
-  return data as FinanceSummary
+  return apiRequest<FinanceSummary>(`/api/finance/summary${query}`)
 }
 
 export async function fetchTransactions(params: Record<string, string | number | undefined> = {}) {
@@ -138,6 +162,19 @@ export async function updateTransactionCategory(body: {
   category?: string
 }) {
   return apiRequest('/api/finance/transactions/category', { method: 'PATCH', body: JSON.stringify(body) })
+}
+
+export async function addExistingConnection(itemId: string) {
+  return apiRequest<{
+    success: boolean
+    outcome: string
+    message: string
+    connectorName: string | null
+    syncStatus: string | null
+  }>('/api/finance/integrations/add-existing', {
+    method: 'POST',
+    body: JSON.stringify({ itemId }),
+  })
 }
 
 export async function createManualTransaction(body: {
