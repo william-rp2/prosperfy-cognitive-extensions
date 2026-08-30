@@ -44,6 +44,8 @@ export interface FinancialTransactionRow {
   description_raw: string | null
   amount_cents: number
   currency_code: string | null
+  amount_in_account_currency_cents: number | null
+  account_currency_code: string | null
   date: string
   status: string | null
   type: string | null

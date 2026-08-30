@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import type { FinanceDb } from './db.js'
+import { EFFECTIVE_ABS_AMOUNT_CENTS_SQL, extractAmountInAccountCurrencyCents } from './transactionAmount.js'
 import type { FinancialTransactionRow } from './types.js'
 
 export interface UpsertTransactionInput {
@@ -10,6 +11,8 @@ export interface UpsertTransactionInput {
   descriptionRaw?: string | null
   amountCents: number
   currencyCode?: string | null
+  amountInAccountCurrencyCents?: number | null
+  accountCurrencyCode?: string | null
   date: string
   status?: string | null
   type?: string | null
@@ -54,15 +57,22 @@ export class TransactionsRepository {
       return { row: this.getByPluggyId(input.pluggyTransactionId)!, delta: 'unchanged' }
     }
 
+    const amountInAccountCurrencyCents =
+      input.amountInAccountCurrencyCents !== undefined
+        ? input.amountInAccountCurrencyCents
+        : extractAmountInAccountCurrencyCents(input.rawData)
+
     this.db
       .prepare(
-        `INSERT INTO financial_transactions (id, pluggy_transaction_id, pluggy_account_id, description, description_raw, amount_cents, currency_code, date, status, type, category_original, merchant_original, balance_cents, created_at, updated_at, last_synced_at, raw_data)
-         VALUES (@id, @pluggyTransactionId, @pluggyAccountId, @description, @descriptionRaw, @amountCents, @currencyCode, @date, @status, @type, @categoryOriginal, @merchantOriginal, @balanceCents, @createdAt, @updatedAt, @lastSyncedAt, @rawData)
+        `INSERT INTO financial_transactions (id, pluggy_transaction_id, pluggy_account_id, description, description_raw, amount_cents, currency_code, amount_in_account_currency_cents, account_currency_code, date, status, type, category_original, merchant_original, balance_cents, created_at, updated_at, last_synced_at, raw_data)
+         VALUES (@id, @pluggyTransactionId, @pluggyAccountId, @description, @descriptionRaw, @amountCents, @currencyCode, @amountInAccountCurrencyCents, @accountCurrencyCode, @date, @status, @type, @categoryOriginal, @merchantOriginal, @balanceCents, @createdAt, @updatedAt, @lastSyncedAt, @rawData)
          ON CONFLICT(pluggy_transaction_id) DO UPDATE SET
            description = excluded.description,
            description_raw = excluded.description_raw,
            amount_cents = excluded.amount_cents,
            currency_code = excluded.currency_code,
+           amount_in_account_currency_cents = excluded.amount_in_account_currency_cents,
+           account_currency_code = excluded.account_currency_code,
            date = excluded.date,
            status = excluded.status,
            type = excluded.type,
@@ -82,6 +92,8 @@ export class TransactionsRepository {
         descriptionRaw: input.descriptionRaw ?? null,
         amountCents: input.amountCents,
         currencyCode: input.currencyCode ?? null,
+        amountInAccountCurrencyCents: amountInAccountCurrencyCents ?? null,
+        accountCurrencyCode: input.accountCurrencyCode ?? null,
         date: input.date,
         status: input.status ?? null,
         type: input.type ?? null,
@@ -100,11 +112,17 @@ export class TransactionsRepository {
 
   private isUnchanged(existing: FinancialTransactionRow, input: UpsertTransactionInput): boolean {
     const rawData = input.rawData !== undefined ? JSON.stringify(input.rawData) : null
+    const amountInAccountCurrencyCents =
+      input.amountInAccountCurrencyCents !== undefined
+        ? input.amountInAccountCurrencyCents
+        : extractAmountInAccountCurrencyCents(input.rawData)
     return (
       (existing.description ?? null) === (input.description ?? null) &&
       (existing.description_raw ?? null) === (input.descriptionRaw ?? null) &&
       existing.amount_cents === input.amountCents &&
       (existing.currency_code ?? null) === (input.currencyCode ?? null) &&
+      (existing.amount_in_account_currency_cents ?? null) === (amountInAccountCurrencyCents ?? null) &&
+      (existing.account_currency_code ?? null) === (input.accountCurrencyCode ?? null) &&
       existing.date === input.date &&
       (existing.status ?? null) === (input.status ?? null) &&
       (existing.type ?? null) === (input.type ?? null) &&
@@ -184,6 +202,44 @@ export class TransactionsRepository {
       .all() as FinancialTransactionRow[]
   }
 
+  /** Backfill account-currency columns from persisted Pluggy raw payload (reprocess/recovery). */
+  backfillCurrencyFromRaw(
+    pluggyTransactionId: string,
+    accountCurrencyCode: string | null | undefined,
+  ): boolean {
+    const row = this.getByPluggyId(pluggyTransactionId)
+    if (!row?.raw_data) return false
+
+    let raw: unknown
+    try {
+      raw = JSON.parse(row.raw_data)
+    } catch {
+      return false
+    }
+
+    const converted = extractAmountInAccountCurrencyCents(raw)
+    const accountCurrency = accountCurrencyCode ?? row.account_currency_code ?? null
+    if (converted == null && accountCurrency == null) return false
+
+    const needsUpdate =
+      (converted != null && row.amount_in_account_currency_cents == null) ||
+      (accountCurrency != null && row.account_currency_code == null)
+
+    if (!needsUpdate) return false
+
+    this.db
+      .prepare(
+        `UPDATE financial_transactions SET
+           amount_in_account_currency_cents = COALESCE(amount_in_account_currency_cents, ?),
+           account_currency_code = COALESCE(account_currency_code, ?),
+           updated_at = ?
+         WHERE pluggy_transaction_id = ?`,
+      )
+      .run(converted, accountCurrency, new Date().toISOString(), pluggyTransactionId)
+
+    return true
+  }
+
   /** Latest transaction createdAt/date for an account — used as the incremental sync cursor. */
   latestDateForAccount(pluggyAccountId: string): string | null {
     const row = this.db
@@ -200,9 +256,9 @@ export class TransactionsRepository {
     const row = this.db
       .prepare(
         `SELECT
-           COALESCE(SUM(CASE WHEN type = 'CREDIT' THEN ABS(amount_cents) ELSE 0 END), 0) as income,
-           COALESCE(SUM(CASE WHEN type = 'DEBIT' THEN ABS(amount_cents) ELSE 0 END), 0) as expense
-         FROM financial_transactions
+           COALESCE(SUM(CASE WHEN type = 'CREDIT' THEN ${EFFECTIVE_ABS_AMOUNT_CENTS_SQL} ELSE 0 END), 0) as income,
+           COALESCE(SUM(CASE WHEN type = 'DEBIT' THEN ${EFFECTIVE_ABS_AMOUNT_CENTS_SQL} ELSE 0 END), 0) as expense
+         FROM financial_transactions t
          WHERE deleted_at IS NULL AND date >= ? AND date <= ?`,
       )
       .get(startDate, endDate) as { income: number; expense: number }
@@ -220,8 +276,8 @@ export class TransactionsRepository {
     const row = this.db
       .prepare(
         `SELECT
-           COALESCE(SUM(CASE WHEN t.type = 'CREDIT' THEN ABS(t.amount_cents) ELSE 0 END), 0) as income,
-           COALESCE(SUM(CASE WHEN t.type = 'DEBIT' THEN ABS(t.amount_cents) ELSE 0 END), 0) as expense
+           COALESCE(SUM(CASE WHEN t.type = 'CREDIT' THEN ${EFFECTIVE_ABS_AMOUNT_CENTS_SQL} ELSE 0 END), 0) as income,
+           COALESCE(SUM(CASE WHEN t.type = 'DEBIT' THEN ${EFFECTIVE_ABS_AMOUNT_CENTS_SQL} ELSE 0 END), 0) as expense
          FROM financial_transactions t
          LEFT JOIN financial_category_overrides o ON o.pluggy_transaction_id = t.pluggy_transaction_id
          LEFT JOIN financial_categories c ON lower(c.name) = lower(t.category_original)

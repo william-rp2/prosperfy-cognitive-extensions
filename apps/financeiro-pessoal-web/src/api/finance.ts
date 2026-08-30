@@ -22,6 +22,9 @@ export interface FinanceTransaction {
   descriptionRaw?: string | null
   amount: number | null
   currencyCode: string | null
+  amountInAccountCurrency?: number | null
+  accountCurrencyCode?: string | null
+  currencyConversionMissing?: boolean
   date: string
   type: string | null
   status: string | null

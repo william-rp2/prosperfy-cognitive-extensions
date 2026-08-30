@@ -172,6 +172,9 @@ export class PluggySyncService {
           descriptionRaw: transaction.descriptionRaw,
           amountCents: toCents(transaction.amount),
           currencyCode: transaction.currencyCode,
+          amountInAccountCurrencyCents:
+            transaction.amountInAccountCurrency != null ? toCents(transaction.amountInAccountCurrency) : null,
+          accountCurrencyCode: account.currencyCode ?? null,
           date: new Date(transaction.date).toISOString(),
           status: transaction.status ?? null,
           type: transaction.type,

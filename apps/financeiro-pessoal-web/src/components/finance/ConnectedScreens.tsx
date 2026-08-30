@@ -42,6 +42,7 @@ import {
   uniqueInstitutions,
   type TransactionFilterState,
 } from '../../lib/transactionFilters'
+import { formatMoney, formatTransactionAmount } from '../../lib/moneyFormat'
 import { useAsyncData } from '../../hooks/useAsyncData'
 import { Button } from '../ui/button'
 import { Card } from '../ui/card'
@@ -49,9 +50,18 @@ import { Input } from '../ui/input'
 
 export const financeDemoMode = import.meta.env.VITE_FINANCE_DEMO_MODE === 'true'
 
-function money(value: number | null | undefined) {
-  if (value == null || Number.isNaN(value)) return '—'
-  return value.toLocaleString('pt-BR', { currency: 'BRL', style: 'currency' })
+function money(value: number | null | undefined, currencyCode = 'BRL') {
+  return formatMoney(value, currencyCode)
+}
+
+function TransactionAmountCell({ transaction }: { transaction: FinanceTransaction }) {
+  const { primary, secondary } = formatTransactionAmount(transaction)
+  return (
+    <div className="font-bold">
+      <p>{primary}</p>
+      {secondary ? <p className="mt-0.5 text-xs font-normal text-[#76677d]">{secondary}</p> : null}
+    </div>
+  )
 }
 
 function formatDate(value: string) {
@@ -455,7 +465,9 @@ export function ConnectedTransactionsScreen() {
                     </Button>
                   </td>
                   <td className="px-4 py-3">{formatClassificationStatus(tx.enrichment?.classificationStatus)}</td>
-                  <td className="px-4 py-3 font-bold">{money(tx.amount)}</td>
+                  <td className="px-4 py-3">
+                    <TransactionAmountCell transaction={tx} />
+                  </td>
                 </tr>
               ))}
             </tbody>

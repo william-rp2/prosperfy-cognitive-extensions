@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import type { FinanceDb } from './db.js'
+import { EFFECTIVE_ABS_AMOUNT_CENTS_SQL } from './transactionAmount.js'
 
 export type BudgetStatus = 'ok' | 'warning' | 'exceeded'
 
@@ -91,7 +92,7 @@ export class BudgetsRepository {
     // excluded here (they still count in the general/no-category budget).
     const pluggy = this.db
       .prepare(
-        `SELECT COALESCE(SUM(ABS(t.amount_cents)),0) as spent
+        `SELECT COALESCE(SUM(${EFFECTIVE_ABS_AMOUNT_CENTS_SQL}),0) as spent
          FROM financial_transactions t
          LEFT JOIN financial_category_overrides o ON o.pluggy_transaction_id = t.pluggy_transaction_id
          LEFT JOIN financial_categories c ON lower(c.name) = lower(t.category_original)
@@ -114,7 +115,7 @@ export class BudgetsRepository {
     const { start, end } = monthRange(month)
     const pluggy = this.db
       .prepare(
-        `SELECT COALESCE(SUM(ABS(amount_cents)),0) as spent FROM financial_transactions
+        `SELECT COALESCE(SUM(${EFFECTIVE_ABS_AMOUNT_CENTS_SQL}),0) as spent FROM financial_transactions t
          WHERE deleted_at IS NULL AND type = 'DEBIT' AND date >= ? AND date <= ?`,
       )
       .get(start, end) as { spent: number }

@@ -103,6 +103,10 @@ export class TransactionReprocessService {
           continue
         }
 
+        if (!options.dryRun) {
+          this.transactions.backfillCurrencyFromRaw(row.pluggy_transaction_id, account.currency_code)
+        }
+
         const enrichBefore = snapshotEnrichment(this.enrichment.getByTransactionId(row.pluggy_transaction_id))
         let result: { clarificationCreated: boolean; classificationStatus: string }
 

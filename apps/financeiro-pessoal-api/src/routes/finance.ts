@@ -30,6 +30,7 @@ import type { PluggySyncService } from '../finance/pluggySyncService.js'
 import type { PluggyItemRegistrationService } from '../finance/pluggyItemRegistrationService.js'
 import { fromCents, toCents } from '../finance/types.js'
 import type { FinancialAccountRow, FinancialInvestmentRow, FinancialTransactionRow } from '../finance/types.js'
+import { isCurrencyConversionMissing } from '../finance/transactionAmount.js'
 import type { TransactionsRepository } from '../finance/transactionsRepository.js'
 import type { TransactionAnnotationsRepository } from '../finance/transactionAnnotationsRepository.js'
 import { parseDate, safeCompare } from '../safe.js'
@@ -111,6 +112,10 @@ function serializePluggyTransaction(
     descriptionRaw: row.description_raw,
     amount: fromCents(row.amount_cents),
     currencyCode: row.currency_code,
+    amountInAccountCurrency:
+      row.amount_in_account_currency_cents != null ? fromCents(row.amount_in_account_currency_cents) : null,
+    accountCurrencyCode: row.account_currency_code,
+    currencyConversionMissing: isCurrencyConversionMissing(row),
     date: row.date,
     type: row.type,
     status: row.status,
