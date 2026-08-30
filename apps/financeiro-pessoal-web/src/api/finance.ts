@@ -31,6 +31,7 @@ export interface FinanceTransaction {
     merchantNormalized?: string | null
     canonicalType: string | null
     direction: string | null
+    paymentMethod?: string | null
     classificationStatus: string | null
     classificationSource: string | null
     categoryName: string | null
@@ -50,24 +51,34 @@ export interface FinanceBill {
 export interface FinanceAccount {
   id: string
   itemId: string
+  institutionName?: string | null
   sourceType: string | null
   sourceSubtype: string | null
   canonicalType: string | null
   name: string | null
+  marketingName?: string | null
+  displayName?: string | null
+  isFavorite?: boolean
   balance: number | null
   creditLimit: number | null
   availableCreditLimit: number | null
+  numberMasked?: string | null
   lastSyncedAt: string | null
 }
 
 export interface FinanceAsset {
   id: string
   itemId: string
+  institutionName?: string | null
   canonicalType: string | null
   name: string | null
+  marketingName?: string | null
+  displayName?: string | null
+  isFavorite?: boolean
   balance: number | null
   creditLimit?: number | null
   availableCreditLimit?: number | null
+  numberMasked?: string | null
   lastSyncedAt: string | null
 }
 
@@ -175,6 +186,16 @@ export async function addExistingConnection(itemId: string) {
     method: 'POST',
     body: JSON.stringify({ itemId }),
   })
+}
+
+export async function updateAccountPreferences(
+  accountId: string,
+  body: { displayAlias?: string | null; isFavorite?: boolean },
+) {
+  return apiRequest<{ account: FinanceAccount; preferences: { displayAlias: string | null; isFavorite: boolean } }>(
+    `/api/finance/accounts/${encodeURIComponent(accountId)}/preferences`,
+    { method: 'PATCH', body: JSON.stringify(body) },
+  )
 }
 
 export async function createManualTransaction(body: {

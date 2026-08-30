@@ -408,3 +408,27 @@ describe('routes/finance — ADD_EXISTING_ITEM', () => {
     expect(second.json().message).toBe('Conexão já cadastrada.')
   })
 })
+
+describe('routes/finance — ACCOUNT_PREFERENCES', () => {
+  it('retorna 404 para conta inexistente', async () => {
+    const app = buildApp()
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/api/finance/accounts/acc-inexistente/preferences',
+      headers: AUTH,
+      payload: { isFavorite: true },
+    })
+    expect(response.statusCode).toBe(404)
+  })
+
+  it('rejeita payload vazio', async () => {
+    const app = buildApp()
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/api/finance/accounts/acc-inexistente/preferences',
+      headers: AUTH,
+      payload: {},
+    })
+    expect(response.statusCode).toBe(404)
+  })
+})

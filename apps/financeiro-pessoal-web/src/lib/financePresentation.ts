@@ -36,17 +36,26 @@ const ASSET_TYPES: Record<string, string> = {
 const TRANSACTION_TYPES: Record<string, string> = {
   PIX_IN: 'PIX recebido',
   PIX_OUT: 'PIX enviado',
-  CREDIT_PURCHASE: 'Compra no crédito',
+  CREDIT_PURCHASE: 'Compra no cartão de crédito',
   DEBIT_PURCHASE: 'Compra no débito',
   TRANSFER_IN: 'Transferência recebida',
   TRANSFER_OUT: 'Transferência enviada',
   INCOME: 'Receita',
-  EXPENSE: 'Despesa',
+  EXPENSE: 'Não identificado',
   CARD_PAYMENT: 'Pagamento de cartão',
   REFUND: 'Estorno',
   OTHER: 'Outro',
   CREDIT: 'Entrada',
   DEBIT: 'Saída',
+}
+
+const PAYMENT_METHODS: Record<string, string> = {
+  CREDIT_CARD: 'Compra no cartão de crédito',
+  DEBIT_CARD: 'Compra no débito',
+  PIX: 'PIX',
+  TRANSFER: 'Transferência',
+  BOLETO: 'Boleto',
+  UNKNOWN: 'Não identificado',
 }
 
 const CLASSIFICATION_STATUS: Record<string, string> = {
@@ -62,12 +71,19 @@ const BUDGET_STATUS: Record<string, string> = {
   on_track: 'No planejado',
 }
 
+const TECHNICAL_PRODUCT_NAMES = new Set(['BANDEIRADO', 'BRANDED', 'CREDIT_CARD', 'DEBIT_CARD'])
+
 const RAW_ENUM_PATTERN =
-  /^(SUCCESS|UPDATED|FAILED|needs_clarification|CHECKING_ACCOUNT|CREDIT_CARD|INVESTMENT|INCOME|EXPENSE|CREDIT|DEBIT|IN|OUT|PARTIAL|RUNNING|PENDING|unknown|classified)$/i
+  /^(SUCCESS|UPDATED|FAILED|needs_clarification|CHECKING_ACCOUNT|CREDIT_CARD|INVESTMENT|INCOME|EXPENSE|CREDIT|DEBIT|IN|OUT|PARTIAL|RUNNING|PENDING|unknown|classified|BANDEIRADO|BRANDED|UNKNOWN)$/i
 
 function translate(map: Record<string, string>, value: string | null | undefined, fallback = '—'): string {
   if (!value) return fallback
   return map[value] ?? map[value.toUpperCase()] ?? fallback
+}
+
+export function isTechnicalProductName(value: string | null | undefined): boolean {
+  if (!value) return false
+  return TECHNICAL_PRODUCT_NAMES.has(value.trim().toUpperCase())
 }
 
 export function formatItemStatus(value: string | null | undefined): string {
@@ -82,8 +98,25 @@ export function formatAssetType(value: string | null | undefined): string {
   return translate(ASSET_TYPES, value, 'Outro')
 }
 
+export function formatPaymentMethod(value: string | null | undefined): string {
+  return translate(PAYMENT_METHODS, value, 'Não identificado')
+}
+
 export function formatTransactionType(value: string | null | undefined): string {
   return translate(TRANSACTION_TYPES, value, 'Outro')
+}
+
+export function formatTransactionDisplay(
+  enrichment?: { canonicalType?: string | null; paymentMethod?: string | null } | null,
+  rawType?: string | null,
+): string {
+  const paymentMethod = enrichment?.paymentMethod
+  if (paymentMethod && paymentMethod !== 'UNKNOWN') {
+    return formatPaymentMethod(paymentMethod)
+  }
+  const canonical = enrichment?.canonicalType ?? rawType
+  if (canonical === 'EXPENSE') return 'Não identificado'
+  return formatTransactionType(canonical)
 }
 
 export function formatClassificationStatus(value: string | null | undefined): string {
@@ -92,6 +125,30 @@ export function formatClassificationStatus(value: string | null | undefined): st
 
 export function formatBudgetStatus(value: string | null | undefined): string {
   return translate(BUDGET_STATUS, value, value ?? '—')
+}
+
+export function formatAccountDisplayName(input: {
+  displayName?: string | null
+  name?: string | null
+  marketingName?: string | null
+  institutionName?: string | null
+  canonicalType?: string | null
+}): string {
+  if (input.displayName?.trim()) return input.displayName.trim()
+  const marketing = input.marketingName?.trim()
+  if (marketing && !isTechnicalProductName(marketing)) return marketing
+  const name = input.name?.trim()
+  if (name && !isTechnicalProductName(name)) return name
+  const typeLabel = formatAssetType(input.canonicalType)
+  if (input.institutionName) return `${input.institutionName} — ${typeLabel}`
+  return typeLabel
+}
+
+export function formatMaskedNumber(value: string | null | undefined): string | null {
+  if (!value?.trim()) return null
+  const digits = value.replace(/\D/g, '')
+  if (digits.length >= 4) return `•••• ${digits.slice(-4)}`
+  return value
 }
 
 export function maskItemId(itemId: string): string {

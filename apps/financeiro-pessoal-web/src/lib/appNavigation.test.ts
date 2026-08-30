@@ -11,4 +11,9 @@ describe('navegação principal', () => {
   it('restringe rota POC a flag admin', () => {
     expect(appSource).toContain("VITE_FINANCE_ADMIN_POC === 'true'")
   })
+
+  it('não exibe card técnico Finance V2 na sidebar', () => {
+    expect(appSource).not.toContain('Dados reais via Open Finance (Pluggy)')
+    expect(appSource).not.toContain('Sincronização automática a cada 15 min')
+  })
 })

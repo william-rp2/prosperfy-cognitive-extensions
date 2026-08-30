@@ -277,21 +277,11 @@ function Sidebar({ activeScreen, collapsed, isOpen, onClose, onSelect, onToggleC
           ))}
         </nav>
 
-        {!collapsed ? (
+        {!collapsed && financeDemoMode ? (
           <div className="mt-auto rounded-3xl border border-white/10 bg-white/8 p-4 text-sm text-white/72">
-            {financeDemoMode ? (
-              <>
-                <p className="font-bold text-white">Modo demonstração</p>
-                <p className="mt-2 text-xs leading-5 text-white/70">Dados fictícios para protótipo visual.</p>
-                <p className="mt-2 text-xs leading-5 text-white/70">Seed: {financeSeedMetadata.version}</p>
-              </>
-            ) : (
-              <>
-                <p className="font-bold text-white">Finance V2</p>
-                <p className="mt-2 text-xs leading-5 text-white/70">Dados reais via Open Finance (Pluggy).</p>
-                <p className="mt-2 text-xs leading-5 text-white/70">Sincronização automática a cada 15 min.</p>
-              </>
-            )}
+            <p className="font-bold text-white">Modo demonstração</p>
+            <p className="mt-2 text-xs leading-5 text-white/70">Dados fictícios para protótipo visual.</p>
+            <p className="mt-2 text-xs leading-5 text-white/70">Seed: {financeSeedMetadata.version}</p>
           </div>
         ) : null}
       </aside>

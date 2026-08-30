@@ -1,4 +1,4 @@
-import { AlertCircle, Landmark, Plug, RefreshCw } from 'lucide-react'
+import { AlertCircle, Landmark, Plug, RefreshCw, Star } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { PluggyConnect } from 'react-pluggy-connect'
 
@@ -11,6 +11,8 @@ import {
   fetchSummary,
   fetchTransactions,
   triggerSync,
+  updateAccountPreferences,
+  type FinanceAccount,
   type FinanceBill,
   type FinanceBudget,
   type FinanceIntegrationItem,
@@ -19,11 +21,13 @@ import {
 import { apiRequest } from '../../lib/api'
 import {
   formatAssetType,
+  formatAccountDisplayName,
   formatBudgetStatus,
   formatClassificationStatus,
   formatItemStatus,
+  formatMaskedNumber,
   formatSyncStatus,
-  formatTransactionType,
+  formatTransactionDisplay,
   onboardingMessage,
   onboardingStateLabel,
 } from '../../lib/financePresentation'
@@ -73,6 +77,59 @@ export function DeferredEmptyScreen({ title, description }: { title: string; des
       <h3 className="mt-2 text-xl font-black text-[#231529]">{title}</h3>
       <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-[#76677d]">{description}</p>
     </Card>
+  )
+}
+
+function AssetPreferenceActions({
+  account,
+  onUpdated,
+}: {
+  account: Pick<FinanceAccount, 'id' | 'displayName' | 'isFavorite'>
+  onUpdated: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [alias, setAlias] = useState(account.displayName ?? '')
+  const [busy, setBusy] = useState(false)
+
+  async function toggleFavorite() {
+    setBusy(true)
+    try {
+      await updateAccountPreferences(account.id, { isFavorite: !account.isFavorite })
+      await onUpdated()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function saveAlias() {
+    setBusy(true)
+    try {
+      await updateAccountPreferences(account.id, { displayAlias: alias.trim() || null })
+      setEditing(false)
+      await onUpdated()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2">
+      <Button aria-label={account.isFavorite ? 'Remover dos favoritos' : 'Favoritar'} disabled={busy} onClick={() => void toggleFavorite()} size="sm" type="button" variant="secondary">
+        <Star className={`h-4 w-4 ${account.isFavorite ? 'fill-amber-400 text-amber-500' : ''}`} />
+        {account.isFavorite ? 'Favorito' : 'Favoritar'}
+      </Button>
+      {editing ? (
+        <>
+          <Input aria-label="Nome amigável" className="max-w-[220px]" onChange={event => setAlias(event.target.value)} value={alias} />
+          <Button disabled={busy} onClick={() => void saveAlias()} size="sm" type="button">Salvar</Button>
+          <Button disabled={busy} onClick={() => setEditing(false)} size="sm" type="button" variant="secondary">Cancelar</Button>
+        </>
+      ) : (
+        <Button disabled={busy} onClick={() => { setAlias(account.displayName ?? ''); setEditing(true) }} size="sm" type="button" variant="secondary">
+          Editar nome
+        </Button>
+      )}
+    </div>
   )
 }
 
@@ -127,8 +184,9 @@ export function ConnectedDashboardScreen() {
             {cashAccounts.map(account => (
               <div key={account.id} className="rounded-2xl border border-[#eadfec] bg-white/75 px-4 py-3">
                 <p className="text-xs font-black uppercase tracking-[0.14em] text-[#76677d]">{formatAssetType(account.canonicalType)}</p>
-                <p className="font-black text-[#231529]">{account.name ?? account.id}</p>
+                <p className="font-black text-[#231529]">{formatAccountDisplayName(account)}</p>
                 <p className="mt-1 text-lg font-black text-[#341539]">{money(account.balance)}</p>
+                <AssetPreferenceActions account={account} onUpdated={() => void refresh()} />
               </div>
             ))}
           </div>
@@ -239,7 +297,7 @@ export function ConnectedTransactionsScreen() {
                   <td className="px-4 py-3 whitespace-nowrap">{formatDate(tx.date)}</td>
                   <td className="px-4 py-3">{tx.description ?? '—'}</td>
                   <td className="px-4 py-3">{tx.merchant ?? tx.enrichment?.merchantNormalized ?? '—'}</td>
-                  <td className="px-4 py-3">{formatTransactionType(tx.enrichment?.canonicalType ?? tx.type)}</td>
+                  <td className="px-4 py-3">{formatTransactionDisplay(tx.enrichment, tx.type)}</td>
                   <td className="px-4 py-3">{tx.category?.name ?? tx.enrichment?.categoryName ?? '—'}</td>
                   <td className="px-4 py-3">{formatClassificationStatus(tx.enrichment?.classificationStatus)}</td>
                   <td className="px-4 py-3 font-bold">{money(tx.amount)}</td>
@@ -256,33 +314,69 @@ export function ConnectedTransactionsScreen() {
 export function ConnectedCardsScreen() {
   const { data, loading, error, refresh } = useAsyncData(async () => {
     const [bills, accounts] = await Promise.all([fetchBills(), fetchAccounts()])
-    return { bills, creditAccounts: accounts.filter(a => a.canonicalType === 'CREDIT_CARD') }
+    return {
+      bills,
+      creditAccounts: accounts.filter(a => a.canonicalType === 'CREDIT_CARD'),
+      accountNames: new Map(accounts.map(account => [account.id, formatAccountDisplayName(account)])),
+    }
   }, [])
 
   if (loading) return <LoadingCard label="cartões e faturas" />
   if (error || !data) return <ErrorCard message={error ?? 'Sem dados'} onRetry={refresh} />
 
+  const knownInvoiceTotal = data.bills.reduce((sum, bill) => sum + (bill.totalAmount ?? 0), 0)
+
   return (
     <div className="space-y-5">
+      {data.bills.length > 0 ? (
+        <Card className="p-5">
+          <p className="text-xs font-black uppercase tracking-[0.18em] text-[#76677d]">Faturas atuais conhecidas</p>
+          <p className="mt-2 text-2xl font-black text-[#341539]">{money(knownInvoiceTotal)}</p>
+          <p className="mt-1 text-sm text-[#76677d]">Soma apenas de faturas sincronizadas com vencimento informado.</p>
+        </Card>
+      ) : null}
       <div className="grid gap-4 md:grid-cols-2">
         {data.creditAccounts.length === 0 ? (
           <Card className="p-5 text-sm text-[#76677d]">Nenhum cartão sincronizado.</Card>
-        ) : data.creditAccounts.map(card => (
-          <Card key={card.id} className="p-5">
-            <p className="text-xs font-black uppercase tracking-[0.18em] text-[#83358F]">Cartão</p>
-            <h3 className="mt-2 text-xl font-black text-[#231529]">{card.name ?? card.id}</h3>
-            <p className="mt-3 text-sm text-[#76677d]">Limite total {money(card.creditLimit)}</p>
-            <p className="mt-2 text-3xl font-black text-[#341539]">{money(Math.abs(card.balance ?? 0))}</p>
-            <p className="text-sm text-[#76677d]">Fatura/saldo em aberto (não é patrimônio)</p>
-          </Card>
-        ))}
+        ) : data.creditAccounts.map(card => {
+          const masked = formatMaskedNumber(card.numberMasked)
+          const openBalance = card.balance != null ? Math.abs(card.balance) : null
+          return (
+            <Card key={card.id} className="p-5">
+              <p className="text-xs font-black uppercase tracking-[0.18em] text-[#83358F]">{card.institutionName ?? 'Instituição'}</p>
+              <h3 className="mt-2 text-xl font-black text-[#231529]">{formatAccountDisplayName(card)}</h3>
+              <p className="mt-1 text-sm font-semibold text-[#009688]">{formatAssetType(card.canonicalType)}</p>
+              {masked ? <p className="mt-2 text-sm text-[#76677d]">{masked}</p> : null}
+              <div className="mt-4 space-y-2 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-[#76677d]">Limite total</span>
+                  <span className="font-bold text-[#341539]">{money(card.creditLimit)}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-[#76677d]">Limite disponível</span>
+                  <span className="font-bold text-[#341539]">{money(card.availableCreditLimit)}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-[#76677d]">Valor utilizado</span>
+                  <span className="font-bold text-[#341539]">{openBalance != null ? money(openBalance) : '—'}</span>
+                </div>
+              </div>
+              <p className="mt-3 text-xs text-[#76677d]">
+                {data.bills.some(bill => bill.accountId === card.id)
+                  ? 'Consulte a tabela abaixo para fatura e vencimento deste cartão.'
+                  : 'Fatura não disponível — exibindo apenas dados seguros do cartão.'}
+              </p>
+              <AssetPreferenceActions account={card} onUpdated={() => void refresh()} />
+            </Card>
+          )
+        })}
       </div>
       <Card className="overflow-hidden p-0">
         <div className="overflow-auto">
           <table className="w-full border-collapse text-left text-sm">
             <thead className="bg-[#fffafd] text-xs uppercase tracking-[0.14em] text-[#76677d]">
               <tr>
-                {['Vencimento', 'Conta', 'Total', 'Mínimo'].map(col => (
+                {['Vencimento', 'Cartão', 'Total da fatura', 'Pagamento mínimo'].map(col => (
                   <th key={col} className="px-4 py-3 font-black">{col}</th>
                 ))}
               </tr>
@@ -293,7 +387,7 @@ export function ConnectedCardsScreen() {
               ) : data.bills.map((bill: FinanceBill) => (
                 <tr key={bill.id} className="border-t border-[#eadfec]">
                   <td className="px-4 py-3">{bill.dueDate ? formatDate(bill.dueDate) : '—'}</td>
-                  <td className="px-4 py-3">{bill.accountId}</td>
+                  <td className="px-4 py-3">{data.accountNames.get(bill.accountId) ?? 'Cartão'}</td>
                   <td className="px-4 py-3 font-bold">{money(bill.totalAmount)}</td>
                   <td className="px-4 py-3">{money(bill.minimumPayment)}</td>
                 </tr>
@@ -491,7 +585,7 @@ function AssetGroup({
         {assets.map(asset => (
           <div key={asset.id} className="flex items-start justify-between gap-3 text-sm">
             <div>
-              <p className="font-semibold text-[#231529]">{asset.name ?? 'Produto'}</p>
+              <p className="font-semibold text-[#231529]">{formatAccountDisplayName(asset)}</p>
               <p className="text-xs text-[#76677d]">{formatAssetType(asset.canonicalType)}</p>
             </div>
             <div className="text-right">

@@ -3,6 +3,8 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { AppConfig } from '../config.js'
 import { resolveSyncIntervalMinutes } from '../config.js'
 import { aggregateFinancialAssets, resolveAccountCanonicalType } from '../finance/accountAggregation.js'
+import type { AccountPreferencesRepository } from '../finance/accountPreferencesRepository.js'
+import { defaultAccountLabel, sortAccountsByPreference } from '../finance/accountPresentation.js'
 import type { AccountsRepository } from '../finance/accountsRepository.js'
 import { CASH_ASSET_TYPES, type CanonicalFinancialAssetType } from '../finance/financialAssetNormalizer.js'
 import type { BudgetWithStatus } from '../finance/budgetsRepository.js'
@@ -42,6 +44,7 @@ export interface FinanceRouteDeps {
   enrichment: EnrichmentRepository
   clarifications: ClarificationsRepository
   itemRegistration: PluggyItemRegistrationService
+  accountPreferences: AccountPreferencesRepository
 }
 
 function requireFinanceToken(request: FastifyRequest, config: AppConfig): boolean {
@@ -163,16 +166,31 @@ function resolveCategory(
   return { kind: 'none' }
 }
 
-function serializeAccountAsset(account: FinancialAccountRow) {
+function buildAccountContext(preferences: AccountPreferencesRepository, items: ItemsRepository) {
+  const preferencesByAccountId = new Map(preferences.listAll().map(row => [row.pluggy_account_id, row]))
+  const institutionByItemId = new Map(items.listAll().map(item => [item.pluggy_item_id, item.connector_name]))
+  return { preferencesByAccountId, institutionByItemId }
+}
+
+function serializeAccountAsset(
+  account: FinancialAccountRow,
+  ctx: ReturnType<typeof buildAccountContext>,
+) {
   const canonicalType = resolveAccountCanonicalType(account)
+  const pref = ctx.preferencesByAccountId.get(account.pluggy_account_id)
+  const institutionName = ctx.institutionByItemId.get(account.pluggy_item_id) ?? null
+  const displayName = pref?.display_alias ?? defaultAccountLabel(account, institutionName, canonicalType)
   return {
     id: account.pluggy_account_id,
     itemId: account.pluggy_item_id,
+    institutionName,
     sourceType: account.type,
     sourceSubtype: account.subtype,
     canonicalType,
     name: account.name,
     marketingName: account.marketing_name,
+    displayName,
+    isFavorite: Boolean(pref?.is_favorite),
     currencyCode: account.currency_code,
     balance: fromCents(account.balance_cents),
     numberMasked: account.number_masked,
@@ -199,12 +217,21 @@ function groupItemAssets(
   itemId: string,
   allAccounts: FinancialAccountRow[],
   allInvestments: FinancialInvestmentRow[],
+  ctx: ReturnType<typeof buildAccountContext>,
 ) {
   const itemAccounts = allAccounts.filter(account => account.pluggy_item_id === itemId)
   const itemInvestments = allInvestments.filter(investment => investment.pluggy_item_id === itemId)
 
-  const cashAccounts = itemAccounts.filter(account => CASH_ASSET_TYPES.has(resolveAccountCanonicalType(account)))
-  const creditCards = itemAccounts.filter(account => resolveAccountCanonicalType(account) === 'CREDIT_CARD')
+  const cashAccounts = sortAccountsByPreference(
+    itemAccounts
+      .filter(account => CASH_ASSET_TYPES.has(resolveAccountCanonicalType(account)))
+      .map(account => serializeAccountAsset(account, ctx)),
+  )
+  const creditCards = sortAccountsByPreference(
+    itemAccounts
+      .filter(account => resolveAccountCanonicalType(account) === 'CREDIT_CARD')
+      .map(account => serializeAccountAsset(account, ctx)),
+  )
   const investmentAccounts = itemAccounts.filter(account => resolveAccountCanonicalType(account) === 'INVESTMENT')
   const otherAccounts = itemAccounts.filter(account => {
     const type = resolveAccountCanonicalType(account)
@@ -212,10 +239,10 @@ function groupItemAssets(
   })
 
   return {
-    cashAccounts: cashAccounts.map(serializeAccountAsset),
-    creditCards: creditCards.map(serializeAccountAsset),
-    investments: [...itemInvestments.map(serializeInvestmentAsset), ...investmentAccounts.map(serializeAccountAsset)],
-    other: otherAccounts.map(serializeAccountAsset),
+    cashAccounts,
+    creditCards,
+    investments: [...itemInvestments.map(serializeInvestmentAsset), ...investmentAccounts.map(account => serializeAccountAsset(account, ctx))],
+    other: sortAccountsByPreference(otherAccounts.map(account => serializeAccountAsset(account, ctx))),
   }
 }
 
@@ -252,6 +279,7 @@ export function registerFinanceRoutes(app: FastifyInstance, deps: FinanceRouteDe
     products,
     enrichment,
     itemRegistration,
+    accountPreferences,
   } = deps
 
   // Everything under /api/finance/* requires the Cognitive service credential.
@@ -289,6 +317,7 @@ export function registerFinanceRoutes(app: FastifyInstance, deps: FinanceRouteDe
       const allAccounts = accounts.listAll()
       const allInvestments = products.listAllInvestments()
       const latestRun = syncRuns.getLatest()
+      const accountCtx = buildAccountContext(accountPreferences, items)
       return {
         items: allItems.map(item => ({
           id: item.pluggy_item_id,
@@ -300,7 +329,7 @@ export function registerFinanceRoutes(app: FastifyInstance, deps: FinanceRouteDe
           lastSyncedAt: item.last_synced_at,
           lastSuccessfulUpdate: item.last_successful_update,
           errorSummary: item.error_summary,
-          groups: groupItemAssets(item.pluggy_item_id, allAccounts, allInvestments),
+          groups: groupItemAssets(item.pluggy_item_id, allAccounts, allInvestments, accountCtx),
         })),
         sync: {
           enabled: config.PLUGGY_SYNC_ENABLED,
@@ -346,9 +375,37 @@ export function registerFinanceRoutes(app: FastifyInstance, deps: FinanceRouteDe
     })
 
     financeApp.get('/api/finance/accounts', async () => {
-      return {
-        accounts: accounts.listAll().map(serializeAccountAsset),
+      const accountCtx = buildAccountContext(accountPreferences, items)
+      const serialized = sortAccountsByPreference(accounts.listAll().map(account => serializeAccountAsset(account, accountCtx)))
+      return { accounts: serialized }
+    })
+
+    financeApp.patch('/api/finance/accounts/:accountId/preferences', async (request, reply) => {
+      const { accountId } = request.params as { accountId: string }
+      const account = accounts.getByPluggyId(accountId)
+      if (!account) {
+        return reply.code(404).send({ error: 'account_not_found', message: 'Conta não encontrada.' })
       }
+
+      const body = (request.body ?? {}) as Record<string, unknown>
+      const displayAlias =
+        body.displayAlias === null
+          ? null
+          : typeof body.displayAlias === 'string'
+            ? body.displayAlias
+            : undefined
+      const isFavorite = typeof body.isFavorite === 'boolean' ? body.isFavorite : undefined
+
+      if (displayAlias === undefined && isFavorite === undefined) {
+        return reply.code(400).send({ error: 'invalid_payload', message: 'Informe displayAlias ou isFavorite.' })
+      }
+
+      const pref = accountPreferences.upsert(accountId, { displayAlias, isFavorite })
+      const accountCtx = buildAccountContext(accountPreferences, items)
+      return reply.send({ account: serializeAccountAsset(account, accountCtx), preferences: {
+        displayAlias: pref.display_alias,
+        isFavorite: Boolean(pref.is_favorite),
+      } })
     })
 
     // finance.transactions.read — merges Pluggy history with manual entries
