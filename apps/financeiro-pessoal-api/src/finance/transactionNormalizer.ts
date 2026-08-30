@@ -17,6 +17,8 @@ export type CanonicalTransactionType =
   | 'EXPENSE'
   | 'CARD_PAYMENT'
   | 'REFUND'
+  | 'FEE'
+  | 'TAX'
   | 'OTHER'
 
 export interface NormalizedTransaction {
@@ -53,19 +55,40 @@ function extractRawPaymentMethod(rawData: unknown): string | null {
   return typeof method === 'string' ? method : null
 }
 
-function textHints(description: string): { pix: boolean; transfer: boolean; card: boolean; boleto: boolean; billPayment: boolean } {
+function textHints(description: string): {
+  pix: boolean
+  transfer: boolean
+  card: boolean
+  boleto: boolean
+  billPayment: boolean
+  iof: boolean
+  genericFee: boolean
+} {
   const upper = description.toUpperCase()
   return {
-    pix: upper.includes('PIX'),
-    transfer: upper.includes('TRANSFER') || upper.includes('TRANSF') || upper.includes('TED') || upper.includes('DOC'),
+    pix: /\bPIX\b/.test(upper),
+    transfer:
+      /\bTRANSFERENCIA\b/.test(upper) ||
+      /\bTRANSFERÊNCIA\b/.test(upper) ||
+      /\bTED\b/.test(upper) ||
+      /\bDOC\b/.test(upper),
     card: upper.includes('CART') || upper.includes('CARD'),
-    boleto: upper.includes('BOLETO') || upper.includes('BOLETO'),
+    boleto: upper.includes('BOLETO'),
     billPayment:
       (upper.includes('PAG') && upper.includes('FAT')) ||
       upper.includes('PAGAMENTO FATURA') ||
       upper.includes('PAG FAT') ||
       upper.includes('LIQUIDACAO FATURA'),
+    iof: /\bIOF\b/.test(upper) || upper.includes('IMPOSTO SOBRE OPERACOES FINANCEIRAS'),
+    genericFee: /\bTARIFA\b/.test(upper) || /\bTAXA\b/.test(upper),
   }
+}
+
+/** Exported for display-layer IOF fallback on historical rows. */
+export function isExplicitIofDescription(description: string | null | undefined): boolean {
+  if (!description?.trim()) return false
+  const upper = description.toUpperCase()
+  return /\bIOF\b/.test(upper) || upper.includes('IMPOSTO SOBRE OPERACOES FINANCEIRAS')
 }
 
 function isCreditCardAsset(accountCanonicalType: string | null | undefined): boolean {
@@ -107,7 +130,12 @@ export function normalizePluggyTransaction(input: NormalizerInput): NormalizedTr
 
   let canonicalType: CanonicalTransactionType = 'OTHER'
 
-  if (hints.pix) {
+  if (hints.iof) {
+    canonicalType = 'FEE'
+    if (isCreditCardAsset(accountType)) paymentMethod = 'CREDIT_CARD'
+  } else if (hints.genericFee && !hints.pix && !hints.transfer) {
+    canonicalType = 'FEE'
+  } else if (hints.pix) {
     canonicalType = direction === 'IN' ? 'PIX_IN' : 'PIX_OUT'
   } else if (hints.transfer) {
     canonicalType = direction === 'IN' ? 'TRANSFER_IN' : 'TRANSFER_OUT'

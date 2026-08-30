@@ -61,6 +61,30 @@ describe('transactionNormalizer — payment semantics', () => {
     expect(transfer.paymentMethod).toBe('TRANSFER')
   })
 
+  it('IOF explícito → FEE, não transferência', () => {
+    const iof = normalizePluggyTransaction({
+      pluggyType: 'DEBIT',
+      amountCents: -350,
+      description: 'IOF OPERACOES DE CREDITO',
+      accountCanonicalType: 'CREDIT_CARD',
+    })
+    expect(iof.canonicalType).toBe('FEE')
+    expect(iof.paymentMethod).toBe('CREDIT_CARD')
+    expect(iof.canonicalType).not.toBe('TRANSFER_OUT')
+  })
+
+  it('IOF com TRANSFERENCIA na descrição não vira transferência', () => {
+    const iof = normalizePluggyTransaction({
+      pluggyType: 'DEBIT',
+      amountCents: -200,
+      description: 'IOF SOBRE TRANSFERENCIA INTERNACIONAL',
+      accountCanonicalType: 'CREDIT_CARD',
+    })
+    expect(iof.canonicalType).toBe('FEE')
+    expect(iof.paymentMethod).toBe('CREDIT_CARD')
+    expect(iof.canonicalType).not.toBe('TRANSFER_OUT')
+  })
+
   it('direction OUT não determina payment_method sozinho', () => {
     const row = normalizePluggyTransaction({
       pluggyType: 'DEBIT',

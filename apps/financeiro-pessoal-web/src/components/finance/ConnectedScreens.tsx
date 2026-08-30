@@ -28,6 +28,7 @@ import {
   formatMaskedNumber,
   formatSyncStatus,
   formatTransactionDisplay,
+  formatTransactionAccountContext,
   onboardingMessage,
   onboardingStateLabel,
 } from '../../lib/financePresentation'
@@ -271,12 +272,17 @@ export function ConnectedMonthlyScreen({ month }: { month: string }) {
 }
 
 export function ConnectedTransactionsScreen() {
-  const { data, loading, error, refresh } = useAsyncData(() => fetchTransactions({ limit: 200 }), [])
+  const { data, loading, error, refresh } = useAsyncData(async () => {
+    const [transactions, accounts] = await Promise.all([fetchTransactions({ limit: 200 }), fetchAccounts()])
+    const accountById = new Map(accounts.map(account => [account.id, account]))
+    return { transactions, accountById }
+  }, [])
 
   if (loading) return <LoadingCard label="movimentações" />
   if (error) return <ErrorCard message={error} onRetry={refresh} />
 
-  const rows = data ?? []
+  const rows = data?.transactions ?? []
+  const accountById = data?.accountById ?? new Map<string, FinanceAccount>()
   return (
     <Card className="overflow-hidden p-0">
       {rows.length === 0 ? (
@@ -297,7 +303,16 @@ export function ConnectedTransactionsScreen() {
                   <td className="px-4 py-3 whitespace-nowrap">{formatDate(tx.date)}</td>
                   <td className="px-4 py-3">{tx.description ?? '—'}</td>
                   <td className="px-4 py-3">{tx.merchant ?? tx.enrichment?.merchantNormalized ?? '—'}</td>
-                  <td className="px-4 py-3">{formatTransactionDisplay(tx.enrichment, tx.type)}</td>
+                  <td className="px-4 py-3">
+                    <p className="font-semibold text-[#231529]">
+                      {formatTransactionDisplay(tx.enrichment, tx.type, { description: tx.description })}
+                    </p>
+                    {tx.accountId ? (
+                      <p className="mt-0.5 text-xs text-[#76677d]">
+                        {formatTransactionAccountContext(accountById.get(tx.accountId) ?? null) ?? '—'}
+                      </p>
+                    ) : null}
+                  </td>
                   <td className="px-4 py-3">{tx.category?.name ?? tx.enrichment?.categoryName ?? '—'}</td>
                   <td className="px-4 py-3">{formatClassificationStatus(tx.enrichment?.classificationStatus)}</td>
                   <td className="px-4 py-3 font-bold">{money(tx.amount)}</td>
