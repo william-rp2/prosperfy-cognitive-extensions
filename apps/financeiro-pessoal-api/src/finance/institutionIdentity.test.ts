@@ -82,6 +82,8 @@ describe('institutionIdentity', () => {
     expect(caps.cardBrandAvailable).toBe(true)
     expect(caps.cardholderAvailable).toBe(false)
     expect(caps.transactionCardIdentifierAvailable).toBe(true)
+  })
+
   it('owner não vira institutionName user-facing', () => {
     const item: FinancialItemRow = {
       pluggy_item_id: 'item-1',
