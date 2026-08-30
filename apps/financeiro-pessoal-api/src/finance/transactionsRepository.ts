@@ -169,6 +169,13 @@ export class TransactionsRepository {
       .all({ ...params, limit, offset }) as FinancialTransactionRow[]
   }
 
+  /** All non-deleted transactions — used by historical reprocess CLI. */
+  listAll(): FinancialTransactionRow[] {
+    return this.db
+      .prepare('SELECT * FROM financial_transactions WHERE deleted_at IS NULL ORDER BY date ASC, id ASC')
+      .all() as FinancialTransactionRow[]
+  }
+
   /** Latest transaction createdAt/date for an account — used as the incremental sync cursor. */
   latestDateForAccount(pluggyAccountId: string): string | null {
     const row = this.db

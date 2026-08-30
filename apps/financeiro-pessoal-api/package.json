@@ -8,7 +8,8 @@
     "build": "tsc -p tsconfig.json && node -e \"require('fs').cpSync('src/finance/migrations','dist/finance/migrations',{recursive:true})\"",
     "start": "node dist/index.js",
     "test": "vitest run",
-    "check": "npm run build && npm test"
+    "check": "npm run build && npm test",
+    "finance:reprocess": "tsx src/cli/reprocessTransactions.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.3.0",
