@@ -12,6 +12,9 @@ import { loadConfig } from '../config.js'
 import { AccountsRepository } from '../finance/accountsRepository.js'
 import { CategoriesRepository } from '../finance/categoriesRepository.js'
 import { CategoryOverridesRepository } from '../finance/categoryOverridesRepository.js'
+import { CorrectionsRepository } from '../finance/correctionsRepository.js'
+import { CycleAssignmentService } from '../finance/cycleAssignmentService.js'
+import { StatementCyclesRepository } from '../finance/statementCyclesRepository.js'
 import { ClarificationsRepository } from '../finance/clarificationsRepository.js'
 import { ClassificationService } from '../finance/classificationService.js'
 import { openFinanceDb } from '../finance/db.js'
@@ -77,6 +80,12 @@ async function main() {
       accounts,
     )
 
+    // Reprocess is the path that rebuilds derived state, so it also re-derives the temporal
+    // facts and the statement cycle. Assignment refuses to downgrade a stronger source, so
+    // running this never overwrites a correction the owner made.
+    const corrections = new CorrectionsRepository(db)
+    const cycles = new StatementCyclesRepository(db)
+
     const service = new TransactionReprocessService(
       db,
       transactions,
@@ -84,6 +93,7 @@ async function main() {
       enrichment,
       clarifications,
       classification,
+      new CycleAssignmentService({ db, accounts, cycles, corrections }),
     )
 
     const metrics = service.run({

@@ -22,7 +22,13 @@ import { SyncRunsRepository } from './finance/syncRunsRepository.js'
 import { TransactionAnnotationsRepository } from './finance/transactionAnnotationsRepository.js'
 import { TransactionsRepository } from './finance/transactionsRepository.js'
 import { MissingPluggySecretsError, PluggyPort, PluggySyncClient, SdkPluggyPort } from './pluggy.js'
+import { CorrectionsRepository } from './finance/correctionsRepository.js'
+import { CycleAssignmentService } from './finance/cycleAssignmentService.js'
+import { EffectiveTransactionService } from './finance/effectiveTransaction.js'
+import { MerchantRulesRepository } from './finance/merchantRulesRepository.js'
+import { StatementCyclesRepository } from './finance/statementCyclesRepository.js'
 import { registerFinanceRoutes } from './routes/finance.js'
+import { registerFinanceCorrectionRoutes } from './routes/financeCorrectionRoutes.js'
 import { maskSensitive, parseDate, safeCompare } from './safe.js'
 import { JsonPocStore } from './store.js'
 
@@ -110,6 +116,21 @@ export function createApp(options: CreateAppOptions = {}) {
   const enrichmentRepository = new EnrichmentRepository(financeDb)
   const clarificationsRepository = new ClarificationsRepository(financeDb)
   const transactionAnnotationsRepository = new TransactionAnnotationsRepository(financeDb)
+  const correctionsRepository = new CorrectionsRepository(financeDb)
+  const merchantRulesRepository = new MerchantRulesRepository(financeDb)
+  const statementCyclesRepository = new StatementCyclesRepository(financeDb)
+  const cycleAssignmentService = new CycleAssignmentService({
+    db: financeDb,
+    accounts: accountsRepository,
+    cycles: statementCyclesRepository,
+    corrections: correctionsRepository,
+  })
+  const effectiveTransactionService = new EffectiveTransactionService({
+    corrections: correctionsRepository,
+    merchantRules: merchantRulesRepository,
+    cycles: statementCyclesRepository,
+    enrichment: enrichmentRepository,
+  })
   const classificationService = new ClassificationService(
     enrichmentRepository,
     clarificationsRepository,
@@ -181,6 +202,17 @@ export function createApp(options: CreateAppOptions = {}) {
     itemRegistration: itemRegistrationService,
     accountPreferences: accountPreferencesRepository,
     annotations: transactionAnnotationsRepository,
+  })
+
+  registerFinanceCorrectionRoutes(app, {
+    config,
+    transactions: transactionsRepository,
+    accounts: accountsRepository,
+    corrections: correctionsRepository,
+    merchantRules: merchantRulesRepository,
+    cycles: statementCyclesRepository,
+    cycleAssignment: cycleAssignmentService,
+    effective: effectiveTransactionService,
   })
 
   app.get('/health', async () => ({ ok: true, app: 'financeiro-pessoal-api' }))
