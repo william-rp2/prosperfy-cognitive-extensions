@@ -1,8 +1,10 @@
 import type { AccountsRepository } from './accountsRepository.js'
 import type { ClassificationService } from './classificationService.js'
 import type { ClarificationsRepository } from './clarificationsRepository.js'
+import type { CycleAssignmentService } from './cycleAssignmentService.js'
 import type { FinanceDb } from './db.js'
 import type { EnrichmentRepository, EnrichmentRow } from './enrichmentRepository.js'
+import type { TemporalTransactionRow } from './temporalSemantics.js'
 import type { FinancialTransactionRow } from './types.js'
 import type { TransactionsRepository } from './transactionsRepository.js'
 
@@ -72,6 +74,11 @@ export class TransactionReprocessService {
     private readonly enrichment: EnrichmentRepository,
     private readonly clarifications: ClarificationsRepository,
     private readonly classification: ClassificationService,
+    /**
+     * F2B temporal/cycle layer. Optional and last so existing call sites keep compiling; when it
+     * is absent the reprocess behaves exactly as before.
+     */
+    private readonly cycleAssignment?: CycleAssignmentService,
   ) {}
 
   run(options: ReprocessOptions = {}): ReprocessMetrics {
@@ -93,6 +100,9 @@ export class TransactionReprocessService {
       dryRun: Boolean(options.dryRun),
     }
 
+    // Bills are mirrored into cycles once per account, not once per transaction.
+    const cyclesEnsured = new Set<string>()
+
     for (const row of rows) {
       metrics.processed += 1
       const openBefore = this.clarifications.countOpenForTransaction(row.pluggy_transaction_id)
@@ -105,6 +115,16 @@ export class TransactionReprocessService {
 
         if (!options.dryRun) {
           this.transactions.backfillCurrencyFromRaw(row.pluggy_transaction_id, account.currency_code)
+          // F2B: re-derive the temporal facts and the statement cycle. Idempotent, and it refuses
+          // to downgrade an assignment made by a stronger source (a USER correction, a reconciled
+          // statement), so reprocessing never silently undoes an owner decision.
+          if (this.cycleAssignment) {
+            if (!cyclesEnsured.has(account.pluggy_account_id)) {
+              this.cycleAssignment.ensureCyclesForAccount(account.pluggy_account_id)
+              cyclesEnsured.add(account.pluggy_account_id)
+            }
+            this.cycleAssignment.syncTemporal(row as TemporalTransactionRow, account)
+          }
         }
 
         const enrichBefore = snapshotEnrichment(this.enrichment.getByTransactionId(row.pluggy_transaction_id))

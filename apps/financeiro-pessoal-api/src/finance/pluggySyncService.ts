@@ -4,10 +4,12 @@ import type { PluggySyncClient } from '../pluggy.js'
 import type { AccountsRepository } from './accountsRepository.js'
 import type { ClassificationService } from './classificationService.js'
 import { mapWithConcurrency } from './concurrency.js'
+import type { CycleAssignmentService } from './cycleAssignmentService.js'
 import type { ItemsRepository } from './itemsRepository.js'
 import type { ProductsRepository } from './productsRepository.js'
 import { withRetry } from './retry.js'
 import type { SyncRunsRepository } from './syncRunsRepository.js'
+import { isCreditCardAccount, type TemporalTransactionRow } from './temporalSemantics.js'
 import type { TransactionsRepository } from './transactionsRepository.js'
 import { toCents, type FinancialSyncRunRow, type SyncStatus, type SyncTrigger } from './types.js'
 
@@ -30,6 +32,11 @@ export interface PluggySyncServiceOptions {
   maxConcurrentItems: number
   logger?: SyncLogger
   classification?: ClassificationService
+  /**
+   * F2B temporal/cycle layer. Optional so a caller that only wants raw ingestion keeps working:
+   * when absent the sync behaves exactly as before and the derived columns stay NULL.
+   */
+  cycleAssignment?: CycleAssignmentService
 }
 
 interface ItemSyncResult {
@@ -141,8 +148,10 @@ export class PluggySyncService {
     let transactionsUpdated = 0
     let transactionsUnchanged = 0
 
+    const cycleAssignment = this.opts.cycleAssignment
+
     for (const account of accounts) {
-      this.opts.accounts.upsertAccount({
+      const accountRow = this.opts.accounts.upsertAccount({
         pluggyAccountId: account.id,
         pluggyItemId,
         type: account.type,
@@ -163,6 +172,9 @@ export class PluggySyncService {
       const transactions = await withRetry(() => this.opts.pluggy.fetchAllTransactions(account.id, { dateFrom }), {
         onRetry: this.logRetry(pluggyItemId, `fetchAllTransactions:${account.id}`),
       })
+
+      const isCard = isCreditCardAccount(accountRow)
+      const cardRowsPendingCycle: TemporalTransactionRow[] = []
 
       for (const transaction of transactions) {
         const { delta, row } = this.opts.transactions.upsertTransaction({
@@ -191,9 +203,25 @@ export class PluggySyncService {
         if (this.opts.classification && delta !== 'unchanged') {
           this.opts.classification.classifyIfNeeded(row)
         }
+
+        // F2B: derive the temporal facts (posted/purchase/competence/cashflow + cycle). Reads
+        // raw_data, never rewrites it. Runs on every transaction, not only changed ones, because
+        // a cycle can appear after the transaction was first ingested.
+        if (cycleAssignment) {
+          const temporalRow = row as TemporalTransactionRow
+          cycleAssignment.syncTemporal(temporalRow, accountRow)
+          if (isCard) cardRowsPendingCycle.push(temporalRow)
+        }
       }
 
-      if (account.type === 'CREDIT') await this.syncCreditCardBills(pluggyItemId, account.id)
+      if (account.type === 'CREDIT') {
+        await this.syncCreditCardBills(pluggyItemId, account.id)
+        // Bills (and therefore cycles) only exist after the call above, so on a first sync the
+        // loop over transactions ran with no cycle to attach to. Re-run the temporal pass now.
+        if (cycleAssignment) {
+          for (const pending of cardRowsPendingCycle) cycleAssignment.syncTemporal(pending, accountRow)
+        }
+      }
     }
 
     await this.syncInvestments(pluggyItemId)
@@ -222,7 +250,7 @@ export class PluggySyncService {
     }
 
     for (const bill of bills) {
-      this.opts.products.upsertCreditCardBill({
+      const billRow = this.opts.products.upsertCreditCardBill({
         pluggyBillId: bill.id,
         pluggyAccountId: accountId,
         dueDate: bill.dueDate ? new Date(bill.dueDate).toISOString() : null,
@@ -232,6 +260,9 @@ export class PluggySyncService {
         currencyCode: bill.totalAmountCurrencyCode,
         rawData: bill,
       })
+      // F2B: the bill table stays a read-only upstream mirror; the cycle is a separate domain row
+      // derived from it, so corrections and assignments never write back into upstream data.
+      this.opts.cycleAssignment?.ensureCycleFromBill(billRow)
     }
   }
 
