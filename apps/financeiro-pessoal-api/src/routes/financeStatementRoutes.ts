@@ -10,6 +10,8 @@ import { isStatementSource, type StatementImportRepository } from '../finance/st
 import type { StatementCyclesRepository, StatementCycleRow } from '../finance/statementCyclesRepository.js'
 import { isMonthKey } from '../finance/temporalSemantics.js'
 import { safeCompare } from '../safe.js'
+import multipart from '@fastify/multipart'
+import { extractPdfText, PdfExtractionError, MAX_PDF_BYTES } from '../finance/pdfTextExtractor.js'
 
 /**
  * Closed-statement import, reconciliation and cycle listing (F2B, SUBAGENT_D).
@@ -48,6 +50,23 @@ function optionalCents(value: unknown): number | null | undefined {
   if (value === undefined || value === null) return null
   if (typeof value !== 'number' || !Number.isSafeInteger(value)) return undefined
   return value
+}
+
+/**
+ * Multipart carries every field as text, so the JSON `optionalCents` (which demands a real
+ * `number`) would reject a perfectly valid `statementTotalCents=12345` as malformed. Parsing is
+ * strict on purpose: only an optionally-signed run of digits is accepted, so "12.5", "1e3" and
+ * "12345; DROP" are rejected rather than silently coerced into the wrong amount.
+ */
+function multipartCents(value: unknown): number | null | undefined {
+  if (value === undefined || value === null) return null
+  if (typeof value === 'number') return optionalCents(value)
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (!/^[-+]?\d+$/.test(trimmed)) return undefined
+  const parsed = Number(trimmed)
+  return Number.isSafeInteger(parsed) ? parsed : undefined
 }
 
 function serializeCycle(row: StatementCycleRow) {
@@ -135,6 +154,97 @@ export function registerFinanceStatementRoutes(app: FastifyInstance, deps: Finan
           dueDate: optionalString(body.dueDate),
           statementTotalCents,
           metadata: body.metadata,
+        })
+        return reply.code(result.created ? 201 : 200).send(result)
+      } catch (error) {
+        if (error instanceof AccountNotFoundError) {
+          return reply.code(404).send({ error: 'account_not_found', message: 'Conta financeira não encontrada.' })
+        }
+        throw error
+      }
+    })
+
+    void statementApp.register(multipart, {
+      limits: { fileSize: MAX_PDF_BYTES, files: 1 },
+      throwFileSizeLimit: false,
+    })
+
+    /**
+     * Import a closed statement from an uploaded PDF file. The PDF's extracted text is
+     * treated as opaque untrusted data — it is handed to the same importStatement()
+     * pipeline as the JSON route, and never interpreted as instructions.
+     */
+    statementApp.post('/api/finance/statements/import/pdf', async (request, reply) => {
+      const part = await request.file()
+      if (!part) {
+        return reply.code(400).send({ error: 'empty_statement', message: 'Nenhum arquivo enviado.' })
+      }
+
+      const fileBuffer = await part.toBuffer()
+      if (part.file.truncated) {
+        return reply.code(413).send({ error: 'pdf_too_large' })
+      }
+
+      const fields = part.fields as Record<string, { value?: unknown } | undefined>
+      const fieldValue = (name: string): unknown => {
+        const field = fields[name]
+        if (!field || typeof field !== 'object' || !('value' in field)) return undefined
+        return (field as { value?: unknown }).value
+      }
+
+      const accountId = optionalString(fieldValue('financialAccountId'))
+      if (!accountId) {
+        return reply.code(400).send({ error: 'invalid_account_id', message: 'financialAccountId é obrigatório.' })
+      }
+      const competenceMonth = fieldValue('competenceMonth')
+      if (!isMonthKey(competenceMonth)) {
+        return reply
+          .code(400)
+          .send({ error: 'invalid_competence_month', message: 'competenceMonth deve estar no formato AAAA-MM.' })
+      }
+      const statementTotalCents = multipartCents(fieldValue('statementTotalCents'))
+      if (statementTotalCents === undefined) {
+        return reply
+          .code(400)
+          .send({ error: 'invalid_total', message: 'statementTotalCents deve ser um inteiro em centavos.' })
+      }
+
+      const safeFileName = String(part.filename ?? '')
+        .replace(/[^A-Za-z0-9._-]/g, '_')
+        .slice(0, 120)
+
+      let extracted: { text: string; pageCount: number }
+      try {
+        extracted = await extractPdfText(new Uint8Array(fileBuffer))
+      } catch (error) {
+        if (error instanceof PdfExtractionError) {
+          const statusByCode: Record<string, number> = {
+            not_a_pdf: 415,
+            pdf_too_large: 413,
+            pdf_without_text_layer: 422,
+            pdf_unreadable: 422,
+          }
+          return reply.code(statusByCode[error.code] ?? 422).send({ error: error.code })
+        }
+        throw error
+      }
+
+      try {
+        const result = reconciliation.importStatement({
+          financialAccountId: accountId,
+          source: 'PDF_UPLOAD',
+          competenceMonth,
+          statementCurrency: optionalString(fieldValue('statementCurrency')),
+          rawText: extracted.text,
+          lines: undefined,
+          fileName: safeFileName,
+          institutionHint: optionalString(fieldValue('institutionHint')),
+          cardLast4: optionalString(fieldValue('cardLast4')),
+          periodStart: optionalString(fieldValue('periodStart')),
+          periodEnd: optionalString(fieldValue('periodEnd')),
+          closingDate: optionalString(fieldValue('closingDate')),
+          dueDate: optionalString(fieldValue('dueDate')),
+          statementTotalCents,
         })
         return reply.code(result.created ? 201 : 200).send(result)
       } catch (error) {

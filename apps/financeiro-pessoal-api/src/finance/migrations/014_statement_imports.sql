@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS financial_statement_imports (
   metadata_json         TEXT,
   imported_at           TEXT NOT NULL,
   reconciled_at         TEXT,
-  CHECK (source IN ('HERMES_ATTACHMENT', 'FINANCE_EMAIL_ATTACHMENT', 'MANUAL_UPLOAD', 'PLUGGY_BILL')),
+  CHECK (source IN ('HERMES_ATTACHMENT', 'FINANCE_EMAIL_ATTACHMENT', 'MANUAL_UPLOAD', 'PLUGGY_BILL', 'PDF_UPLOAD')),
   CHECK (status IN ('PARSED', 'RECONCILING', 'RECONCILED', 'DISCREPANT')),
   CHECK (competence_month GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]')
 );

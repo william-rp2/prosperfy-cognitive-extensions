@@ -13,9 +13,11 @@
   },
   "dependencies": {
     "@fastify/cors": "^11.3.0",
+    "@fastify/multipart": "^10.1.1",
     "better-sqlite3": "^12.11.1",
     "dotenv": "^16.4.7",
     "fastify": "^5.11.0",
+    "pdfjs-dist": "^6.3.289",
     "pluggy-sdk": "^0.90.0",
     "zod": "^4.4.3"
   },

@@ -22,6 +22,7 @@ export const STATEMENT_SOURCES = [
   'FINANCE_EMAIL_ATTACHMENT',
   'MANUAL_UPLOAD',
   'PLUGGY_BILL',
+  'PDF_UPLOAD',
 ] as const
 export type StatementSource = (typeof STATEMENT_SOURCES)[number]
 
