@@ -155,8 +155,14 @@ Correção: upgrade para `better-sqlite3` ^12 (declara `24.x`). Verificado em ex
 **Consequência para o deploy (altera D10):** `better-sqlite3` é módulo nativo. O método de deploy
 por `cp` seletivo de arquivos JS **não é suficiente** para esta mudança — o homolog precisa de
 `npm install` (ou `npm rebuild better-sqlite3`) na árvore de staging para reconstruir o binding
-contra o Node que roda lá. Verificar a versão do Node do homolog antes; se for < 20, o upgrade
-não se aplica e a decisão precisa ser revista.
+contra o Node que roda lá.
+
+Versões do homolog verificadas ao vivo em 2026-08-31: Node `v22.23.1` (binário em
+`/home/will/.hermes/node/bin/node`, fora do PATH do shell não-interativo — invocar por caminho
+absoluto) e `better-sqlite3` 11.10.0 na árvore de staging. Portanto o crash de Node 24 **nunca
+atingiu o homolog**; era específico da máquina de desenvolvimento. O v12 declara `22.x`, então o
+upgrade é compatível com o homolog — mas continua exigindo `npm install` lá para reconstruir o
+binário nativo.
 
 **Regra operacional derivada:** nunca aceitar `success=true` do vitest como prova. Conferir
 sempre `numTotalTests`, `numPassedTests` e `numPendingTests` — um arquivo cujo worker morreu
