@@ -26,9 +26,12 @@ import { CorrectionsRepository } from './finance/correctionsRepository.js'
 import { CycleAssignmentService } from './finance/cycleAssignmentService.js'
 import { EffectiveTransactionService } from './finance/effectiveTransaction.js'
 import { MerchantRulesRepository } from './finance/merchantRulesRepository.js'
+import { OnboardingRepository } from './finance/onboardingRepository.js'
 import { StatementCyclesRepository } from './finance/statementCyclesRepository.js'
 import { registerFinanceRoutes } from './routes/finance.js'
+import { registerFinanceClarificationRoutes } from './routes/financeClarificationRoutes.js'
 import { registerFinanceCorrectionRoutes } from './routes/financeCorrectionRoutes.js'
+import { registerFinanceOnboardingRoutes } from './routes/financeOnboardingRoutes.js'
 import { maskSensitive, parseDate, safeCompare } from './safe.js'
 import { JsonPocStore } from './store.js'
 
@@ -119,6 +122,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const correctionsRepository = new CorrectionsRepository(financeDb)
   const merchantRulesRepository = new MerchantRulesRepository(financeDb)
   const statementCyclesRepository = new StatementCyclesRepository(financeDb)
+  const onboardingRepository = new OnboardingRepository(financeDb)
   const cycleAssignmentService = new CycleAssignmentService({
     db: financeDb,
     accounts: accountsRepository,
@@ -213,6 +217,22 @@ export function createApp(options: CreateAppOptions = {}) {
     cycles: statementCyclesRepository,
     cycleAssignment: cycleAssignmentService,
     effective: effectiveTransactionService,
+  })
+
+  registerFinanceClarificationRoutes(app, {
+    config,
+    clarifications: clarificationsRepository,
+  })
+
+  registerFinanceOnboardingRoutes(app, {
+    config,
+    transactions: transactionsRepository,
+    accounts: accountsRepository,
+    items: itemsRepository,
+    enrichment: enrichmentRepository,
+    clarifications: clarificationsRepository,
+    corrections: correctionsRepository,
+    onboarding: onboardingRepository,
   })
 
   app.get('/health', async () => ({ ok: true, app: 'financeiro-pessoal-api' }))

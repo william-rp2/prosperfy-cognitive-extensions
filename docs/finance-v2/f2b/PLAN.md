@@ -17,7 +17,7 @@ and pre-allocated migration numbers. It is updated as decisions change.
 | D6 | Email statement path is DEFERRED. No email module exists in-repo; only external MCP tools. Building an email subsystem is out of proportion for F2B | `05_STATEMENTS_EMAIL_RECONCILIATION.md` §8 explicitly allows upload/Hermes instead. Recorded as debt |
 | D7 | E2E matrix runs as integration tests on the real runtime path (SQLite -> repo -> service -> fastify `app.inject`) plus pytest for Cognitive/Hermes. No browser harness introduced | `34. REAL_RUNTIME_PATH > ISOLATED_UNIT_ASSERTION`; adding Playwright is out of scope |
 | D8 | ACL is enforced in Cognitive policy before LLM, keyed on canonical actor identity; Finance API stays the enforcement-free inner layer behind the gateway | Finance SQLite has no tenant column; tenancy lives in Cognitive Postgres |
-| D9 | Spreadsheet transport is XLSX if a safe pure-JS writer is already viable, else CSV. Decision belongs to SUBAGENT_B, recorded here when made | Dossier allows either |
+| D9 | Spreadsheet transport is CSV (RFC4180-style, hand-written writer/parser in `spreadsheetExport.ts`/`spreadsheetImport.ts`). Decided by SUBAGENT_B | No xlsx/exceljs (or any spreadsheet) library exists in the current `package.json` dependency tree, and a safe pure-JS XLSX writer (zip container, shared-strings table, escaping) is materially harder to get right than a CSV writer/parser. CSV round-trips cleanly through every spreadsheet tool the owner already uses |
 
 ## Migration numbers — pre-allocated, do NOT deviate
 
