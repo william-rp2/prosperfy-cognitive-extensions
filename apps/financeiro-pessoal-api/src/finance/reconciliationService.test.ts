@@ -333,16 +333,150 @@ describe('import + reconciliation', () => {
     expect(db.prepare('SELECT COUNT(*) AS n FROM financial_transactions').get()).toEqual({ n: knownToApp.length })
   })
 
-  it('reports ambiguity instead of guessing when two statement lines contest one transaction', () => {
+  it('reports a conflict instead of guessing when two statement lines contest the same sole transaction', () => {
     const duplicated: Fixture = { date: '2026-07-04', description: 'PADARIA CENTRAL', amountCents: -1550 }
     seedTransactions([duplicated])
 
-    // Two distinct statement lines with the same amount, one day apart.
+    // Two distinct statement lines, both with only this one transaction as a possible candidate:
+    // this is the CONFLICT case (unresolvable uniqueness violation), not AMBIGUOUS (a tie between
+    // several live candidates) — there is only ever one transaction here to contest.
     const fixtures: Fixture[] = [duplicated, { ...duplicated, date: '2026-07-05', description: 'PADARIA CENTRAL 2' }]
     const imported = importFixture(fixtures)
     const report = service.reconcile(imported.statementId)
 
-    expect(report.ambiguousCount + report.statementOnlyCount).toBe(fixtures.length - report.matchedCount)
+    expect(report.conflictCount + report.ambiguousCount + report.statementOnlyCount).toBe(fixtures.length - report.matchedCount)
+    expect(report.conflictCount).toBe(2)
     expect(report.cycleStatus).toBe('DISCREPANT')
+  })
+})
+
+describe('F2B matching hardening (direction, amount mismatch, conflict)', () => {
+  it('MATCH_DIRECTION_SAFE: a purchase and its own same-magnitude refund do not match', () => {
+    const purchaseTx = 'PURCHASE-REFUND-STORE'
+    transactions.upsertTransaction({
+      pluggyTransactionId: purchaseTx,
+      pluggyAccountId: CARD_ACCOUNT,
+      description: 'COMPRA LOJA X',
+      descriptionRaw: 'COMPRA LOJA X',
+      amountCents: -10000,
+      currencyCode: 'BRL',
+      date: '2026-07-10',
+      rawData: { provider: 'pluggy', id: purchaseTx, description: 'COMPRA LOJA X' },
+    })
+
+    const imported = importFixture([
+      { date: '2026-07-10', description: 'COMPRA LOJA X', amountCents: -10000 },
+      { date: '2026-07-10', description: 'ESTORNO LOJA X', amountCents: 10000 },
+    ])
+    const report = service.reconcile(imported.statementId)
+
+    const purchaseLine = report.lines.find(line => line.descriptionRaw === 'COMPRA LOJA X')
+    const refundLine = report.lines.find(line => line.descriptionRaw === 'ESTORNO LOJA X')
+
+    expect(purchaseLine?.transactionId).toBe(purchaseTx)
+    expect(['EXACT', 'HIGH']).toContain(purchaseLine?.status)
+    // The refund line has no CREDIT-direction candidate: the only transaction on the account is
+    // the CHARGE-direction purchase, which a same-magnitude refund must never be matched against.
+    expect(refundLine?.transactionId).toBeNull()
+    expect(refundLine?.status).toBe('STATEMENT_ONLY')
+  })
+
+  it('MATCH_DIRECTION_SAFE: a different currency never matches even at equal magnitude and date', () => {
+    const usdTx = 'USD-TX'
+    transactions.upsertTransaction({
+      pluggyTransactionId: usdTx,
+      pluggyAccountId: CARD_ACCOUNT,
+      description: 'COMPRA EXTERIOR',
+      descriptionRaw: 'COMPRA EXTERIOR',
+      amountCents: -5000,
+      currencyCode: 'BRL',
+      date: '2026-07-12',
+      rawData: { provider: 'pluggy', id: usdTx, description: 'COMPRA EXTERIOR' },
+    })
+
+    const imported = importFixture([{ date: '2026-07-12', description: 'COMPRA EXTERIOR', amountCents: -5000 }], {
+      lines: [{ date: '2026-07-12', description: 'COMPRA EXTERIOR', amountCents: -5000, currencyCode: 'USD' }],
+    })
+    const report = service.reconcile(imported.statementId)
+
+    expect(report.lines).toHaveLength(1)
+    expect(report.lines[0].transactionId).toBeNull()
+    expect(report.lines[0].status).toBe('STATEMENT_ONLY')
+  })
+
+  it('E2E_AMOUNT_MISMATCH: same store, date and account but the value is out of tolerance', () => {
+    const txId = 'MISMATCH-TX'
+    transactions.upsertTransaction({
+      pluggyTransactionId: txId,
+      pluggyAccountId: CARD_ACCOUNT,
+      description: 'PADARIA CENTRAL',
+      descriptionRaw: 'PADARIA CENTRAL',
+      amountCents: -1600,
+      currencyCode: 'BRL',
+      date: '2026-07-04',
+      rawData: { provider: 'pluggy', id: txId, description: 'PADARIA CENTRAL' },
+    })
+
+    const imported = importFixture([{ date: '2026-07-04', description: 'PADARIA CENTRAL', amountCents: -1550 }])
+    const report = service.reconcile(imported.statementId)
+
+    expect(report.lines).toHaveLength(1)
+    const line = report.lines[0]
+    expect(line.status).toBe('AMOUNT_MISMATCH')
+    expect(line.transactionId).toBe(txId)
+    expect(report.amountMismatchCount).toBe(1)
+    // Never counted as matched.
+    expect(report.matchedCount).toBe(0)
+    expect(report.cycleStatus).toBe('DISCREPANT')
+
+    const persisted = statementImports.listReconciliations(imported.statementId)
+    const row = persisted.find(r => r.pluggy_transaction_id === txId)!
+    expect(row.match_status).toBe('AMOUNT_MISMATCH')
+    expect(row.statement_amount_cents).toBe(-1550)
+    expect(row.transaction_effective_amount_cents).toBe(-1600)
+    expect(row.difference_cents).toBe(Math.abs(-1550) - Math.abs(-1600))
+
+    const discrepancyKinds = report.discrepancies.map(d => d.kind)
+    expect(discrepancyKinds).toContain('AMOUNT_MISMATCH')
+
+    // The statement never demoted / claimed the transaction's cycle assignment.
+    const txRow = db
+      .prepare('SELECT statement_cycle_id, cycle_assignment_source FROM financial_transactions WHERE pluggy_transaction_id = ?')
+      .get(txId) as { statement_cycle_id: string | null; cycle_assignment_source: string | null }
+    expect(txRow.cycle_assignment_source).not.toBe('STATEMENT_IMPORT')
+  })
+
+  it('E2E_CONFLICT: two statement lines both resolve to the same single candidate transaction', () => {
+    const soleTx = 'SOLE-CANDIDATE-TX'
+    transactions.upsertTransaction({
+      pluggyTransactionId: soleTx,
+      pluggyAccountId: CARD_ACCOUNT,
+      description: 'LOJA UNICA',
+      descriptionRaw: 'LOJA UNICA',
+      amountCents: -5000,
+      currencyCode: 'BRL',
+      date: '2026-07-10',
+      rawData: { provider: 'pluggy', id: soleTx, description: 'LOJA UNICA' },
+    })
+
+    const imported = importFixture([
+      { date: '2026-07-10', description: 'LOJA UNICA COMPRA A', amountCents: -5000 },
+      { date: '2026-07-11', description: 'LOJA UNICA COMPRA B', amountCents: -5000 },
+    ])
+    const report = service.reconcile(imported.statementId)
+
+    expect(report.lines).toHaveLength(2)
+    expect(report.lines.every(line => line.status === 'CONFLICT')).toBe(true)
+    expect(report.lines.every(line => line.transactionId === null)).toBe(true)
+    expect(report.conflictCount).toBe(2)
+    // Nothing was auto-resolved.
+    expect(report.matchedCount).toBe(0)
+    expect(report.cycleStatus).toBe('DISCREPANT')
+
+    const discrepancyKinds = report.discrepancies.map(d => d.kind)
+    expect(discrepancyKinds.filter(kind => kind === 'CONFLICT')).toHaveLength(2)
+
+    const persisted = statementImports.listReconciliations(imported.statementId)
+    expect(persisted.filter(r => r.match_status === 'CONFLICT')).toHaveLength(2)
   })
 })

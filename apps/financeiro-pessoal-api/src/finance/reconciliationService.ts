@@ -94,6 +94,8 @@ export interface ReconciliationReport {
   statementOnlyCount: number
   appOnlyCount: number
   ambiguousCount: number
+  amountMismatchCount: number
+  conflictCount: number
   lines: ReconciliationLineReport[]
   statementOnly: ReconciliationLineReport[]
   appOnly: { transactionId: string; date: string; amountCents: number; description: string | null }[]
@@ -270,33 +272,45 @@ export class ReconciliationService {
     let matchedCount = 0
     let ambiguousCount = 0
     let statementOnlyCount = 0
+    let amountMismatchCount = 0
+    let conflictCount = 0
 
     for (const result of results) {
       const line = lineById.get(result.lineId)!
       let assignmentApplied = false
       let assignmentRejected: string | null = null
+      const chosenTransaction = result.chosen ? byTransactionId.get(result.chosen.transactionId) : undefined
+      // AMOUNT_MISMATCH never counts as a confirmed match, so it never claims cycle assignment
+      // ownership either — only a clean match (EXACT/HIGH) does.
+      const isConfirmedMatch = result.chosen !== null && result.status !== 'AMOUNT_MISMATCH'
 
-      if (result.chosen && cycleId) {
+      if (isConfirmedMatch && cycleId) {
         // Always writes as STATEMENT_IMPORT. A USER assignment outranks it and the repository
         // rejects the write — a statement can never demote the owner's own correction.
         const assignment = this.cycles.assignTransaction({
-          pluggyTransactionId: result.chosen.transactionId,
+          pluggyTransactionId: result.chosen!.transactionId,
           statementCycleId: cycleId,
           source: 'STATEMENT_IMPORT',
-          confidence: result.chosen.score,
+          confidence: result.chosen!.score,
         })
         assignmentApplied = assignment.applied
         assignmentRejected = assignment.applied ? null : (assignment.rejectedReason ?? 'not_applied')
       }
 
-      if (result.chosen) {
+      if (isConfirmedMatch) {
         matchedCount += 1
         matchedTotalCents += line.amount_cents
       } else if (result.status === 'AMBIGUOUS') {
         ambiguousCount += 1
+      } else if (result.status === 'AMOUNT_MISMATCH') {
+        amountMismatchCount += 1
+      } else if (result.status === 'CONFLICT') {
+        conflictCount += 1
       } else {
         statementOnlyCount += 1
       }
+
+      const isAmountMismatch = result.status === 'AMOUNT_MISMATCH'
 
       this.statementImports.upsertReconciliation({
         statementImportId: statement.id,
@@ -306,10 +320,15 @@ export class ReconciliationService {
         matchStatus: result.status,
         confidence: result.chosen?.score ?? 0,
         amountDeltaCents: result.chosen
-          ? Math.abs(line.amount_cents) - Math.abs(byTransactionId.get(result.chosen.transactionId)?.amount_cents ?? line.amount_cents)
+          ? Math.abs(line.amount_cents) - Math.abs(chosenTransaction?.amount_cents ?? line.amount_cents)
           : 0,
         assignmentApplied,
         assignmentRejected,
+        statementAmountCents: isAmountMismatch ? line.amount_cents : null,
+        transactionEffectiveAmountCents: isAmountMismatch ? (chosenTransaction?.amount_cents ?? null) : null,
+        differenceCents: isAmountMismatch
+          ? Math.abs(line.amount_cents) - Math.abs(chosenTransaction?.amount_cents ?? 0)
+          : null,
         evidence: { candidates: result.candidates },
       })
 
@@ -327,6 +346,29 @@ export class ReconciliationService {
           statementImportId: statement.id,
           statementCycleId: cycleId,
           kind: 'AMBIGUOUS',
+          subjectKey: line.line_hash,
+          deltaCents: line.amount_cents,
+          detail: { lineId: line.id, candidates: result.candidates.map(candidate => candidate.transactionId) },
+        })
+      } else if (result.status === 'AMOUNT_MISMATCH') {
+        this.statementImports.upsertDiscrepancy({
+          statementImportId: statement.id,
+          statementCycleId: cycleId,
+          kind: 'AMOUNT_MISMATCH',
+          subjectKey: line.line_hash,
+          deltaCents: Math.abs(line.amount_cents) - Math.abs(chosenTransaction?.amount_cents ?? 0),
+          detail: {
+            lineId: line.id,
+            transactionId: result.chosen?.transactionId ?? null,
+            statementAmountCents: line.amount_cents,
+            transactionAmountCents: chosenTransaction?.amount_cents ?? null,
+          },
+        })
+      } else if (result.status === 'CONFLICT') {
+        this.statementImports.upsertDiscrepancy({
+          statementImportId: statement.id,
+          statementCycleId: cycleId,
+          kind: 'CONFLICT',
           subjectKey: line.line_hash,
           deltaCents: line.amount_cents,
           detail: { lineId: line.id, candidates: result.candidates.map(candidate => candidate.transactionId) },
@@ -396,6 +438,8 @@ export class ReconciliationService {
       statementOnlyCount === 0 &&
       appOnly.length === 0 &&
       ambiguousCount === 0 &&
+      amountMismatchCount === 0 &&
+      conflictCount === 0 &&
       (statementTotalCents == null || differenceCents === 0)
 
     const cycleStatus = clean ? 'RECONCILED' : 'DISCREPANT'
@@ -426,6 +470,8 @@ export class ReconciliationService {
       statementOnlyCount,
       appOnlyCount: appOnly.length,
       ambiguousCount,
+      amountMismatchCount,
+      conflictCount,
       lines: lineReports,
       statementOnly: lineReports.filter(report => report.status === 'STATEMENT_ONLY'),
       appOnly,

@@ -27,7 +27,7 @@ export interface MatchCandidate {
 
 export interface LineMatchResult {
   lineId: string
-  status: Extract<MatchStatus, 'EXACT' | 'HIGH' | 'AMBIGUOUS' | 'STATEMENT_ONLY'>
+  status: Extract<MatchStatus, 'EXACT' | 'HIGH' | 'AMBIGUOUS' | 'STATEMENT_ONLY' | 'AMOUNT_MISMATCH' | 'CONFLICT'>
   candidates: MatchCandidate[]
   chosen: MatchCandidate | null
 }
@@ -35,9 +35,30 @@ export interface LineMatchResult {
 export interface MatchingOptions {
   /** Maximum |days| between statement line date and transaction date for a candidate. */
   dateToleranceDays?: number
+  /** Maximum |amount| difference, in cents, still tolerated as an exact amount match. */
+  amountToleranceCents?: number
 }
 
 const DEFAULT_DATE_TOLERANCE_DAYS = 3
+const DEFAULT_AMOUNT_TOLERANCE_CENTS = 0
+/** Minimum token overlap for a mismatched-amount candidate to still be worth surfacing. */
+const AMOUNT_MISMATCH_OVERLAP_THRESHOLD = 0.6
+
+type Direction = 'CHARGE' | 'CREDIT'
+
+/**
+ * Statement side: PAYMENT and REFUND are money coming back (CREDIT); every other classified line
+ * type (PURCHASE, FEE, IOF, INTEREST, ADJUSTMENT, UNKNOWN) is a charge. This is the parser's own
+ * explicit vocabulary — not a guess per institution.
+ */
+function lineDirection(lineType: StatementLineRow['line_type']): Direction {
+  return lineType === 'PAYMENT' || lineType === 'REFUND' ? 'CREDIT' : 'CHARGE'
+}
+
+/** App side: the app's own sign convention — negative is a charge, positive is a credit. */
+function transactionDirection(amountCents: number): Direction {
+  return amountCents < 0 ? 'CHARGE' : 'CREDIT'
+}
 
 function dayDelta(a: string | null, b: string | null): number | null {
   if (!a || !b) return null
@@ -67,16 +88,33 @@ function transactionText(transaction: CandidateTransactionRow): string {
 }
 
 /**
- * Amounts are compared on magnitude. The provider and the statement disagree on sign convention
- * for card charges depending on institution, and inventing a sign rule per bank would be exactly
- * the kind of silent guess this feature exists to avoid.
+ * Amount comparison is magnitude-only: the provider and the statement disagree on sign
+ * convention for card charges depending on institution, and inventing a sign rule per bank would
+ * be exactly the kind of silent guess this feature exists to avoid. Direction (charge vs. credit)
+ * is decided separately, from `line_type` / the app's own sign convention, in `scoreCandidate` —
+ * so a magnitude-only comparison here no longer risks matching a purchase against its own refund.
  */
-function amountsMatch(lineCents: number, transactionCents: number): boolean {
-  return Math.abs(lineCents) === Math.abs(transactionCents)
+function amountsMatch(lineCents: number, transactionCents: number, toleranceCents: number): boolean {
+  return Math.abs(Math.abs(lineCents) - Math.abs(transactionCents)) <= toleranceCents
 }
 
-function scoreCandidate(line: StatementLineRow, transaction: CandidateTransactionRow, toleranceDays: number): MatchCandidate | null {
-  if (!amountsMatch(line.amount_cents, transaction.amount_cents)) return null
+function scoreCandidate(
+  line: StatementLineRow,
+  transaction: CandidateTransactionRow,
+  toleranceDays: number,
+  amountToleranceCents: number,
+): MatchCandidate | null {
+  // Direction gate: a charge can never satisfy a credit line (or vice versa), regardless of how
+  // close the magnitudes are — this is what keeps a purchase and its own refund from matching.
+  if (lineDirection(line.line_type) !== transactionDirection(transaction.amount_cents)) return null
+
+  const currencyEqual = (transaction.currency_code ?? line.currency_code).toUpperCase() === line.currency_code.toUpperCase()
+  // Currency now bars the match outright; it used to only shave the score.
+  if (!currencyEqual) return null
+
+  // `card_hint` (statement line) vs. a candidate's card last-4: `CandidateTransactionRow` does not
+  // currently expose a card-last-4 column, so the hint cannot be enforced today. Left as a no-op
+  // intentionally — not inventing a column to satisfy it.
 
   const delta = dayDelta(line.date, transaction.date)
   if (delta != null && delta > toleranceDays) return null
@@ -85,7 +123,14 @@ function scoreCandidate(line: StatementLineRow, transaction: CandidateTransactio
   const txText = transactionText(transaction)
   const overlap = descriptionOverlap(lineText, txText)
   const descriptionEqual = normalizeDescription(lineText) === normalizeDescription(txText) && normalizeDescription(lineText) !== ''
-  const currencyEqual = (transaction.currency_code ?? line.currency_code).toUpperCase() === line.currency_code.toUpperCase()
+
+  const amountEqual = amountsMatch(line.amount_cents, transaction.amount_cents, amountToleranceCents)
+  if (!amountEqual) {
+    // Not discarded outright: a strongly-matching description with a diverging amount is exactly
+    // the case AMOUNT_MISMATCH exists to surface, not to silently drop.
+    const descriptionStrong = descriptionEqual || overlap >= AMOUNT_MISMATCH_OVERLAP_THRESHOLD
+    if (!descriptionStrong) return null
+  }
 
   let score = 0.5
   if (delta === 0) score += 0.2
@@ -93,11 +138,18 @@ function scoreCandidate(line: StatementLineRow, transaction: CandidateTransactio
   if (descriptionEqual) score += 0.25
   else score += 0.25 * overlap
   if (currencyEqual) score += 0.05
+  if (!amountEqual) score -= 0.3
 
   return {
     transactionId: transaction.pluggy_transaction_id,
     score: Math.round(score * 1000) / 1000,
-    evidence: { amountEqual: true, dayDelta: delta, descriptionEqual, descriptionOverlap: Math.round(overlap * 1000) / 1000, currencyEqual },
+    evidence: {
+      amountEqual,
+      dayDelta: delta,
+      descriptionEqual,
+      descriptionOverlap: Math.round(overlap * 1000) / 1000,
+      currencyEqual,
+    },
   }
 }
 
@@ -107,6 +159,11 @@ function scoreCandidate(line: StatementLineRow, transaction: CandidateTransactio
  * A transaction is claimed by at most one line: two lines competing for the same single
  * transaction are both reported AMBIGUOUS rather than auto-split, because the model does not
  * support compound entries (05_STATEMENTS_EMAIL_RECONCILIATION.md).
+ *
+ * CONFLICT is a stricter, unresolvable case than AMBIGUOUS: AMBIGUOUS means a line has more than
+ * one live candidate (a tie); CONFLICT means two distinct lines each have exactly one possible
+ * candidate and it is the SAME transaction — no assignment can satisfy both. CONFLICT is never
+ * auto-resolved (no "pick the lower index"): both lines are reported CONFLICT with chosen: null.
  */
 export function matchStatementLines(
   lines: readonly StatementLineRow[],
@@ -114,14 +171,34 @@ export function matchStatementLines(
   options: MatchingOptions = {},
 ): { results: LineMatchResult[]; unmatchedTransactionIds: string[] } {
   const toleranceDays = options.dateToleranceDays ?? DEFAULT_DATE_TOLERANCE_DAYS
+  const amountToleranceCents = options.amountToleranceCents ?? DEFAULT_AMOUNT_TOLERANCE_CENTS
 
   const scored = lines.map(line => {
     const candidates = transactions
-      .map(transaction => scoreCandidate(line, transaction, toleranceDays))
+      .map(transaction => scoreCandidate(line, transaction, toleranceDays, amountToleranceCents))
       .filter((candidate): candidate is MatchCandidate => candidate !== null)
       .sort((a, b) => b.score - a.score || a.transactionId.localeCompare(b.transactionId))
     return { line, candidates }
   })
+
+  // CONFLICT detection: a transaction that is the sole candidate of two or more distinct lines.
+  const singletonOwners = new Map<string, string[]>()
+  for (const { line, candidates } of scored) {
+    if (candidates.length === 1) {
+      const txId = candidates[0].transactionId
+      const owners = singletonOwners.get(txId) ?? []
+      owners.push(line.id)
+      singletonOwners.set(txId, owners)
+    }
+  }
+  const conflictLineIds = new Set<string>()
+  const conflictTransactionIds = new Set<string>()
+  for (const [txId, ownerLineIds] of singletonOwners) {
+    if (ownerLineIds.length >= 2) {
+      conflictTransactionIds.add(txId)
+      for (const lineId of ownerLineIds) conflictLineIds.add(lineId)
+    }
+  }
 
   // Deterministic greedy claim: strongest single-candidate lines first, then by score.
   const order = [...scored].sort((a, b) => {
@@ -131,13 +208,22 @@ export function matchStatementLines(
   })
 
   const claimed = new Map<string, string>()
+  // A disputed transaction is claimed by neither party and by no one else: there is no valid
+  // assignment for it, so it must not be handed to a third line either.
+  for (const txId of conflictTransactionIds) claimed.set(txId, '__CONFLICT__')
+
   const contested = new Set<string>()
   const results = new Map<string, LineMatchResult>()
 
   for (const { line, candidates } of order) {
+    if (conflictLineIds.has(line.id)) {
+      results.set(line.id, { lineId: line.id, status: 'CONFLICT', candidates, chosen: null })
+      continue
+    }
+
     const available = candidates.filter(candidate => !claimed.has(candidate.transactionId))
     if (available.length === 0) {
-      const wasContested = candidates.some(candidate => claimed.has(candidate.transactionId))
+      const wasContested = candidates.some(candidate => claimed.has(candidate.transactionId) && claimed.get(candidate.transactionId) !== '__CONFLICT__')
       if (wasContested) for (const candidate of candidates) contested.add(candidate.transactionId)
       results.set(line.id, {
         lineId: line.id,
@@ -157,7 +243,11 @@ export function matchStatementLines(
     }
 
     claimed.set(best.transactionId, line.id)
-    const status = best.evidence.descriptionEqual && best.evidence.dayDelta === 0 ? 'EXACT' : 'HIGH'
+    const status = !best.evidence.amountEqual
+      ? 'AMOUNT_MISMATCH'
+      : best.evidence.descriptionEqual && best.evidence.dayDelta === 0
+        ? 'EXACT'
+        : 'HIGH'
     results.set(line.id, { lineId: line.id, status, candidates: available, chosen: best })
   }
 

@@ -33,10 +33,10 @@ export function isStatementSource(value: unknown): value is StatementSource {
 export const IMPORT_STATUSES = ['PARSED', 'RECONCILING', 'RECONCILED', 'DISCREPANT'] as const
 export type StatementImportStatus = (typeof IMPORT_STATUSES)[number]
 
-export const MATCH_STATUSES = ['EXACT', 'HIGH', 'AMBIGUOUS', 'CONFLICT', 'STATEMENT_ONLY', 'APP_ONLY'] as const
+export const MATCH_STATUSES = ['EXACT', 'HIGH', 'AMBIGUOUS', 'CONFLICT', 'STATEMENT_ONLY', 'APP_ONLY', 'AMOUNT_MISMATCH'] as const
 export type MatchStatus = (typeof MATCH_STATUSES)[number]
 
-export const DISCREPANCY_KINDS = ['TOTAL_MISMATCH', 'STATEMENT_ONLY', 'APP_ONLY', 'AMOUNT_MISMATCH', 'AMBIGUOUS'] as const
+export const DISCREPANCY_KINDS = ['TOTAL_MISMATCH', 'STATEMENT_ONLY', 'APP_ONLY', 'AMOUNT_MISMATCH', 'AMBIGUOUS', 'CONFLICT'] as const
 export type DiscrepancyKind = (typeof DISCREPANCY_KINDS)[number]
 
 export interface StatementImportRow {
@@ -90,6 +90,9 @@ export interface ReconciliationRow {
   amount_delta_cents: number
   assignment_applied: number
   assignment_rejected: string | null
+  statement_amount_cents: number | null
+  transaction_effective_amount_cents: number | null
+  difference_cents: number | null
   evidence_json: string | null
   created_at: string
   updated_at: string
@@ -312,6 +315,9 @@ export class StatementImportRepository {
     amountDeltaCents: number
     assignmentApplied: boolean
     assignmentRejected?: string | null
+    statementAmountCents?: number | null
+    transactionEffectiveAmountCents?: number | null
+    differenceCents?: number | null
     evidence?: unknown
   }): void {
     const now = new Date().toISOString()
@@ -320,9 +326,12 @@ export class StatementImportRepository {
         `INSERT INTO financial_statement_reconciliations
            (id, statement_import_id, statement_cycle_id, statement_line_id, pluggy_transaction_id,
             match_status, confidence, amount_delta_cents, assignment_applied, assignment_rejected,
+            statement_amount_cents, transaction_effective_amount_cents, difference_cents,
             evidence_json, created_at, updated_at)
          VALUES (@id, @importId, @cycleId, @lineId, @transactionId, @matchStatus, @confidence,
-                 @amountDeltaCents, @assignmentApplied, @assignmentRejected, @evidenceJson, @now, @now)
+                 @amountDeltaCents, @assignmentApplied, @assignmentRejected,
+                 @statementAmountCents, @transactionEffectiveAmountCents, @differenceCents,
+                 @evidenceJson, @now, @now)
          ON CONFLICT(statement_import_id, COALESCE(statement_line_id, ''), COALESCE(pluggy_transaction_id, ''))
          DO UPDATE SET
            statement_cycle_id = excluded.statement_cycle_id,
@@ -331,6 +340,9 @@ export class StatementImportRepository {
            amount_delta_cents = excluded.amount_delta_cents,
            assignment_applied = excluded.assignment_applied,
            assignment_rejected = excluded.assignment_rejected,
+           statement_amount_cents = excluded.statement_amount_cents,
+           transaction_effective_amount_cents = excluded.transaction_effective_amount_cents,
+           difference_cents = excluded.difference_cents,
            evidence_json = excluded.evidence_json,
            updated_at = excluded.updated_at`,
       )
@@ -345,6 +357,9 @@ export class StatementImportRepository {
         amountDeltaCents: input.amountDeltaCents,
         assignmentApplied: input.assignmentApplied ? 1 : 0,
         assignmentRejected: input.assignmentRejected ?? null,
+        statementAmountCents: input.statementAmountCents ?? null,
+        transactionEffectiveAmountCents: input.transactionEffectiveAmountCents ?? null,
+        differenceCents: input.differenceCents ?? null,
         evidenceJson: input.evidence === undefined ? null : JSON.stringify(input.evidence),
         now,
       })

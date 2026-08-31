@@ -82,10 +82,13 @@ CREATE TABLE IF NOT EXISTS financial_statement_reconciliations (
   amount_delta_cents    INTEGER NOT NULL DEFAULT 0,
   assignment_applied    INTEGER NOT NULL DEFAULT 0,
   assignment_rejected   TEXT,
+  statement_amount_cents               INTEGER,
+  transaction_effective_amount_cents   INTEGER,
+  difference_cents                     INTEGER,
   evidence_json         TEXT,
   created_at            TEXT NOT NULL,
   updated_at            TEXT NOT NULL,
-  CHECK (match_status IN ('EXACT', 'HIGH', 'AMBIGUOUS', 'CONFLICT', 'STATEMENT_ONLY', 'APP_ONLY')),
+  CHECK (match_status IN ('EXACT', 'HIGH', 'AMBIGUOUS', 'CONFLICT', 'STATEMENT_ONLY', 'APP_ONLY', 'AMOUNT_MISMATCH')),
   CHECK (statement_line_id IS NOT NULL OR pluggy_transaction_id IS NOT NULL)
 );
 
@@ -115,7 +118,7 @@ CREATE TABLE IF NOT EXISTS financial_statement_discrepancies (
   created_at          TEXT NOT NULL,
   updated_at          TEXT NOT NULL,
   resolved_at         TEXT,
-  CHECK (kind IN ('TOTAL_MISMATCH', 'STATEMENT_ONLY', 'APP_ONLY', 'AMOUNT_MISMATCH', 'AMBIGUOUS'))
+  CHECK (kind IN ('TOTAL_MISMATCH', 'STATEMENT_ONLY', 'APP_ONLY', 'AMOUNT_MISMATCH', 'AMBIGUOUS', 'CONFLICT'))
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_financial_statement_discrepancies_identity
