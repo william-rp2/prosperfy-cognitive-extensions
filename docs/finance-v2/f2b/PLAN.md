@@ -137,3 +137,27 @@ A design that needs the token in the browser is an escalation, not a workaround.
 3. `hermes-live-bridge.service` was observed in `activating (auto-restart)` —
    i.e. flapping. Pre-existing, outside F2B scope, noted so it is not
    misattributed to F2B later.
+
+## D11 — Vitest reporta suíte verde com testes que nunca rodaram
+
+Sintoma: `npm test` retornava `success=true` enquanto 16 testes de rota (incluindo os de
+autenticação) apareciam como *pending*. O worker morria antes de executar qualquer teste e o
+vitest tratava isso como arquivo sem falhas.
+
+Causa raiz: `better-sqlite3` 11.x declara suporte só até Node 23; o runtime é Node 24. O
+finalizador nativo de `Statement` roda depois que o environment já foi destruído e aborta o
+processo (`node::RemoveEnvironmentCleanupHook`, `Assertion failed: (env) != nullptr`).
+Reproduzível fora do vitest, em `node` puro — não era problema de pool nem do código de teste.
+
+Correção: upgrade para `better-sqlite3` ^12 (declara `24.x`). Verificado em execuções repetidas:
+169/169 testes executam, zero pendentes, nos pools `threads` e `forks`.
+
+**Consequência para o deploy (altera D10):** `better-sqlite3` é módulo nativo. O método de deploy
+por `cp` seletivo de arquivos JS **não é suficiente** para esta mudança — o homolog precisa de
+`npm install` (ou `npm rebuild better-sqlite3`) na árvore de staging para reconstruir o binding
+contra o Node que roda lá. Verificar a versão do Node do homolog antes; se for < 20, o upgrade
+não se aplica e a decisão precisa ser revista.
+
+**Regra operacional derivada:** nunca aceitar `success=true` do vitest como prova. Conferir
+sempre `numTotalTests`, `numPassedTests` e `numPendingTests` — um arquivo cujo worker morreu
+aparece como sucesso.
