@@ -172,6 +172,10 @@ export function createApp(options: CreateAppOptions = {}) {
     maxConcurrentItems: config.PLUGGY_SYNC_MAX_CONCURRENT_ITEMS,
     logger: app.log,
     classification: classificationService,
+    // Without this the temporal columns (purchase_month, competence_month, statement_cycle_id)
+    // are silently left unset on every real sync: the dependency is optional and the service
+    // just skips the step when it is missing.
+    cycleAssignment: cycleAssignmentService,
   })
 
   const itemRegistrationService = new PluggyItemRegistrationService({
