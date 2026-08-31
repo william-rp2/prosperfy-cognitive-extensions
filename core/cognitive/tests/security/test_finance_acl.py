@@ -33,6 +33,7 @@ from cognitive.policy.finance_acl import (
     FinanceAclConfig,
     FinanceActorDirectory,
     FinanceChannelContext,
+    FinanceContextKind,
 )
 
 TENANT = "tenant-f2b"
@@ -282,10 +283,114 @@ class TestAclRunsBeforeGrantCheck:
         verdict = await engine.evaluate(_ctx(), cap, {}, grant, channel=None)
         assert verdict.decision is PolicyDecision.ALLOW
 
-    async def test_engine_without_acl_is_pre_f2b(self):
-        """Retrocompat: PolicyEngine() sem ACL segue exatamente como antes."""
+    async def test_engine_without_acl_denies_finance(self):
+        """Finance é fail-closed: sem ACL injetada, finance.* é DENY.
+
+        Substitui o antigo `test_engine_without_acl_is_pre_f2b`, que exigia
+        ALLOW e portanto codificava o bypass que este guard conserta:
+        ausência de configuração virava permissão. A expectativa correta é
+        DENY — nunca autorizar finance por omissão.
+        """
         engine = PolicyEngine()
         verdict = await engine.evaluate(_ctx(), _finance_cap(), {}, _grant())
+        assert verdict.decision is PolicyDecision.DENY
+        assert verdict.policy_name == "finance_guard:acl_absent"
+        assert verdict.reason == DENY_USER_MESSAGE
+
+    async def test_engine_without_acl_keeps_non_finance_untouched(self):
+        """NON_FINANCE_REGRESSION = 0: o guard não toca fora de finance.*."""
+        engine = PolicyEngine()
+        cap = RegisteredCapability(
+            id="infra.inspect",
+            version="1.0.0",
+            domain=Domain.INFRASTRUCTURE,
+            description="cap de teste",
+            adapter="prosperfy_skills",
+            default_policy="allow",
+        )
+        grant = CapabilityGrant(
+            tenant_id=TENANT, profile="finance-owner", capability_id="infra.inspect"
+        )
+        verdict = await engine.evaluate(_ctx(), cap, {}, grant)
+        assert verdict.decision is PolicyDecision.ALLOW
+        assert verdict.policy_name == "grant_policy:allow"
+
+
+# ─── contexto (C): internal/server confiável ───────────────────────────────
+
+
+def _internal_channel(principal: str = "") -> FinanceChannelContext:
+    return FinanceChannelContext(
+        kind=FinanceContextKind.INTERNAL, transport_principal=principal
+    )
+
+
+def _internal_acl() -> FinanceAcl:
+    """Deploy internal-only: sem chat allowlist, porque não existe chat."""
+    return FinanceAcl(
+        config=FinanceAclConfig(owner_actor_ids=frozenset({OWNER_ACTOR})),
+        directory=FinanceActorDirectory({OWNER_PRINCIPAL: OWNER_ACTOR}),
+    )
+
+
+class TestTrustedInternalContext:
+    def test_trusted_internal_owner_is_allowed_without_chat_id(self):
+        """Internal não é WhatsApp: exigir chat_id ali seria inventar dado."""
+        verdict = _internal_acl().evaluate(_ctx(), "finance.summary.read", _internal_channel())
+        assert verdict.decision is PolicyDecision.ALLOW
+        assert verdict.policy_name.endswith("trusted_internal_principal")
+
+    def test_internal_without_boundary_authentication_is_denied(self):
+        """kind=INTERNAL é só um rótulo do envelope; a prova é credential_ref."""
+        unauthenticated = ActorContext(
+            tenant_id=TENANT,
+            actor_id=OWNER_ACTOR,
+            correlation_id="corr-f2b",
+            credential_ref="",
+            profile="finance-owner",
+        )
+        verdict = _internal_acl().evaluate(
+            unauthenticated, "finance.summary.read", _internal_channel()
+        )
+        assert verdict.decision is PolicyDecision.DENY
+        assert verdict.policy_name.endswith("internal_principal_not_trusted")
+
+    def test_internal_non_owner_actor_is_denied(self):
+        verdict = _internal_acl().evaluate(
+            _ctx(THIRD_PARTY_ACTOR), "finance.summary.read", _internal_channel()
+        )
+        assert verdict.decision is PolicyDecision.DENY
+        assert verdict.policy_name.endswith("third_party_actor")
+
+    def test_internal_with_unbound_principal_is_denied(self):
+        """Principal explícito ainda passa por binding de configuração."""
+        verdict = _internal_acl().evaluate(
+            _ctx(), "finance.summary.read", _internal_channel(principal=STRANGER_PRINCIPAL)
+        )
+        assert verdict.decision is PolicyDecision.DENY
+        assert verdict.policy_name.endswith("unknown_actor")
+
+    def test_internal_without_owner_configuration_is_denied(self):
+        empty = FinanceAcl(config=FinanceAclConfig(), directory=FinanceActorDirectory({}))
+        verdict = empty.evaluate(_ctx(), "finance.summary.read", _internal_channel())
+        assert verdict.decision is PolicyDecision.DENY
+        assert verdict.policy_name.endswith("acl_not_configured")
+
+    def test_unclassified_context_kind_is_denied(self):
+        """Contexto de finance desconhecido/não classificado -> DENY."""
+        bogus = FinanceChannelContext(
+            chat_id=FINANCE_GROUP, is_group=True, transport_principal=OWNER_PRINCIPAL
+        )
+        object.__setattr__(bogus, "kind", "web-sei-la")
+        verdict = _acl().evaluate(_ctx(), "finance.summary.read", bogus)
+        assert verdict.decision is PolicyDecision.DENY
+        assert verdict.policy_name.endswith("unknown_context_kind")
+
+    async def test_engine_allows_trusted_internal_owner_with_grant(self):
+        engine = PolicyEngine(finance_acl=_internal_acl())
+        verdict = await engine.evaluate(
+            _ctx(), _finance_cap(), {}, _grant(), channel=_internal_channel()
+        )
         assert verdict.decision is PolicyDecision.ALLOW
 
 

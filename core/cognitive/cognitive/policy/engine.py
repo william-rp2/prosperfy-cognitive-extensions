@@ -14,6 +14,7 @@ import logging
 from ..contracts.capability import RegisteredCapability
 from ..contracts.policy import PolicyDecision, PolicyPort, PolicyVerdict
 from ..contracts.tenancy import ActorContext, CapabilityGrant
+from .finance_acl import DENY_USER_MESSAGE as FINANCE_DENY_USER_MESSAGE
 from .finance_acl import FinanceAcl, FinanceChannelContext
 
 logger = logging.getLogger(__name__)
@@ -37,11 +38,14 @@ class PolicyEngine:
 
     def __init__(self, finance_acl: FinanceAcl | None = None) -> None:
         """
-        finance_acl: quando None, o comportamento é o pré-F2B (só grants).
+        finance_acl: quando None, capabilities finance.* são NEGADAS em
+                     bloco (fail-closed) — a ausência de ACL nunca vira
+                     permissão. Capabilities não-finance seguem exatamente
+                     o comportamento pré-F2B (só grants), com ou sem ACL.
                      A wiring de produção DEVE injetar um FinanceAcl — ver
                      policy/finance_acl.py. Um FinanceAcl sem configuração
-                     nega tudo em finance.*, então injetá-lo nunca abre
-                     acesso por acidente.
+                     também nega tudo em finance.*, então injetá-lo nunca
+                     abre acesso por acidente.
         """
         self._finance_acl = finance_acl
 
@@ -66,13 +70,36 @@ class PolicyEngine:
                         de envelope, nunca texto de prompt. Obrigatório para
                         finance.* quando a ACL está ativa — ausência é DENY.
         """
-        # 0. ACL de finance — pré-LLM, pré-grant, pré-adapter, fail-closed.
+        # 0. Guard de finance — pré-LLM, pré-grant, pré-adapter, fail-closed.
         #    `params` NÃO é passado adiante: a decisão não depende, e não
         #    pode depender, de nada interpretado a partir da mensagem.
-        if self._finance_acl is not None:
+        #
+        #    O guard é ESPECÍFICO de finance: capabilities não-finance nem
+        #    entram neste bloco e mantêm exatamente o comportamento pré-F2B,
+        #    com ou sem ACL injetada.
+        if FinanceAcl.applies_to(capability.id):
+            if self._finance_acl is None:
+                # Finance sem ACL configurada não pode "passar por omissão":
+                # ausência de configuração é ausência de autorização.
+                logger.error(
+                    "DENY [finance_guard:acl_absent] tenant=%s cap=%s",
+                    ctx.tenant_id, capability.id,
+                )
+                return PolicyVerdict(
+                    decision=PolicyDecision.DENY,
+                    reason=FINANCE_DENY_USER_MESSAGE,
+                    policy_name="finance_guard:acl_absent",
+                )
             acl_verdict = self._finance_acl.evaluate(ctx, capability.id, channel)
-            if acl_verdict is not None and acl_verdict.decision is PolicyDecision.DENY:
-                return acl_verdict
+            if acl_verdict is None or acl_verdict.decision is PolicyDecision.DENY:
+                # `None` aqui seria a ACL declarando que não se aplica a uma
+                # capability que o guard classificou como finance: estado
+                # incoerente -> fail-closed, nunca ALLOW.
+                return acl_verdict or PolicyVerdict(
+                    decision=PolicyDecision.DENY,
+                    reason=FINANCE_DENY_USER_MESSAGE,
+                    policy_name="finance_guard:no_verdict",
+                )
 
         # 1. Sem grant → sempre DENY
         if grant is None:
