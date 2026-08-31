@@ -28,6 +28,7 @@ from ..contracts.tenancy import CapabilityGrant
 from ..execution.orchestrator import ExecutionOrchestrator
 from ..execution.resource_resolver import InMemoryResourceResolver, ResourceResolver
 from ..policy.engine import PolicyEngine
+from ..policy.finance_acl import FinanceAcl
 from ..registry.registry import InMemoryCapabilityRegistry
 from ..registry.grant_resolver import RegistryGrantResolver
 from ..telemetry.recorder import InMemoryTelemetryRecorder
@@ -85,7 +86,16 @@ def _build_services(app: FastAPI) -> None:
 
     registry = InMemoryCapabilityRegistry()
     registry.load_from_yaml()
-    policy_engine = PolicyEngine()
+
+    # F2B/D11: ACL de finance ligada ao PolicyEngine — roda antes do grant
+    # check e, por contrato (ADR-V2-004), antes do adapter e de qualquer
+    # interpretação por LLM. Construída SEMPRE e sem toggle: FinanceAcl lê a
+    # configuração de env (FINANCE_OWNER_ACTOR_IDS / FINANCE_GROUP_CHAT_IDS /
+    # FINANCE_OWNER_DIRECT_CHAT_IDS / FINANCE_ACTOR_BINDINGS) e, sem essa
+    # configuração, nega TODA capability finance.* (acl_not_configured).
+    # Injetar nunca abre acesso por acidente — não injetar é que deixaria
+    # finance.* passar só com grant, então não existe caminho para desligar.
+    policy_engine = PolicyEngine(finance_acl=FinanceAcl())
 
     live_mcp = os.getenv("COGNITIVE_LIVE_MCP", "0") == "1"
     if live_mcp:

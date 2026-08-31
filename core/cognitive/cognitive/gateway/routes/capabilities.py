@@ -17,9 +17,53 @@ from ...contracts.gateway import (
     CapabilityExecuteRequest,
     CapabilityExecuteResponse,
 )
+from ...contracts.tenancy import ActorContext
+from ...policy.finance_acl import FinanceChannelContext
 from ..deps import AUTH_HEADER_DOCS, ActorContextDep
 
 router = APIRouter()
+
+
+def _accept_channel_context(
+    ctx: ActorContext,
+    body: CapabilityExecuteRequest,
+) -> FinanceChannelContext | None:
+    """
+    Converte o envelope de canal do body em FinanceChannelContext — ou o descarta.
+
+    F2B/D11. Dois gates, ambos fail-closed:
+
+    1. FONTE: só `body.channel` (campo tipado de topo) é lido. `body.params`
+       nunca é inspecionado, então um `channel` injetado dentro de
+       params/arguments — o caminho por onde passa qualquer coisa derivada de
+       texto interpretado por LLM — é simplesmente ignorado.
+
+    2. IDENTIDADE: o envelope só é aceito de um caller com service identity
+       de transporte AUTENTICADA. O mecanismo é o mesmo que o gateway já usa
+       para autenticar chamadas de serviço: Bearer credential -> Identity
+       Resolver (tenancy/identity_resolver.py), invocado por
+       gateway/deps.get_actor_context. `credential_ref` é o sha256 truncado
+       dessa credential e SÓ é preenchido nesse caminho — um ActorContext
+       montado por qualquer outra via chega com credential_ref vazio.
+
+    Quando o envelope é descartado, isso acontece em SILÊNCIO (não é um erro
+    ao caller): a ACL de finance então avalia sem canal e nega com
+    DENY_NO_CHANNEL. Rejeitar com erro distinto contaria ao caller que o
+    canal existe — é exatamente o canal lateral que finance_acl.py evita ao
+    usar uma mensagem única para todo DENY.
+    """
+    if body.channel is None:
+        return None
+    if not ctx.credential_ref:
+        # Sem prova de service identity: descarta (nunca 4xx específico).
+        return None
+    return FinanceChannelContext(
+        chat_id=body.channel.chat_id,
+        is_group=body.channel.is_group,
+        transport_principal=body.channel.transport_principal,
+        incoming_message_id=body.channel.incoming_message_id,
+        reply_to_message_id=body.channel.reply_to_message_id,
+    )
 
 
 @router.get(
@@ -75,6 +119,7 @@ async def execute_capability(
         capability_id=capability_id,
         params=body.params,
         idempotency_key=body.idempotency_key,
+        channel=_accept_channel_context(ctx, body),
     )
 
 

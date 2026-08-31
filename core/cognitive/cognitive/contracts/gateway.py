@@ -19,6 +19,31 @@ class GatewayStatus(str, Enum):
 
 
 @dataclass
+class ChannelContextRequest:
+    """
+    Metadado de envelope do transporte (WhatsApp) — campo TIPADO e de topo.
+
+    F2B/D11. Existe para alimentar a ACL de finance (policy/finance_acl.py) e
+    NADA MAIS. Regras que este contrato materializa:
+
+    - É um campo IRMÃO de `params`, nunca uma chave dentro dele. O conteúdo de
+      `params` é (ou pode ser) produzido por interpretação de LLM sobre o texto
+      da mensagem; este envelope é produzido pelo transporte autenticado. Um
+      `channel` colocado dentro de params/arguments não é lido por ninguém —
+      segue como parâmetro comum e a ACL continua sem canal (DENY).
+    - Só é ACEITO quando o caller apresentou service identity autenticada
+      (Bearer credential resolvida pelo IdentityResolver). Ver
+      gateway/routes/capabilities.py: sem isso o envelope é DESCARTADO em
+      silêncio e a ACL cai em DENY_NO_CHANNEL. Fail-closed.
+    """
+    chat_id: str = ""
+    is_group: bool = False
+    transport_principal: str = ""
+    incoming_message_id: str = ""
+    reply_to_message_id: str = ""
+
+
+@dataclass
 class CapabilityExecuteRequest:
     """
     Body de POST /v1/capabilities/{id}/execute.
@@ -28,6 +53,7 @@ class CapabilityExecuteRequest:
     """
     params: dict[str, Any] = field(default_factory=dict)
     idempotency_key: str | None = None
+    channel: ChannelContextRequest | None = None
 
 
 @dataclass

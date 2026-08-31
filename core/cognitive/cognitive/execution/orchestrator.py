@@ -25,6 +25,7 @@ from ..contracts.policy import PolicyDecision
 from ..contracts.tenancy import ActorContext
 from ..gate.redaction import sanitize_exception
 from ..policy.engine import PolicyEngine
+from ..policy.finance_acl import FinanceChannelContext
 from ..registry.registry import InMemoryCapabilityRegistry
 from ..registry.grant_resolver import GrantResolverPort, RegistryGrantResolver
 from ..telemetry.recorder import InMemoryTelemetryRecorder, TelemetryRecord
@@ -224,9 +225,20 @@ class ExecutionOrchestrator:
         capability_id: str,
         params: dict[str, Any],
         idempotency_key: str | None = None,
+        *,
+        channel: FinanceChannelContext | None = None,
     ) -> CapabilityExecuteResponse:
         """
         Executa uma capability respeitando a ordem inviolável de segurança.
+
+        Args:
+            channel: envelope de canal do transporte, já validado na borda do
+                gateway (gateway/routes/capabilities._accept_channel_context).
+                Segue direto para a Policy e NUNCA é misturado em `params`,
+                lido pelo resolver de recursos ou repassado ao adapter — não é
+                entrada da capability, é insumo de autorização. Keyword-only
+                de propósito: nenhum caller posicional pré-F2B pode preenchê-lo
+                por acidente, e a ausência (None) é fail-closed para finance.*.
 
         Returns:
             CapabilityExecuteResponse com status completed | pending_confirmation | failed.
@@ -349,7 +361,9 @@ class ExecutionOrchestrator:
                 )
 
         # ─── STEP 3: POLICY evaluation ───────────────────────────────────
-        verdict = await self._policy.evaluate(ctx, capability, resolved_params, grant)
+        verdict = await self._policy.evaluate(
+            ctx, capability, resolved_params, grant, channel=channel,
+        )
 
         # ─── STEP 4: Audit inputs redigidos ─────────────────────────────
         inputs_redacted = redact(resolved_params, extra_fields=capability.redaction_rules)

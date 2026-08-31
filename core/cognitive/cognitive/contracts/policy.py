@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol
+from typing import Any, Protocol
 
 from .capability import RegisteredCapability
 from .tenancy import ActorContext
@@ -46,4 +46,7 @@ class PolicyPort(Protocol):
         ctx: ActorContext,
         capability: RegisteredCapability,
         params: dict,
+        grant: Any = None,
+        *,
+        channel: Any = None,
     ) -> PolicyVerdict: ...
