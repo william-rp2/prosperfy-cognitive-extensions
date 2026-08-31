@@ -84,3 +84,56 @@ Only the orchestrator edits `routes/finance.ts` itself.
 - Wave 2 (after A integrates): B, D
 - Wave 3: F, then E across the whole matrix
 - Wave 4: bug sweep, homolog deploy, live E2E, docs, final report
+
+## D10 — Homolog runtime map (verified live, 2026-08-31)
+
+Resolves the open `LIVE_READY` risk. Inspected read-only on host `Prosperfy`
+(`will@177.7.50.182`, the same host F2A validated against). Nothing was
+restarted, deployed or mutated during this inspection.
+
+| Component | Location | Bind |
+|---|---|---|
+| Finance API | `/home/will/deploy-staging/p2-finance-whatsapp/apps/financeiro-pessoal-api` → `node dist/index.js` | `127.0.0.1:8787` |
+| Finance Web | same tree, `apps/financeiro-pessoal-web` → vite | `127.0.0.1:5175` |
+| Cognitive homolog | `/home/will/projetos/prosperfy-cognitive-gate-0.3` → uvicorn `cognitive.gateway.app:app` | `127.0.0.1:8800` |
+| WhatsApp bridge | `~/.hermes/hermes-clean/scripts/whatsapp-bridge/bridge.js --mode bot` | `127.0.0.1:3000` |
+| Hermes | `hermes` | `9119` / `127.0.0.1:9120` |
+| Finance DB | `/home/will/data/financeiro-pessoal/financeiro-pessoal.sqlite3` | — |
+| Finance DB backups | `/home/will/data/financeiro-pessoal/backups/financeiro-pessoal-<tag>-<YYYYMMDDHHMMSS>.sqlite3` | — |
+
+`GET /api/finance/status` on `:8787` answers **401** without a token — the API
+is up and fail-closed. Correct.
+
+### Deploy method (established precedent, not invented here)
+
+`docs/reports/DEPLOY_0b00da7_homolog.md` and `DEPLOY_227a854_homolog.md` record
+the house pattern: build a staging tree under `/home/will/deploy-staging/`, then
+selective `cp` into the live tree, verifying per-file md5 (`DEPLOY_HASH_MATCH`).
+Backup first into `/home/will/backups/pre-<sha>/`. F2B follows the same pattern
+plus a Finance SQLite backup using the existing `backups/` naming convention.
+
+### Secret handling — already correct, do not regress
+
+`apps/financeiro-pessoal-web/vite.config.ts` injects `FINANCE_API_TOKEN` as an
+`Authorization: Bearer` header **inside the dev-server proxy**, server-side. The
+token never reaches the browser. Any F2B frontend work (SUBAGENT_F) MUST keep
+calling same-origin `/api/finance/*` and must never read the token client-side.
+A design that needs the token in the browser is an escalation, not a workaround.
+
+### Real limitations to carry into the final report
+
+1. **Finance API is a bare `node dist/index.js` process, not a systemd unit.**
+   No supervisor, no auto-restart, no versioned start script. Restart after an
+   F2B deploy is manual and the process dies with its shell. Recorded as debt;
+   it does not block `LIVE_READY` because the deploy precedent is manual anyway.
+2. **`hermes-gateway.service` restart is outside authorization** (per
+   `DEPLOY_227a854_homolog.md`): it is the WhatsApp runtime, not a homolog unit.
+   F2A already hit this — its 4 tracks had `WHATSAPP_E2E` blocked for exactly
+   this reason. F2B's WhatsApp-channel ACL E2E inherits that ceiling: the ACL
+   is testable through the Cognitive gateway on `:8800` and through the Finance
+   API directly, but the last hop through the live WhatsApp gateway needs an
+   owner-authorized restart. **Do not fake PASS.** Report it as owner-blocked
+   with this cause.
+3. `hermes-live-bridge.service` was observed in `activating (auto-restart)` —
+   i.e. flapping. Pre-existing, outside F2B scope, noted so it is not
+   misattributed to F2B later.
