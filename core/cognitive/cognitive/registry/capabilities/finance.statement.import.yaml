@@ -1,0 +1,63 @@
+# Capability: finance.statement.import
+# F2B — ingestão de fatura/extrato (05_STATEMENTS_EMAIL_RECONCILIATION.md).
+#
+# Apenas ingere e persiste o statement parseado. NÃO concilia — isso é
+# finance.statement.reconcile, capability separada com decisão própria.
+
+id: "finance.statement.import"
+version: "1.0.0"
+domain: "finance"
+description: >
+  Ingere um extrato/fatura enviado pelo owner e persiste as linhas
+  parseadas para posterior conciliação.
+adapter: "finance_api"
+default_policy: "allow"
+
+required_scopes:
+  - "finance:write"
+
+input_schema:
+  type: object
+  required:
+    - "sourceRef"
+  properties:
+    sourceRef:
+      type: string
+      description: "Referência do arquivo já recebido pela Finance API (id de upload). Nunca conteúdo binário inline."
+    institution:
+      type: string
+    account:
+      type: string
+    cycleId:
+      type: string
+    competenceMonth:
+      type: string
+    dryRun:
+      type: boolean
+
+output_schema:
+  type: object
+  properties:
+    statementId:
+      type: string
+    parsedLines:
+      type: integer
+    warnings:
+      type: array
+
+tools: []
+
+idempotency_behavior: "return_cached"
+timeout_seconds: 60
+cost_class: "medium"
+
+audit_rules:
+  log_inputs: false
+  log_outputs: false
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"
+  - "account_number"

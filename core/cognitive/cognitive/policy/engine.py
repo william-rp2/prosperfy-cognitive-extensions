@@ -14,6 +14,7 @@ import logging
 from ..contracts.capability import RegisteredCapability
 from ..contracts.policy import PolicyDecision, PolicyPort, PolicyVerdict
 from ..contracts.tenancy import ActorContext, CapabilityGrant
+from .finance_acl import FinanceAcl, FinanceChannelContext
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,22 @@ class PolicyEngine:
     - Sem grant → DENY
     - Grant com policy_override → usa override
     - Sem override → usa default_policy da capability (do YAML)
+
+    F2B: quando um FinanceAcl é injetado, capabilities finance.* passam
+    ANTES por uma ACL determinística e fail-closed (PLAN.md D8). A ACL roda
+    como PRIMEIRO passo — antes do grant check e, por construção, antes de
+    qualquer chamada ao adapter e de qualquer interpretação por LLM.
     """
+
+    def __init__(self, finance_acl: FinanceAcl | None = None) -> None:
+        """
+        finance_acl: quando None, o comportamento é o pré-F2B (só grants).
+                     A wiring de produção DEVE injetar um FinanceAcl — ver
+                     policy/finance_acl.py. Um FinanceAcl sem configuração
+                     nega tudo em finance.*, então injetá-lo nunca abre
+                     acesso por acidente.
+        """
+        self._finance_acl = finance_acl
 
     async def evaluate(
         self,
@@ -35,6 +51,8 @@ class PolicyEngine:
         capability: RegisteredCapability,
         params: dict,
         grant: CapabilityGrant | None = None,
+        *,
+        channel: FinanceChannelContext | None = None,
     ) -> PolicyVerdict:
         """
         Avalia a policy e retorna um PolicyVerdict.
@@ -44,7 +62,18 @@ class PolicyEngine:
             capability: Capability registrada (lida do YAML).
             params:     Parâmetros do request (usados por regras específicas).
             grant:      Grant resolvido do registry. None → sem autorização.
+            channel:    Contexto de canal do transporte (WhatsApp). Metadado
+                        de envelope, nunca texto de prompt. Obrigatório para
+                        finance.* quando a ACL está ativa — ausência é DENY.
         """
+        # 0. ACL de finance — pré-LLM, pré-grant, pré-adapter, fail-closed.
+        #    `params` NÃO é passado adiante: a decisão não depende, e não
+        #    pode depender, de nada interpretado a partir da mensagem.
+        if self._finance_acl is not None:
+            acl_verdict = self._finance_acl.evaluate(ctx, capability.id, channel)
+            if acl_verdict is not None and acl_verdict.decision is PolicyDecision.DENY:
+                return acl_verdict
+
         # 1. Sem grant → sempre DENY
         if grant is None:
             logger.warning(

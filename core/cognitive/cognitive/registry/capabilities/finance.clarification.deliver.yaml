@@ -1,0 +1,81 @@
+# Capability: finance.clarification.deliver
+# F2B — registra a ENTREGA de uma pergunta de clarificação no WhatsApp.
+#
+# 03_WHATSAPP_ACL_AND_CLARIFICATIONS.md §"Reply binding":
+#   outbound WhatsApp question
+#   -> persist delivery_message_id + clarification_id
+#   -> owner quotes/replies to message
+#   -> inbound reply references quoted message ID
+#   -> resolve exact clarification
+#
+# Esta é a primeira seta do fluxo — sem ela o vínculo por quote não existe.
+# O par (deliveryMessageId, clarificationId) é persistido pela Finance API
+# (finance_clarifications.source_message_id, migration 003, que até F2A não
+# tinha writer nenhum). Por ser durável em banco, o binding funciona horas ou
+# dias depois e sobrevive a restart — não depende de memória de processo nem
+# de contexto conversacional do LLM.
+#
+# Idempotente: reentregar a mesma pergunta atualiza last_delivered_at e o
+# message id corrente; nunca cria clarification nova nem reabre resolvida.
+
+id: "finance.clarification.deliver"
+version: "1.0.0"
+domain: "finance"
+description: >
+  Registra que a pergunta de uma clarification foi entregue ao owner num
+  canal, guardando o provider_message_id da mensagem outbound como vínculo
+  durável para a resposta citada.
+adapter: "finance_api"
+default_policy: "allow"
+
+required_scopes:
+  - "finance:write"
+
+input_schema:
+  type: object
+  required:
+    - "clarificationId"
+    - "deliveryMessageId"
+  properties:
+    clarificationId:
+      type: string
+      description: "Identidade durável da clarification entregue."
+    deliveryMessageId:
+      type: string
+      description: >
+        provider_message_id da mensagem outbound que fez a pergunta. É o
+        identificador que o owner vai citar ao responder.
+    deliveryChatId:
+      type: string
+      description: "Chat/conversa onde a pergunta foi entregue (metadado de canal)."
+    deliveredAt:
+      type: string
+      description: "ISO-8601 do envio. Ausente => o servidor usa o próprio relógio."
+
+output_schema:
+  type: object
+  properties:
+    clarificationId:
+      type: string
+    deliveryMessageId:
+      type: string
+    firstDeliveredAt:
+      type: string
+    lastDeliveredAt:
+      type: string
+
+tools: []
+
+idempotency_behavior: "return_cached"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"

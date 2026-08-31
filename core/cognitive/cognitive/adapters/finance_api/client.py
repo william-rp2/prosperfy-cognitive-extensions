@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -57,7 +59,53 @@ _ROUTES: dict[str, tuple[str, str]] = {
     "finance.budget.write": ("POST", "/api/finance/budgets"),
     "finance.sync.run": ("POST", "/api/finance/sync"),
     "finance.sync.status": ("GET", "/api/finance/sync/status"),
+    # --- F2B ---------------------------------------------------------
+    # Segmentos {entre chaves} são path params: preenchidos a partir de
+    # arguments e REMOVIDOS do corpo/query (ver _render_path).
+    "finance.clarification.list": ("GET", "/api/finance/clarifications"),
+    "finance.clarification.deliver": (
+        "POST",
+        "/api/finance/clarifications/{clarificationId}/delivery",
+    ),
+    "finance.clarification.resolve": (
+        "POST",
+        "/api/finance/clarifications/{clarificationId}/resolve",
+    ),
+    "finance.rule.upsert": ("POST", "/api/finance/rules"),
+    "finance.statement.import": ("POST", "/api/finance/statements/import"),
+    "finance.statement.reconcile": (
+        "POST",
+        "/api/finance/statements/{statementId}/reconcile",
+    ),
+    "finance.cycle.read": ("GET", "/api/finance/cycles"),
 }
+
+# Duas capabilities de F2B cobrem mais de uma rota da Finance API. A rota é
+# escolhida por um argumento de MODO explícito (enum interno em inglês,
+# declarado no input_schema do YAML) — nunca por heurística sobre o texto do
+# usuário e nunca por decisão de LLM. `mode` é consumido aqui e não é
+# repassado adiante no corpo/query.
+_MODE_ROUTES: dict[str, tuple[str, str, dict[str, tuple[str, str]]]] = {
+    # capability -> (nome do argumento, modo default, {modo: (método, path)})
+    "finance.correction.apply": (
+        "mode",
+        "apply",
+        {
+            "apply": ("POST", "/api/finance/corrections"),
+            "history": ("GET", "/api/finance/corrections/{transactionId}"),
+        },
+    ),
+    "finance.onboarding.batch": (
+        "mode",
+        "",  # sem default: `mode` é required no YAML
+        {
+            "export": ("POST", "/api/finance/onboarding/export"),
+            "import": ("POST", "/api/finance/onboarding/import"),
+        },
+    ),
+}
+
+_PATH_PARAM_RE = re.compile(r"\{([A-Za-z0-9_]+)\}")
 
 # 4xx que fazem parte do contrato de negócio de pelo menos uma capability
 # finance.* (validação de input, "não encontrado", ambiguidade) — devolvidos
@@ -98,10 +146,10 @@ class FinanceApiAdapter:
     ) -> dict[str, Any]:
         guard_arguments(tool_name, arguments)
 
-        route = _ROUTES.get(tool_name)
-        if route is None:
-            raise RuntimeError(f"FinanceApiAdapter: capability/tool '{tool_name}' não mapeada para nenhuma rota.")
-        method, path = route
+        # Rota + payload: `mode` (quando existe) escolhe a rota e é
+        # CONSUMIDO; segmentos {param} do path são preenchidos e removidos do
+        # payload. O que sobra é o corpo/query enviado à Finance API.
+        method, path, payload = _resolve_route(tool_name, arguments)
 
         if not self._token:
             raise RuntimeError("FINANCE_API_TOKEN não configurado")
@@ -119,9 +167,9 @@ class FinanceApiAdapter:
         try:
             async with httpx.AsyncClient(base_url=self._base_url, timeout=self._timeout, transport=self._transport) as client:
                 if method == "GET":
-                    response = await client.get(path, params=_stringify_query(arguments), headers=headers)
+                    response = await client.get(path, params=_stringify_query(payload), headers=headers)
                 else:
-                    response = await client.request(method, path, json=arguments, headers=headers)
+                    response = await client.request(method, path, json=payload, headers=headers)
         except Exception as exc:
             # Cobre connection refused/DNS/TLS/timeout. Nunca propaga a
             # exceção crua (pode conter host/porta internos) — só o tipo,
@@ -184,6 +232,72 @@ class FinanceApiAdapter:
                 return response.status_code == 200
         except Exception:
             return False
+
+
+def _render_path(path: str, arguments: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Preenche os segmentos {param} do path a partir de `arguments`.
+
+    Devolve (path renderizado, argumentos restantes). Cada param consumido é
+    REMOVIDO do dicionário devolvido: um path param nunca é repetido no corpo
+    nem na querystring — o valor vive num lugar só.
+
+    O valor é percent-encoded com safe="" (portanto "/" vira %2F): um id
+    hostil como "../../admin" não consegue escapar do segmento da rota.
+    `arguments` não é mutado.
+    """
+    names = _PATH_PARAM_RE.findall(path)
+    if not names:
+        return path, dict(arguments)
+
+    remaining = dict(arguments)
+    rendered = path
+    for name in names:
+        value = remaining.pop(name, None)
+        if value is None or not str(value).strip():
+            # Fail-closed: sem o id não existe rota válida. A mensagem não
+            # ecoa o valor recebido (pode ser texto do usuário).
+            raise RuntimeError(
+                f"FinanceApiAdapter: parâmetro de rota '{name}' ausente ou vazio."
+            )
+        rendered = rendered.replace("{" + name + "}", quote(str(value).strip(), safe=""))
+    return rendered, remaining
+
+
+def _resolve_route(tool_name: str, arguments: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    """capability + arguments -> (método HTTP, path final, payload).
+
+    Duas responsabilidades, ambas determinísticas:
+
+    1. Seleção por `mode` para as capabilities multi-rota (_MODE_ROUTES).
+       `mode` é um enum interno declarado no input_schema do YAML — a escolha
+       da rota nunca depende de heurística sobre o texto do usuário. O valor
+       é consumido aqui e NÃO é repassado à Finance API.
+    2. Renderização dos path params (_render_path), que também os remove do
+       payload.
+    """
+    mode_spec = _MODE_ROUTES.get(tool_name)
+    if mode_spec is not None:
+        arg_name, default_mode, mode_routes = mode_spec
+        payload = dict(arguments)
+        raw_mode = payload.pop(arg_name, None)
+        mode = str(raw_mode).strip() if raw_mode is not None else default_mode
+        route = mode_routes.get(mode)
+        if route is None:
+            # Não ecoa o valor recebido no erro (pode carregar texto do
+            # usuário); só o conjunto de modos válidos, que é constante.
+            raise RuntimeError(
+                f"FinanceApiAdapter: '{tool_name}' exige '{arg_name}' em "
+                f"{sorted(mode_routes)}."
+            )
+    else:
+        route = _ROUTES.get(tool_name)
+        if route is None:
+            raise RuntimeError(f"FinanceApiAdapter: capability/tool '{tool_name}' não mapeada para nenhuma rota.")
+        payload = dict(arguments)
+
+    method, path = route
+    path, payload = _render_path(path, payload)
+    return method, path, payload
 
 
 def _stringify_query(arguments: dict[str, Any]) -> dict[str, str]:

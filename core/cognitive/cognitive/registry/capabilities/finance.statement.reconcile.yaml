@@ -1,0 +1,62 @@
+# Capability: finance.statement.reconcile
+# F2B — conciliação de um statement já importado contra as transações.
+#
+# Responsabilidade única: casar linhas do extrato com transações e reportar
+# divergências. Não importa arquivo, não corrige transação (isso é
+# finance.correction.apply).
+
+id: "finance.statement.reconcile"
+version: "1.0.0"
+domain: "finance"
+description: >
+  Concilia um statement já importado contra as transações do ciclo,
+  reportando casamentos, faltantes e divergências de valor.
+adapter: "finance_api"
+default_policy: "allow"
+
+required_scopes:
+  - "finance:write"
+
+input_schema:
+  type: object
+  required:
+    - "statementId"
+  properties:
+    statementId:
+      type: string
+    cycleId:
+      type: string
+    toleranceCents:
+      type: integer
+      description: "Tolerância de diferença de valor aceita como casamento."
+    dryRun:
+      type: boolean
+
+output_schema:
+  type: object
+  properties:
+    matched:
+      type: array
+    missingInLedger:
+      type: array
+    missingInStatement:
+      type: array
+    amountMismatches:
+      type: array
+
+tools: []
+
+idempotency_behavior: "return_cached"
+timeout_seconds: 60
+cost_class: "medium"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: false
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"
+  - "account_number"

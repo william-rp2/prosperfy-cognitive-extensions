@@ -1,0 +1,69 @@
+# Capability: finance.clarification.resolve
+# F2B — resolve UMA clarification identificada por clarificationId.
+#
+# 03 §Reply binding: o binding exato vem do reply_to_message_id do WhatsApp
+# (provider_message_id persistido no envio), NUNCA do context window do LLM.
+# 03 §Late reply: reenviar uma resolução para clarification já resolvida NÃO
+# pode duplicar mutação — o servidor responde already_resolved e nada muda.
+
+id: "finance.clarification.resolve"
+version: "1.0.0"
+domain: "finance"
+description: >
+  Resolve uma clarification específica aplicando a resposta do owner à
+  transação vinculada. Idempotente: clarification já resolvida retorna
+  already_resolved sem duplicar mutação.
+adapter: "finance_api"
+default_policy: "allow"
+
+required_scopes:
+  - "finance:write"
+
+input_schema:
+  type: object
+  required:
+    - "clarificationId"
+  properties:
+    clarificationId:
+      type: string
+      description: "Identidade durável da clarification. Obrigatório — nunca inferido pelo LLM."
+    resolutionPayload:
+      type: object
+      description: "Resposta estruturada do owner (campos dependem do question_type)."
+    resolvedByActorId:
+      type: string
+      description: "Actor canônico que respondeu. Resolvido pela identidade, não por nome de exibição."
+    replyMessageId:
+      type: string
+      description: "provider_message_id da mensagem de resposta do owner."
+    freeText:
+      type: string
+      description: "Texto livre original da resposta, para auditoria."
+
+output_schema:
+  type: object
+  properties:
+    resolved:
+      type: boolean
+    alreadyResolved:
+      type: boolean
+    clarification:
+      type: object
+    transaction:
+      type: object
+
+tools: []
+
+idempotency_behavior: "return_cached"
+timeout_seconds: 20
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"

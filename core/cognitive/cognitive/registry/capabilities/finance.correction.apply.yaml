@@ -1,0 +1,79 @@
+# Capability: finance.correction.apply
+# F2B — ledger append-only de correções (D4 do PLAN.md).
+#
+# Nunca sobrescreve o dado bruto: registra uma correção que supersede a
+# anterior. `mode` seleciona a rota (apply = grava; history = lê o ledger
+# de uma transação). Enum interno em inglês.
+
+id: "finance.correction.apply"
+version: "1.0.0"
+domain: "finance"
+description: >
+  Aplica uma correção append-only a uma transação (valor, competência,
+  categoria, owner econômico, responsável, reembolso), ou lê o histórico
+  de correções de uma transação.
+adapter: "finance_api"
+default_policy: "allow"
+
+required_scopes:
+  - "finance:write"
+
+input_schema:
+  type: object
+  required:
+    - "transactionId"
+  properties:
+    mode:
+      type: string
+      enum:
+        - "apply"
+        - "history"
+      description: "apply grava no ledger; history lê o ledger. Default: apply."
+    transactionId:
+      type: string
+    field:
+      type: string
+      enum:
+        - "amount"
+        - "currency"
+        - "category"
+        - "competence_month"
+        - "economic_owner"
+        - "responsible"
+        - "reimbursement"
+        - "merchant"
+        - "statement_cycle"
+        - "notes"
+    value:
+      description: "Novo valor efetivo do campo corrigido."
+    reason:
+      type: string
+    sourceClarificationId:
+      type: string
+      description: "Clarification que originou a correção, quando houver."
+
+output_schema:
+  type: object
+  properties:
+    correction:
+      type: object
+    corrections:
+      type: array
+    effectiveTransaction:
+      type: object
+
+tools: []
+
+idempotency_behavior: "return_cached"
+timeout_seconds: 20
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"

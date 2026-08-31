@@ -1,7 +1,7 @@
 """
 tests/unit/test_finance_capabilities_registry.py — P2 (Financeiro pelo WhatsApp).
 
-Confirma que as 10 capabilities finance.* do doc 00 §5 carregam do YAML com
+Confirma que as capabilities finance.* (doc 00 §5 + as de F2B) carregam do YAML com
 o contrato esperado: domain=finance, adapter=finance_api, escopos e
 default_policy corretos, e que material writes ficam claramente marcados
 "write" enquanto reads ficam "read" (doc 00 §8 — nenhuma capability aqui
@@ -26,6 +26,19 @@ EXPECTED_WRITE_CAPABILITIES = {
     "finance.category.update",
     "finance.budget.write",
     "finance.sync.run",
+    # --- F2B ---------------------------------------------------------
+    "finance.clarification.deliver",
+    "finance.clarification.resolve",
+    "finance.correction.apply",
+    "finance.rule.upsert",
+    "finance.statement.import",
+    "finance.statement.reconcile",
+    "finance.onboarding.batch",
+}
+# --- F2B: leituras novas ---------------------------------------------
+EXPECTED_READ_CAPABILITIES |= {
+    "finance.clarification.list",
+    "finance.cycle.read",
 }
 EXPECTED_ALL = EXPECTED_READ_CAPABILITIES | EXPECTED_WRITE_CAPABILITIES
 
@@ -36,7 +49,7 @@ def _registry() -> InMemoryCapabilityRegistry:
     return registry
 
 
-def test_all_ten_finance_capabilities_are_registered():
+def test_all_finance_capabilities_are_registered():
     registry = _registry()
     ids = {cap.id for cap in registry.list_all() if cap.id.startswith("finance.")}
     assert ids == EXPECTED_ALL

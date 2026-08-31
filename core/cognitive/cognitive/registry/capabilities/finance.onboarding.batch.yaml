@@ -1,0 +1,80 @@
+# Capability: finance.onboarding.batch
+# F2B — backfill histórico via planilha (06_ONBOARDING_HISTORICAL_BACKFILL.md).
+#
+# Modo histórico: NÃO dispara mensagem proativa uma-a-uma. O owner escolhe
+# explicitamente o lote. `mode` seleciona a rota (export/import). O import é
+# idempotente, suporta dryRun e devolve erros linha a linha; NUNCA
+# sobrescreve silenciosamente uma correção mais nova.
+# 03 §Spreadsheet workflow: o export nunca expõe número de conta completo.
+
+id: "finance.onboarding.batch"
+version: "1.0.0"
+domain: "finance"
+description: >
+  Exporta um lote de pendências históricas para planilha ou importa a
+  planilha preenchida pelo owner, validando e aplicando as linhas aceitas.
+adapter: "finance_api"
+default_policy: "allow"
+
+required_scopes:
+  - "finance:write"
+
+input_schema:
+  type: object
+  required:
+    - "mode"
+  properties:
+    mode:
+      type: string
+      enum:
+        - "export"
+        - "import"
+    competenceMonth:
+      type: string
+      description: "Filtro YYYY-MM para o lote exportado."
+    account:
+      type: string
+    limit:
+      type: integer
+    batchId:
+      type: string
+      description: "Identidade do lote — obrigatória no import para idempotência."
+    rows:
+      type: array
+      description: "Linhas do import já normalizadas."
+    dryRun:
+      type: boolean
+      description: "Valida sem aplicar. Default do servidor: false."
+
+output_schema:
+  type: object
+  properties:
+    batchId:
+      type: string
+    exported:
+      type: integer
+    applied:
+      type: integer
+    rejected:
+      type: array
+    ambiguous:
+      type: array
+    dryRun:
+      type: boolean
+
+tools: []
+
+idempotency_behavior: "return_cached"
+timeout_seconds: 60
+cost_class: "medium"
+
+audit_rules:
+  log_inputs: false
+  log_outputs: false
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"
+  - "account_number"

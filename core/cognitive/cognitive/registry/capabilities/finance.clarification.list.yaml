@@ -1,0 +1,87 @@
+# Capability: finance.clarification.list
+# F2B — fila de clarifications (perguntas em aberto sobre transações).
+#
+# SOMENTE leitura da fila. Não resolve, não muta transação. Usada tanto
+# pelo fluxo "Quantas pendências?" (contagem dinâmica real, nunca cache)
+# quanto pelo fallback de reply solta (03 §Loose reply fallback), que
+# precisa de um conjunto PEQUENO de pendências relevantes para desambiguar.
+
+id: "finance.clarification.list"
+version: "1.0.0"
+domain: "finance"
+description: >
+  Lista/conta clarifications financeiras em aberto, com filtros por status,
+  mês de competência, conta e limite. Retorna contagem dinâmica.
+adapter: "finance_api"
+default_policy: "allow"
+
+required_scopes:
+  - "finance:read"
+
+input_schema:
+  type: object
+  properties:
+    status:
+      type: string
+      enum:
+        - "open"
+        - "snoozed"
+        - "resolved"
+        - "any"
+      description: "Estado da clarification. Default do servidor: open."
+    competenceMonth:
+      type: string
+      description: "Filtro de competência efetiva no formato YYYY-MM."
+    account:
+      type: string
+      description: "Alias/identificador de conta ou cartão."
+    questionType:
+      type: string
+      enum:
+        - "CATEGORY"
+        - "ECONOMIC_OWNER"
+        - "RESPONSIBLE"
+        - "REIMBURSEMENT"
+        - "CURRENCY"
+        - "AMOUNT_CORRECTION"
+        - "COMPETENCE_MONTH"
+        - "STATEMENT_CYCLE"
+        - "MERCHANT"
+        - "OTHER"
+    transactionId:
+      type: string
+      description: "Restringe a fila às clarifications de uma transação."
+    deliveryMessageId:
+      type: string
+      description: >
+        provider_message_id da mensagem outbound que fez a pergunta. É o
+        vínculo durável usado quando o owner responde citando a mensagem —
+        funciona dias depois e após restart, sem depender de contexto do LLM.
+    limit:
+      type: integer
+      description: "Máximo de itens retornados."
+
+output_schema:
+  type: object
+  properties:
+    clarifications:
+      type: array
+    total:
+      type: integer
+
+tools: []
+
+idempotency_behavior: "return_cached"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: false
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"
+  - "account_number"

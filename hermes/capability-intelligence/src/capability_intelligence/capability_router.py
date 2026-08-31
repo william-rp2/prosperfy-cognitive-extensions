@@ -306,6 +306,29 @@ def set_pending_restart_checker(checker: Callable[[str], bool] | None) -> None:
     _pending_restart_checker = checker
 
 
+# F2B / 03 §"Reply binding": quando o owner RESPONDE CITANDO a mensagem da
+# pergunta financeira, o vínculo é o provider_message_id citado — metadado de
+# transporte (ContextEnvelope.reply_to_message_id), nunca o texto. O texto de
+# uma resposta citada é arbitrário ("foi mercado", "sim", um emoji) e não
+# contém keyword de finanças alguma, então nenhuma heurística textual daqui
+# conseguiria rotear esse turno.
+#
+# O predicado é INJETADO (mesmo seam de _pending_restart_checker) para o
+# router continuar puro e sem I/O. A verdade durável é a Finance API — ver
+# finance_reply_binding.install_router_hook.
+_finance_quoted_reply_checker: Callable[[str], bool] | None = None
+
+
+def set_finance_quoted_reply_checker(checker: Callable[[str], bool] | None) -> None:
+    """Registra lookup read-only 'esse message id citado é uma pergunta financeira?'.
+
+    Sem checker registrado o comportamento é o pré-F2B (só heurística de
+    texto): nunca abre rota por acidente.
+    """
+    global _finance_quoted_reply_checker
+    _finance_quoted_reply_checker = checker
+
+
 def _is_affirmative_confirmation(text: str) -> bool:
     normalized = (text or "").strip().lower().rstrip("!").strip()
     return normalized in _AFFIRMATIVE_CONFIRMATIONS
@@ -401,14 +424,33 @@ def _is_work_management(text: str) -> bool:
     return _has_any(low, _WORK_KEYWORDS)
 
 
-def resolve_specialist_route(message: str, actor_id: str | None = None) -> str:
+def resolve_specialist_route(
+    message: str,
+    actor_id: str | None = None,
+    *,
+    reply_to_message_id: str = "",
+) -> str:
     """Resolve a rota determinística do turno: NORMAL | CRON | SESSION_SEARCH |
     MEMORY | SKILLS | INFRA_READ | INFRA_ACTION. Conservador: ambíguo → NORMAL.
 
     Phase 1B: confirmação afirmativa explícita + pending restart do mesmo actor
     → INFRA_ACTION (continuation routing — nunca "Sim" global).
+
+    F2B: `reply_to_message_id` é o provider_message_id CITADO pelo owner
+    (ContextEnvelope.reply_to_message_id). Quando ele corresponde a uma
+    pergunta financeira já entregue, a rota é FINANCE — decisão por metadado
+    de transporte, antes de qualquer heurística de texto e antes do LLM.
+    Rotear para FINANCE não autoriza nada: a ACL de finance (Cognitive
+    policy) decide ALLOW/DENY depois, sobre a identidade canônica do ator.
     """
     text = (message or "").strip()
+
+    # Precede até o guard de texto vazio: a resposta citada pode ser só um
+    # emoji/sticker e ainda assim é a resposta a uma pergunta específica.
+    if reply_to_message_id and _finance_quoted_reply_checker is not None:
+        if _finance_quoted_reply_checker(reply_to_message_id):
+            return "FINANCE"
+
     if not text:
         return "NORMAL"
 
@@ -465,9 +507,16 @@ def route_toolsets(route: str) -> list[str]:
     return list(_ROUTE_TOOLSETS.get(route, []))
 
 
-def resolve_turn_toolsets(message: str, actor_id: str | None = None) -> tuple[str, list[str]]:
+def resolve_turn_toolsets(
+    message: str,
+    actor_id: str | None = None,
+    *,
+    reply_to_message_id: str = "",
+) -> tuple[str, list[str]]:
     """Boundary pré-LLM: rota + toolsets (espelha CAPABILITY_ROUTE / ENABLED_TOOLSETS)."""
-    route = resolve_specialist_route(message, actor_id=actor_id)
+    route = resolve_specialist_route(
+        message, actor_id=actor_id, reply_to_message_id=reply_to_message_id
+    )
     return route, route_toolsets(route)
 
 

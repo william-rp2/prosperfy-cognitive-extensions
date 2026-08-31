@@ -1,0 +1,73 @@
+# Capability: finance.rule.upsert
+# F2B — aprendizado determinístico (04_CORRECTIONS_AND_LEARNING.md).
+#
+# Cria/atualiza uma regra de merchant -> classificação. Regra é DADO, é
+# auditável e é aplicada deterministicamente antes de qualquer LLM.
+
+id: "finance.rule.upsert"
+version: "1.0.0"
+domain: "finance"
+description: >
+  Cria ou atualiza uma regra determinística de classificação por merchant
+  (categoria, owner econômico, responsável, reembolso).
+adapter: "finance_api"
+default_policy: "allow"
+
+required_scopes:
+  - "finance:write"
+
+input_schema:
+  type: object
+  required:
+    - "matchType"
+    - "matchValue"
+  properties:
+    ruleId:
+      type: string
+      description: "Quando informado, atualiza a regra existente."
+    matchType:
+      type: string
+      enum:
+        - "merchant_exact"
+        - "merchant_contains"
+        - "description_contains"
+    matchValue:
+      type: string
+    category:
+      type: string
+    economicOwner:
+      type: string
+    responsible:
+      type: string
+    reimbursement:
+      type: boolean
+    priority:
+      type: integer
+    active:
+      type: boolean
+    sourceClarificationId:
+      type: string
+
+output_schema:
+  type: object
+  properties:
+    rule:
+      type: object
+    created:
+      type: boolean
+
+tools: []
+
+idempotency_behavior: "return_cached"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: true
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"

@@ -1,0 +1,59 @@
+# Capability: finance.cycle.read
+# F2B — ciclos de fatura como verdade de domínio (D3 do PLAN.md).
+#
+# Somente leitura. Ciclos são a base da semântica de competência quando
+# competence_month ainda é desconhecido (03 §Historical count behavior).
+
+id: "finance.cycle.read"
+version: "1.0.0"
+domain: "finance"
+description: >
+  Lista ciclos de fatura (abertura, fechamento, vencimento, status) por
+  conta/cartão e período.
+adapter: "finance_api"
+default_policy: "allow"
+
+required_scopes:
+  - "finance:read"
+
+input_schema:
+  type: object
+  properties:
+    account:
+      type: string
+    competenceMonth:
+      type: string
+    status:
+      type: string
+      enum:
+        - "open"
+        - "closed"
+        - "paid"
+        - "any"
+    limit:
+      type: integer
+
+output_schema:
+  type: object
+  properties:
+    cycles:
+      type: array
+    total:
+      type: integer
+
+tools: []
+
+idempotency_behavior: "return_cached"
+timeout_seconds: 15
+cost_class: "low"
+
+audit_rules:
+  log_inputs: true
+  log_outputs: false
+
+redaction_rules:
+  - "api_key"
+  - "password"
+  - "token"
+  - "secret"
+  - "account_number"
