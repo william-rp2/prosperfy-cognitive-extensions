@@ -41,6 +41,14 @@ import { Card } from './components/ui/card'
 import { Input } from './components/ui/input'
 import { PluggyPocPage } from './components/PluggyPocPage'
 import {
+  ClarificationsScreen as F2BClarificationsScreen,
+  CorrectionsScreen as F2BCorrectionsScreen,
+  CyclesScreen as F2BCyclesScreen,
+  OnboardingScreen as F2BOnboardingScreen,
+  RulesScreen as F2BRulesScreen,
+  StatementsScreen as F2BStatementsScreen,
+} from './components/finance/F2BScreens'
+import {
   ConnectedCardsScreen,
   ConnectedDashboardScreen,
   ConnectedIntegrationsScreen,
@@ -83,6 +91,12 @@ type ScreenId =
   | 'documents'
   | 'integrations'
   | 'settings'
+  | 'clarifications'
+  | 'corrections'
+  | 'rules'
+  | 'cycles'
+  | 'statements'
+  | 'onboarding'
 
 type UiMode = 'normal' | 'loading' | 'empty' | 'error' | 'success'
 
@@ -103,6 +117,12 @@ const navItems: NavItem[] = [
   { id: 'cards', label: 'Cartões e Faturas', icon: CreditCard, subtitle: 'Compromissos no cartão' },
   { id: 'documents', label: 'Notas e Documentos', icon: ReceiptText, subtitle: 'OCR e rateio' },
   { id: 'integrations', label: 'Contas e Integrações', icon: Plug, subtitle: 'Bancos e canais' },
+  { id: 'clarifications', label: 'Esclarecimentos', icon: MessageCircle, subtitle: 'Perguntas pendentes' },
+  { id: 'corrections', label: 'Correções', icon: ShieldCheck, subtitle: 'Camada efetiva e regras' },
+  { id: 'rules', label: 'Regras Aprendidas', icon: Sparkles, subtitle: 'Sugestão e confiança' },
+  { id: 'cycles', label: 'Ciclos de Fatura', icon: CalendarDays, subtitle: 'Faturas fechadas' },
+  { id: 'statements', label: 'Extratos e Conciliação', icon: FileText, subtitle: 'Casamento contábil' },
+  { id: 'onboarding', label: 'Onboarding Histórico', icon: CheckCircle2, subtitle: 'Backlog em lote' },
   { id: 'settings', label: 'Configurações do Sistema', icon: Settings, subtitle: 'Regras e segurança' },
 ]
 
@@ -866,6 +886,12 @@ function ScreenContent({ activeScreen, monthOffset, setMonthOffset }: { activeSc
   if (activeScreen === 'cards') return <CardsScreen />
   if (activeScreen === 'documents') return <DocumentsScreen />
   if (activeScreen === 'integrations') return <IntegrationsScreen />
+  if (activeScreen === 'clarifications') return <F2BClarificationsScreen />
+  if (activeScreen === 'corrections') return <F2BCorrectionsScreen />
+  if (activeScreen === 'rules') return <F2BRulesScreen />
+  if (activeScreen === 'cycles') return <F2BCyclesScreen />
+  if (activeScreen === 'statements') return <F2BStatementsScreen />
+  if (activeScreen === 'onboarding') return <F2BOnboardingScreen />
   return <SettingsScreen />
 }
 

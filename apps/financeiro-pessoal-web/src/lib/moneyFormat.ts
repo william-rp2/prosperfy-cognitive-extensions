@@ -38,6 +38,12 @@ export function formatTransactionAmount(
   return { primary, secondary: null }
 }
 
+/** F2B surfaces (corrections/statements/onboarding) carry integer cents, not decimal reais. */
+export function formatCents(cents: number | null | undefined, currencyCode = 'BRL'): string {
+  if (cents == null || Number.isNaN(cents)) return '—'
+  return formatMoney(cents / 100, currencyCode)
+}
+
 export function formatTransactionAmountInline(
   tx: Pick<
     FinanceTransaction,

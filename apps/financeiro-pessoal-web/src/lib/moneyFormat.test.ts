@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatMoney, formatTransactionAmount } from './moneyFormat'
+import { formatCents, formatMoney, formatTransactionAmount } from './moneyFormat'
 
 describe('moneyFormat', () => {
   it('A. USD 20,00 original e R$ 109,54 convertido', () => {
@@ -38,5 +38,15 @@ describe('moneyFormat', () => {
 
   it('E. não hardcode BRL para USD', () => {
     expect(formatMoney(20, 'USD')).not.toMatch(/^R\$/)
+  })
+
+  it('F. formatCents converte centavos inteiros (F2B corrections/statements) para reais', () => {
+    expect(formatCents(500, 'BRL')).toContain('5,00')
+    expect(formatCents(109, 'BRL')).toContain('1,09')
+  })
+
+  it('G. formatCents trata null/undefined como indisponível', () => {
+    expect(formatCents(null)).toBe('—')
+    expect(formatCents(undefined)).toBe('—')
   })
 })
