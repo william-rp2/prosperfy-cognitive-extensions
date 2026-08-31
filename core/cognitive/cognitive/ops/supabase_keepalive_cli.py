@@ -59,6 +59,7 @@ async def _build_service():
     from ..execution.resource_resolver import ResourceResolver
     from ..execution.supabase_keepalive_service import SupabaseKeepaliveService
     from ..policy.engine import PolicyEngine
+    from ..policy.finance_acl import FinanceAcl
     from ..registry.grant_resolver import PostgresGrantResolver
     from ..registry.registry import InMemoryCapabilityRegistry
 
@@ -99,7 +100,11 @@ async def _build_service():
 
     orchestrator = ExecutionOrchestrator(
         registry=registry,
-        policy_engine=PolicyEngine(),
+        # A ACL de finance entra explicitamente mesmo aqui: este scheduler só
+        # executa supabase.*, mas um PolicyEngine sem ACL deixaria finance.*
+        # passar apenas com grant. Uma FinanceAcl sem configuração nega tudo em
+        # finance.*, então injetá-la não abre nada — só fecha.
+        policy_engine=PolicyEngine(finance_acl=FinanceAcl()),
         # Fallback nunca deveria ser exercido por nenhuma capability supabase.*
         # — usar o registry_adapter aqui (em vez do ProsperfySkillsAdapter) evita
         # que este script precise de MCP_PROSPERFYSKILLS_API_KEY, que não tem
