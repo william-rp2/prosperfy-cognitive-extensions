@@ -242,7 +242,7 @@ export function registerFinanceCorrectionRoutes(app: FastifyInstance, deps: Fina
     })
 
     /** Full auditable ledger for a transaction — superseded entries included, oldest first. */
-    correctionApp.get('/api/finance/transactions/:transactionId/corrections', async (request, reply) => {
+    correctionApp.get('/api/finance/corrections/:transactionId', async (request, reply) => {
       const { transactionId } = request.params as { transactionId: string }
       const row = loadRow(transactionId)
       if (!row) {
@@ -257,9 +257,17 @@ export function registerFinanceCorrectionRoutes(app: FastifyInstance, deps: Fina
       }
     })
 
-    correctionApp.post('/api/finance/transactions/:transactionId/corrections', async (request, reply) => {
-      const { transactionId } = request.params as { transactionId: string }
+    correctionApp.post('/api/finance/corrections', async (request, reply) => {
       const body = (request.body ?? {}) as Record<string, unknown>
+      // The apply route has no path param (adapters/finance_api/client.py routes
+      // finance.correction.apply to POST /api/finance/corrections), so the target
+      // transaction is named in the body.
+      const transactionId = typeof body.transactionId === 'string' ? body.transactionId : ''
+      if (!transactionId) {
+        return reply
+          .code(400)
+          .send({ error: 'invalid_transaction_id', message: 'transactionId é obrigatório no corpo.' })
+      }
 
       const row = loadRow(transactionId)
       if (!row) {
@@ -309,7 +317,7 @@ export function registerFinanceCorrectionRoutes(app: FastifyInstance, deps: Fina
      * Withdraw a correction. The ledger row is superseded, never deleted, and the effective view
      * falls back to the layer underneath it.
      */
-    correctionApp.delete('/api/finance/transactions/:transactionId/corrections/:field', async (request, reply) => {
+    correctionApp.delete('/api/finance/corrections/:transactionId/:field', async (request, reply) => {
       const { transactionId, field } = request.params as { transactionId: string; field: string }
       const row = loadRow(transactionId)
       if (!row) {
@@ -334,7 +342,7 @@ export function registerFinanceCorrectionRoutes(app: FastifyInstance, deps: Fina
       }
     })
 
-    correctionApp.get('/api/finance/merchant-rules', async request => {
+    correctionApp.get('/api/finance/rules', async request => {
       const query = (request.query ?? {}) as Record<string, unknown>
       const ruleType =
         typeof query.ruleType === 'string' && (RULE_TYPES as readonly string[]).includes(query.ruleType)
@@ -347,13 +355,13 @@ export function registerFinanceCorrectionRoutes(app: FastifyInstance, deps: Fina
      * Create or update a learned rule. Always SUGGEST: a rule that starts deterministic would let
      * one guess silently rewrite every future transaction of a merchant.
      */
-    correctionApp.post('/api/finance/merchant-rules', async (request, reply) => {
+    correctionApp.post('/api/finance/rules', async (request, reply) => {
       const body = (request.body ?? {}) as Record<string, unknown>
 
       if (body.mode === 'TRUSTED') {
         return reply.code(400).send({
           error: 'trusted_requires_promotion',
-          message: 'Uma regra nasce como sugestão. Promova a confiável em POST /api/finance/merchant-rules/:id/promote.',
+          message: 'Uma regra nasce como sugestão. Promova a confiável em POST /api/finance/rules/:id/promote.',
         })
       }
 
@@ -392,7 +400,7 @@ export function registerFinanceCorrectionRoutes(app: FastifyInstance, deps: Fina
     })
 
     /** Explicit owner promotion — the only path from SUGGEST to TRUSTED. */
-    correctionApp.post('/api/finance/merchant-rules/:ruleId/promote', async (request, reply) => {
+    correctionApp.post('/api/finance/rules/:ruleId/promote', async (request, reply) => {
       const { ruleId } = request.params as { ruleId: string }
       const body = (request.body ?? {}) as Record<string, unknown>
       const existing = merchantRules.getById(ruleId)
@@ -407,7 +415,7 @@ export function registerFinanceCorrectionRoutes(app: FastifyInstance, deps: Fina
       return { rule: serializeRule(promoted!) }
     })
 
-    correctionApp.delete('/api/finance/merchant-rules/:ruleId', async (request, reply) => {
+    correctionApp.delete('/api/finance/rules/:ruleId', async (request, reply) => {
       const { ruleId } = request.params as { ruleId: string }
       if (!merchantRules.deactivate(ruleId)) {
         return reply.code(404).send({ error: 'rule_not_found', message: 'Regra não encontrada.' })

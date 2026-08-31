@@ -95,7 +95,7 @@ function seedTransaction(id: string, overrides: { date?: string; cardMetadata?: 
 
 describe('registerFinanceCorrectionRoutes — autenticação', () => {
   it('recusa requisição sem token', async () => {
-    const response = await app.inject({ method: 'GET', url: '/api/finance/merchant-rules' })
+    const response = await app.inject({ method: 'GET', url: '/api/finance/rules' })
     expect(response.statusCode).toBe(401)
     expect(response.json()).toMatchObject({ error: 'unauthorized' })
   })
@@ -103,7 +103,7 @@ describe('registerFinanceCorrectionRoutes — autenticação', () => {
   it('recusa token inválido', async () => {
     const response = await app.inject({
       method: 'GET',
-      url: '/api/finance/merchant-rules',
+      url: '/api/finance/rules',
       headers: { authorization: 'Bearer errado' },
     })
     expect(response.statusCode).toBe(401)
@@ -116,9 +116,9 @@ describe('registerFinanceCorrectionRoutes — correções', () => {
 
     const response = await app.inject({
       method: 'POST',
-      url: '/api/finance/transactions/tx-1/corrections',
+      url: '/api/finance/corrections',
       headers: AUTH,
-      payload: { field: 'category', value: 'Presentes', reason: 'compra para terceiro', actorId: 'owner' },
+      payload: { transactionId: 'tx-1', field: 'category', value: 'Presentes', reason: 'compra para terceiro', actorId: 'owner' },
     })
     expect(response.statusCode).toBe(201)
     const body = response.json()
@@ -138,15 +138,15 @@ describe('registerFinanceCorrectionRoutes — correções', () => {
     for (const value of ['Primeiro', 'Segundo', 'Terceiro']) {
       await app.inject({
         method: 'POST',
-        url: '/api/finance/transactions/tx-2/corrections',
+        url: '/api/finance/corrections',
         headers: AUTH,
-        payload: { field: 'merchant', value },
+        payload: { transactionId: 'tx-2', field: 'merchant', value },
       })
     }
 
     const response = await app.inject({
       method: 'GET',
-      url: '/api/finance/transactions/tx-2/corrections',
+      url: '/api/finance/corrections/tx-2',
       headers: AUTH,
     })
     expect(response.statusCode).toBe(200)
@@ -161,14 +161,14 @@ describe('registerFinanceCorrectionRoutes — correções', () => {
     seedTransaction('tx-3')
     await app.inject({
       method: 'POST',
-      url: '/api/finance/transactions/tx-3/corrections',
+      url: '/api/finance/corrections',
       headers: AUTH,
-      payload: { field: 'category', value: 'Presentes' },
+      payload: { transactionId: 'tx-3', field: 'category', value: 'Presentes' },
     })
 
     const removed = await app.inject({
       method: 'DELETE',
-      url: '/api/finance/transactions/tx-3/corrections/category',
+      url: '/api/finance/corrections/tx-3/category',
       headers: AUTH,
     })
     expect(removed.statusCode).toBe(200)
@@ -176,7 +176,7 @@ describe('registerFinanceCorrectionRoutes — correções', () => {
 
     const history = await app.inject({
       method: 'GET',
-      url: '/api/finance/transactions/tx-3/corrections',
+      url: '/api/finance/corrections/tx-3',
       headers: AUTH,
     })
     expect(history.json().history).toHaveLength(1)
@@ -184,7 +184,7 @@ describe('registerFinanceCorrectionRoutes — correções', () => {
 
     const again = await app.inject({
       method: 'DELETE',
-      url: '/api/finance/transactions/tx-3/corrections/category',
+      url: '/api/finance/corrections/tx-3/category',
       headers: AUTH,
     })
     expect(again.statusCode).toBe(404)
@@ -201,9 +201,9 @@ describe('registerFinanceCorrectionRoutes — correções', () => {
     for (const testCase of cases) {
       const response = await app.inject({
         method: 'POST',
-        url: '/api/finance/transactions/tx-4/corrections',
+        url: '/api/finance/corrections',
         headers: AUTH,
-        payload: testCase.payload,
+        payload: { transactionId: 'tx-4', ...testCase.payload },
       })
       expect(response.statusCode).toBe(400)
       expect(response.json().error).toBe(testCase.error)
@@ -214,9 +214,9 @@ describe('registerFinanceCorrectionRoutes — correções', () => {
     seedTransaction('tx-5')
     const response = await app.inject({
       method: 'POST',
-      url: '/api/finance/transactions/tx-5/corrections',
+      url: '/api/finance/corrections',
       headers: AUTH,
-      payload: { field: 'amount', value: -4500 },
+      payload: { transactionId: 'tx-5', field: 'amount', value: -4500 },
     })
     expect(response.statusCode).toBe(201)
     expect(response.json().effective.effective.amountCents).toMatchObject({ value: -4500, source: 'CORRECTION' })
@@ -227,9 +227,9 @@ describe('registerFinanceCorrectionRoutes — correções', () => {
   it('404 para transação inexistente', async () => {
     const response = await app.inject({
       method: 'POST',
-      url: '/api/finance/transactions/nao-existe/corrections',
+      url: '/api/finance/corrections',
       headers: AUTH,
-      payload: { field: 'category', value: 'x' },
+      payload: { transactionId: 'nao-existe', field: 'category', value: 'x' },
     })
     expect(response.statusCode).toBe(404)
   })
@@ -258,9 +258,9 @@ describe('registerFinanceCorrectionRoutes — correções', () => {
     const target = cycles.findBestForCompetence(CARD_ACCOUNT, '2026-08')!
     const response = await app.inject({
       method: 'POST',
-      url: '/api/finance/transactions/tx-6/corrections',
+      url: '/api/finance/corrections',
       headers: AUTH,
-      payload: { field: 'statement_cycle', value: target.id, source: 'USER' },
+      payload: { transactionId: 'tx-6', field: 'statement_cycle', value: target.id, source: 'USER' },
     })
     expect(response.statusCode).toBe(201)
 
@@ -276,9 +276,9 @@ describe('registerFinanceCorrectionRoutes — correções', () => {
     seedTransaction('tx-7')
     const response = await app.inject({
       method: 'POST',
-      url: '/api/finance/transactions/tx-7/corrections',
+      url: '/api/finance/corrections',
       headers: AUTH,
-      payload: {
+      payload: { transactionId: 'tx-7',
         field: 'reimbursement',
         value: { paidBy: 'cartao-titular', receivableFrom: 'terceiro', status: 'PENDING' },
       },
@@ -315,7 +315,7 @@ describe('registerFinanceCorrectionRoutes — regras de merchant', () => {
     seedTransaction('tx-9')
     const created = await app.inject({
       method: 'POST',
-      url: '/api/finance/merchant-rules',
+      url: '/api/finance/rules',
       headers: AUTH,
       payload: { merchantPattern: 'PADARIA CENTRAL', ruleType: 'CATEGORY', targetValue: 'Alimentação' },
     })
@@ -337,7 +337,7 @@ describe('registerFinanceCorrectionRoutes — regras de merchant', () => {
   it('recusa criar regra já TRUSTED: promoção exige ação explícita', async () => {
     const response = await app.inject({
       method: 'POST',
-      url: '/api/finance/merchant-rules',
+      url: '/api/finance/rules',
       headers: AUTH,
       payload: {
         merchantPattern: 'PADARIA CENTRAL',
@@ -354,7 +354,7 @@ describe('registerFinanceCorrectionRoutes — regras de merchant', () => {
     seedTransaction('tx-10')
     const created = await app.inject({
       method: 'POST',
-      url: '/api/finance/merchant-rules',
+      url: '/api/finance/rules',
       headers: AUTH,
       payload: { merchantPattern: 'PADARIA CENTRAL', ruleType: 'CATEGORY', targetValue: 'Alimentação' },
     })
@@ -362,7 +362,7 @@ describe('registerFinanceCorrectionRoutes — regras de merchant', () => {
 
     const promoted = await app.inject({
       method: 'POST',
-      url: `/api/finance/merchant-rules/${ruleId}/promote`,
+      url: `/api/finance/rules/${ruleId}/promote`,
       headers: AUTH,
       payload: { actorId: 'owner' },
     })
@@ -380,7 +380,7 @@ describe('registerFinanceCorrectionRoutes — regras de merchant', () => {
   it('valida payload da regra e escopo de conta inexistente', async () => {
     const invalidType = await app.inject({
       method: 'POST',
-      url: '/api/finance/merchant-rules',
+      url: '/api/finance/rules',
       headers: AUTH,
       payload: { merchantPattern: 'X', ruleType: 'INVENTADO', targetValue: 'y' },
     })
@@ -389,7 +389,7 @@ describe('registerFinanceCorrectionRoutes — regras de merchant', () => {
 
     const unknownAccount = await app.inject({
       method: 'POST',
-      url: '/api/finance/merchant-rules',
+      url: '/api/finance/rules',
       headers: AUTH,
       payload: {
         merchantPattern: 'X',
@@ -405,28 +405,28 @@ describe('registerFinanceCorrectionRoutes — regras de merchant', () => {
   it('lista regras ativas e desativa uma regra', async () => {
     const created = await app.inject({
       method: 'POST',
-      url: '/api/finance/merchant-rules',
+      url: '/api/finance/rules',
       headers: AUTH,
       payload: { merchantPattern: 'PADARIA CENTRAL', ruleType: 'CATEGORY', targetValue: 'Alimentação' },
     })
     const ruleId = created.json().rule.id
 
-    const listed = await app.inject({ method: 'GET', url: '/api/finance/merchant-rules', headers: AUTH })
+    const listed = await app.inject({ method: 'GET', url: '/api/finance/rules', headers: AUTH })
     expect(listed.json().rules.map((rule: { id: string }) => rule.id)).toContain(ruleId)
 
     const removed = await app.inject({
       method: 'DELETE',
-      url: `/api/finance/merchant-rules/${ruleId}`,
+      url: `/api/finance/rules/${ruleId}`,
       headers: AUTH,
     })
     expect(removed.statusCode).toBe(200)
 
-    const after = await app.inject({ method: 'GET', url: '/api/finance/merchant-rules', headers: AUTH })
+    const after = await app.inject({ method: 'GET', url: '/api/finance/rules', headers: AUTH })
     expect(after.json().rules).toHaveLength(0)
 
     const promoteGone = await app.inject({
       method: 'POST',
-      url: `/api/finance/merchant-rules/${ruleId}/promote`,
+      url: `/api/finance/rules/${ruleId}/promote`,
       headers: AUTH,
     })
     expect(promoteGone.statusCode).toBe(404)
