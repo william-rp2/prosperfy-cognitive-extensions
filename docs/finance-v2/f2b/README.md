@@ -67,13 +67,43 @@ Core areas:
 ## Files
 
 - `00_OPUS5_LOOP_EXECUTION_PROMPT.md` — copy/paste prompt for autonomous Opus 5.
-- `01_SCOPE_AND_ARCHITECTURE.md` — system scope, architecture, invariants.
+- `01_SCOPE_AND_ARCHITECTURE.md` — system scope, architecture, invariants, frozen decisions.
 - `02_DATA_MODEL_AND_CYCLES.md` — transaction months, competence, statements, cycle model.
-- `03_WHATSAPP_ACL_AND_CLARIFICATIONS.md` — finance group, owners, replies, queue.
+- `03_WHATSAPP_ACL_AND_CLARIFICATIONS.md` — finance group, owners, ACL contract, replies, queue.
 - `04_CORRECTIONS_AND_LEARNING.md` — user overrides and learned merchant rules.
-- `05_STATEMENTS_EMAIL_RECONCILIATION.md` — PDF/email statement ingestion and reconciliation.
+- `05_STATEMENTS_EMAIL_RECONCILIATION.md` — PDF upload (implemented), reconciliation semantics, email deferred.
 - `06_ONBOARDING_HISTORICAL_BACKFILL.md` — historical pendings, month filtering, spreadsheet workflow.
-- `07_BUG_SWEEP_AND_KNOWN_LIMITATIONS.md` — what to fix, what not to chase.
+- `07_BUG_SWEEP_AND_KNOWN_LIMITATIONS.md` — what to fix, accepted limitations, cycleAssignment fix.
 - `08_TEST_AND_E2E_ACCEPTANCE_MATRIX.md` — required tests and scenarios.
-- `09_LIVE_DEPLOY_RUNBOOK.md` — homolog deploy/recovery gates.
+- `09_LIVE_DEPLOY_RUNBOOK.md` — homolog deploy gates (schema gate first).
 - `10_FINAL_REPORT_TEMPLATE.md` — mandatory final report.
+- `11_HOMOLOG_DEPLOY_MANIFEST.md` — file manifest, env names, migration inventory, smoke/rollback.
+
+## Implementation status (Bloco 4 — pre-deploy)
+
+Functional code is **closed** on `dev/finance-v2-f2b` @ `21bccff`.
+
+| Area | Status |
+|---|---|
+| Finance ACL (Cognitive) | IMPLEMENTED — frozen contract |
+| Clarifications + reply binding | IMPLEMENTED |
+| Cycles / temporal columns | IMPLEMENTED |
+| Corrections + merchant rules | IMPLEMENTED |
+| Onboarding batch export/import | IMPLEMENTED |
+| Statement JSON import + reconcile | IMPLEMENTED |
+| **PDF multipart upload** | **IMPLEMENTED** |
+| Email statement automation | **DEFERRED** |
+| Split compound transaction | **BACKLOG** |
+| Homolog deploy | **NOT DONE** — executor host |
+| Live E2E / Human pass | **NOT DONE** |
+
+Test baseline (handoff):
+
+```text
+FINANCE_API_TESTS=299/299
+FINANCE_WEB_TESTS=48/48
+PYTHON=658 pass / 103 skip / 0 fail
+TSC=PASS
+```
+
+Master remains at canonical F2A: `f4f491c745c970766274f0f37abfdb3874bc1222`.

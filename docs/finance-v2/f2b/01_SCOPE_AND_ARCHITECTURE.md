@@ -172,3 +172,30 @@ The system must survive:
 - institution reconnects;
 - account aliases changing;
 - a bank returning deeper history after reconnect.
+
+## Frozen architecture decisions (Bloco 4 — do not reopen)
+
+### Decisão A — Finance ACL
+
+| Case | Behavior |
+|---|---|
+| Non-`finance.*` capabilities | Pre-F2B behavior |
+| `finance.*` + valid ACL context | Evaluate `FinanceAcl` |
+| `finance.*` + missing/invalid context | DENY |
+| Unknown context kind | DENY |
+
+See `03_WHATSAPP_ACL_AND_CLARIFICATIONS.md`.
+
+### Decisão B — INTERNAL context
+
+`kind=INTERNAL` is **not** proof of trust. Trusted internal requires authenticated boundary (`credential_ref`) + owner actor in `FINANCE_OWNER_ACTOR_IDS`. No HTTP self-promotion to INTERNAL.
+
+### Decisão C — Migration 014 in-place
+
+Amended 014 is accepted **only if** it was never applied on the target homolog DB. Deploy executor must query `schema_migrations` first. If already applied → STOP → migration 015 in new CODE stage.
+
+See `09_LIVE_DEPLOY_RUNBOOK.md` Step 1 and `11_HOMOLOG_DEPLOY_MANIFEST.md`.
+
+### Composition-root invariant
+
+`PluggySyncService.cycleAssignment` must be wired in `server.ts`. Real sync path populates temporal columns. Rule: `REAL_RUNTIME_PATH > HAND-BUILT UNIT INSTANCE`.

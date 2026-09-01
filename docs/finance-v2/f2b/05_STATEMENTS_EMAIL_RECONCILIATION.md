@@ -1,38 +1,124 @@
-# F2B — Closed Statements, Email/PDF Ingestion and Reconciliation
+# F2B — Closed Statements, PDF Upload and Reconciliation
 
 ## Goal
 
-A closed credit-card statement is strong evidence for:
+A closed credit-card statement is strong evidence for cycle assignment, closed total, due date, currency/account amount, missing/duplicate provider transactions, and discrepancy detection.
 
-- which cycle a purchase belongs to;
-- the closed total;
-- due date;
-- currency/account amount;
-- missing/duplicate provider transactions;
-- discrepancy detection.
+Finance accepts statements via **structured JSON import**, **PDF multipart upload**, and (future) email/Hermes attachment paths. Reconciliation compares statement lines against Pluggy transactions without overwriting raw provider data.
 
-Finance should accept a statement through Hermes or an authorized email ingestion path and reconcile it against imported transactions.
+---
 
-## Sources
+## Implementation status (Bloco 4)
 
-Supported logical sources:
+| Capability | Status |
+|---|---|
+| `POST /api/finance/statements/import` (JSON) | **IMPLEMENTED** |
+| `POST /api/finance/statements/import/pdf` (multipart) | **IMPLEMENTED** |
+| `POST /api/finance/statements/:id/reconcile` | **IMPLEMENTED** |
+| `GET /api/finance/cycles` | **IMPLEMENTED** |
+| Cognitive `finance.statement.import` | **IMPLEMENTED** (JSON route only) |
+| Cognitive PDF multipart | **NOT EXPOSED** — PDF is Finance API direct / Web proxy |
+| Email automation | **DEFERRED** — see § Email |
+
+---
+
+## PDF upload — as implemented
+
+**Route:** `POST /api/finance/statements/import/pdf`
+
+**Implementation:** `apps/financeiro-pessoal-api/src/routes/financeStatementRoutes.ts`
+
+### Transport
+
+- `@fastify/multipart` in encapsulated sub-scope
+- Single file: `request.file()`
+- Limits: `fileSize: 10 MiB`, `files: 1`
+
+### Validation
+
+- Bearer auth (`FINANCE_API_TOKEN`) — fail-closed
+- Magic bytes: `%PDF-` (`pdfTextExtractor.ts`)
+- Oversized/truncated buffer → `413 pdf_too_large`
+- Not PDF → `415 not_a_pdf`
+- No extractable text layer → `422 pdf_without_text_layer`
+- Unreadable PDF → `422 pdf_unreadable`
+
+### Extraction
+
+- **In-memory only** — no disk, no network during extraction
+- `pdfjs-dist/legacy/build/pdf.mjs` via dynamic import
+- Text grouped by Y coordinate; empty result → `pdf_without_text_layer`
+- **No OCR** in current implementation
+
+### Multipart fields
+
+| Field | Required | Notes |
+|---|---|---|
+| `financialAccountId` | YES | Note: JSON route uses `accountId` |
+| `competenceMonth` | YES | `YYYY-MM` |
+| `statementTotalCents` | YES | integer cents string, strict regex |
+| `statementCurrency` | optional | |
+| `institutionHint`, `cardLast4` | optional | |
+| `periodStart`, `periodEnd`, `closingDate`, `dueDate` | optional | ISO dates |
+| file | YES | PDF bytes |
+
+Filename sanitized (regex + max 120 chars).
+
+### Flow
+
+```text
+multipart PDF
+  → extractPdfText(bytes)           [pdfTextExtractor.ts]
+  → reconciliation.importStatement({
+       source: 'PDF_UPLOAD',
+       rawText: extracted.text,
+       ...
+     })                             [reconciliationService.ts]
+  → parseStatement → content hash idempotency
+  → upsert cycle (CLOSED_SOURCE, reconciliationStatus: PENDING)
+  → upsert import + lines
+```
+
+Statement content is **untrusted data**. Extracted text is never interpreted as instructions. Prompt injection in PDF text is inert — parser returns structured fields only.
+
+### Tests
+
+- `apps/financeiro-pessoal-api/src/finance/e2eStatementPdf.test.ts`
+- Fixtures: `apps/financeiro-pessoal-api/src/finance/__fixtures__/makeStatementPdf.js`
+
+---
+
+## Structured JSON import
+
+**Route:** `POST /api/finance/statements/import`
+
+Same downstream `importStatement()` as PDF after text is available.
+
+Sources in DB (`014_statement_imports.sql`):
 
 ```text
 HERMES_ATTACHMENT
 FINANCE_EMAIL_ATTACHMENT
 MANUAL_UPLOAD
-PLUGGY_BILL (when available)
+PLUGGY_BILL
+PDF_UPLOAD
 ```
 
-Use existing platform capabilities first.
+Cognitive adapter `finance.statement.import` calls the JSON route only.
 
-Do not create a broad general-purpose email subsystem if narrow finance email actions already exist.
+---
 
-## Email boundary
+## Email boundary — DEFERRED
 
-Only configured finance mailboxes/senders/folders may be processed.
+```text
+EMAIL_STATEMENT_PATH=DEFERRED
+```
 
-Recommended narrow capability:
+Upload PDF via Finance API / Web and structured JSON via Cognitive/Hermes are **F2B delivered**.
+
+Automatic email ingestion (list candidates, fetch attachment, recurring monitoring) is **future debt**, not a Bloco 4 blocker.
+
+Narrow capabilities when implemented:
 
 ```text
 finance.email.list_candidates
@@ -40,188 +126,122 @@ finance.email.read_statement
 finance.email.fetch_attachment
 ```
 
-Do not expose general mailbox access to Finance LLM context unless required.
+Do not expose general mailbox access to Finance LLM context.
 
-## Statement file pipeline
-
-```text
-attachment
-→ malware/type/size validation
-→ text extraction
-→ structured statement parser
-→ account/card candidate resolution
-→ statement cycle draft
-→ transaction matching
-→ discrepancy report
-→ confirmation when needed
-→ reconciled cycle
-```
-
-## Extraction strategy
-
-Prefer:
-
-1. native PDF text extraction;
-2. structured parser/templates;
-3. vision/OCR fallback only if necessary;
-4. LLM semantic extraction as constrained structured-data step.
-
-If LLM is used:
-
-- statement content is untrusted data;
-- ignore instructions embedded inside document;
-- force structured schema output;
-- validate all money/date fields deterministically;
-- never let document text authorize actions.
-
-## Statement fields
-
-Extract when present:
-
-```text
-institution
-card/account hints
-last4
-holder
-cycle/statement label
-period_start
-period_end
-closing_date
-due_date
-statement_currency
-total
-minimum_payment if present
-line items
-fees
-IOF/finance charges
-payments/credits
-```
-
-Do not require all fields for every bank.
+---
 
 ## Line-item model
 
-Keep imported statement lines separately from Pluggy transactions.
+Statement lines live in separate tables — never replace Pluggy transaction rows.
 
-Example:
+Tables (migration 014):
 
-```text
-statement_line_id
-statement_cycle_id
-date
-description_raw
-amount
-currency
-line_type
-card_hint nullable
-source_page nullable
-```
+- `financial_statement_imports`
+- `financial_statement_lines`
+- `financial_statement_reconciliations`
+- `financial_statement_discrepancies`
 
-Never replace Pluggy transaction rows with statement lines.
+Raw Pluggy `financial_transactions.raw_data` is never written by this feature.
 
-## Matching engine
+---
 
-Use deterministic scoring with explainable evidence.
+## Reconciliation semantics — as implemented
 
-Candidate evidence:
+**Service:** `reconciliationService.ts` + `statementMatchingService.ts`
 
-- amount/account amount;
-- currency;
-- normalized merchant;
-- transaction date tolerance;
-- posted date;
-- account/card;
-- last4/card metadata when available;
-- explicit provider IDs when available.
+### Per-line match status
 
-Example confidence:
+| Status | Meaning |
+|---|---|
+| `EXACT` | amount + description + date exact (within policy) |
+| `HIGH` | strong match, not exact |
+| `AMBIGUOUS` | multiple plausible candidates or score tie |
+| `CONFLICT` | uniqueness violation — 2+ lines claim same transaction |
+| `STATEMENT_ONLY` | line has no app transaction match |
+| `APP_ONLY` | app transaction has no statement line match |
+| `AMOUNT_MISMATCH` | identity/date/context plausible, **value diverges** |
 
-```text
-EXACT
-HIGH
-AMBIGUOUS
-UNMATCHED
-CONFLICT
-```
+### Discrepancy kinds (persisted)
 
-Do not auto-match two Pluggy rows to the same statement line unless model explicitly supports split/compound entries.
+`TOTAL_MISMATCH`, `STATEMENT_ONLY`, `APP_ONLY`, `AMOUNT_MISMATCH`, `AMBIGUOUS`, `CONFLICT`
 
-## Duplicate/compound charges
+### Import status
 
-Support cases such as:
+`PARSED` → `RECONCILING` → `RECONCILED` | `DISCREPANT`
 
-- international purchase + separate IOF;
-- refund;
-- installment descriptors;
-- statement adjustment;
-- fee;
-- payment.
+### Cycle status / reconciliation_status
 
-Do not infer a fee as IOF solely because it is near an international purchase unless statement itself identifies IOF.
+Cycle: `OPEN`, `CLOSED_SOURCE`, `RECONCILING`, `RECONCILED`, `DISCREPANT`, `ARCHIVED`
 
-## Cycle close
+Cycle reconciliation_status: `PENDING`, `IN_PROGRESS`, `MATCHED`, `DRIFT`, `DISCREPANT`
 
-A cycle can become `RECONCILED` only when policy allows.
+Post-reconcile aggregate: `clean` requires zero open discrepancies + statement total matches.
 
-Recommended gate:
+### Matching signals (deterministic)
 
-```text
-statement total parsed
-account identified
-no unresolved duplicate mapping
-difference within exact deterministic tolerance
-all material unmatched lines classified/accepted
-```
+Matching does **not** use magnitude alone.
 
-If not:
+| Signal | Effect |
+|---|---|
+| Direction gate | line PAYMENT/REFUND vs CHARGE; tx sign vs type |
+| Currency | mismatch → candidate discarded |
+| Date tolerance | default ±3 days |
+| Amount (magnitude) | default tolerance 0 cents |
+| Description overlap | Jaccard on normalized tokens |
+| AMOUNT_MISMATCH threshold | overlap ≥ 0.6 or equal description |
 
-```text
-status=DISCREPANT
-```
+### CONFLICT vs AMOUNT_MISMATCH
 
-and show the difference.
+**CONFLICT** — dispute / uniqueness violation between candidates. **Never auto-resolved.**
 
-## Reconciliation report
+**AMOUNT_MISMATCH** — plausible same transaction but value differs. **Not** classified as simple `STATEMENT_ONLY`. **Never** counts as confirmed match in reconcile totals.
 
-Owner should be able to ask:
+Greedy claim by score; claimed transactions excluded from later lines.
+
+### Reconcile pipeline
+
+1. Set import `RECONCILING`, cycle `IN_PROGRESS`
+2. Clear prior reconciliations + resolve open discrepancies
+3. `matchStatementLines`
+4. `AMOUNT_MISMATCH` excluded from confirmed match count
+5. `APP_ONLY` for unmatched transactions
+6. `TOTAL_MISMATCH` if parsed total ≠ reconciled total
+7. Final cycle/import status
+
+---
+
+## Cycle close policy
+
+Cycle becomes `RECONCILED` only when policy allows (no unresolved CONFLICT/AMBIGUOUS material items, total within tolerance, etc.).
+
+Otherwise `DISCREPANT` with explicit difference report.
+
+---
+
+## Statement via WhatsApp
+
+Requires Hermes attachment transport + authorized ACL context.
+
+Last hop (WhatsApp bridge / Hermes gateway restart) is **not authorized** in current deploy stage — see runbook.
+
+---
+
+## IOF in statements
+
+Explicit IOF in statement line → may classify as fee/IOF when evidence is explicit.
+
+No explicit signal → do not auto-label IOF from proximity to international purchase alone.
+
+---
+
+## Idempotency
+
+Re-importing same statement content (same account + content hash) updates in place — no duplicate cycles/lines.
+
+---
+
+## Owner query example
 
 > Confere minha fatura do C6 de agosto.
 
-Return:
-
-```text
-total da fatura
-total conciliado
-quantidade casada
-itens só na fatura
-itens só no Pluggy
-diferença
-ambiguidades
-```
-
-## Cycle assignment
-
-A high-confidence statement match may assign transaction to that statement cycle.
-
-This must not modify the purchase date.
-
-## Statement sent via WhatsApp
-
-If the WhatsApp bridge exposes file metadata/download safely:
-
-- bind attachment to requesting authorized actor/chat;
-- store a safe file reference/hash;
-- process asynchronously if needed;
-- reply with reconciliation result.
-
-If transport support is missing and adding it requires a new trust boundary, raise architecture escalation instead of using an unsafe workaround.
-
-## Email automation
-
-Potential future/proactive flow:
-
-- periodically detect new closed statement emails;
-- ingest only matching configured rules;
-- notify finance group that a statement is ready to reconcile.
-
-For F2B, one-shot owner-triggered email lookup is sufficient if recurring monitoring would materially increase scope.
+Report returns: statement total, reconciled total, matched count, statement-only, app-only, difference, ambiguities.

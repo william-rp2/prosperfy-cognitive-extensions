@@ -4,28 +4,98 @@
 
 Finance access is owner-only.
 
-The implementation must resolve authorized actors from canonical identity data, not hard-coded display names.
+Authorization is **pre-LLM**, **deterministic**, and **fail-closed**.
 
-Contracts:
+Implementation: `core/cognitive/cognitive/policy/finance_acl.py`
+
+Wiring: `PolicyEngine(finance_acl=FinanceAcl())` in `core/cognitive/cognitive/gateway/app.py` — always injected, no toggle.
+
+---
+
+## Frozen contract (Decisão A — do not reopen)
+
+| Caller | ACL behavior |
+|---|---|
+| `NON_FINANCE` capabilities | Pre-F2B behavior preserved — FinanceAcl not evaluated |
+| `finance.*` with valid ACL context | Evaluate FinanceAcl |
+| `finance.*` without valid ACL/context | **DENY** |
+| Unknown context kind | **DENY** |
+
+Deny message (fixed pt-BR, no leak):
 
 ```text
-authorized owner in finance group → ALLOW
-authorized owner explicit finance DM → ALLOW
-third party finance request → DENY
-unknown actor → DENY
+Acesso financeiro não autorizado para este contato/conversa.
 ```
 
-Authorization is pre-LLM and fail-closed.
+Internal deny reasons (never exposed to user): `no_channel_context`, `no_transport_principal`, `unknown_actor`, `third_party_actor`, `chat_not_allowlisted`, `acl_not_configured`, `internal_principal_not_trusted`, `unknown_context_kind`.
+
+---
+
+## Configuration (env — names only)
+
+| Variable | Purpose |
+|---|---|
+| `FINANCE_OWNER_ACTOR_IDS` | Canonical owner actor IDs (CSV) |
+| `FINANCE_GROUP_CHAT_IDS` | Authorized WhatsApp group chat IDs |
+| `FINANCE_OWNER_DIRECT_CHAT_IDS` | Authorized owner DM chat IDs |
+| `FINANCE_ACTOR_BINDINGS` | `transport_principal=actor_id,...` mapping |
+
+**Empty config → everything DENY** (`acl_not_configured`).
+
+Logs use SHA256 fingerprints — never raw JIDs/chat IDs.
+
+---
+
+## WhatsApp context (`FinanceContextKind.WHATSAPP`)
+
+Evaluation order:
+
+1. ACL configured (owners + at least one chat allowlist)
+2. `channel` present
+3. `transport_principal` present
+4. Binding → canonical actor via `FinanceActorDirectory`
+5. Actor ∈ `FINANCE_OWNER_ACTOR_IDS`
+6. Group: `chat_id` ∈ `FINANCE_GROUP_CHAT_IDS` → ALLOW `owner_in_finance_group`
+7. DM: `chat_id` ∈ `FINANCE_OWNER_DIRECT_CHAT_IDS` → ALLOW `owner_in_finance_dm`
+8. Else → DENY
+
+Third-party group participant → DENY before LLM sees any finance payload.
+
+---
+
+## INTERNAL context (`FinanceContextKind.INTERNAL`) — Decisão B
+
+**`kind=INTERNAL` is NOT proof of trust.**
+
+Trusted internal access requires:
+
+- Explicit `FinanceContextKind.INTERNAL` classification
+- **`credential_ref` present** — produced by authenticated boundary (Bearer → IdentityResolver)
+- Actor resolved via binding or `ctx.actor_id`
+- Actor ∈ `FINANCE_OWNER_ACTOR_IDS`
+- ALLOW reason: `trusted_internal_principal`
+
+**No HTTP caller may self-promote to INTERNAL.**
+
+INTERNAL does **not** require `chat_id` (unlike WhatsApp). Requiring synthetic chat_id would be a bypass vector.
+
+Missing `credential_ref` → DENY `internal_principal_not_trusted`.
+
+Tests: `core/cognitive/tests/security/test_finance_acl.py` (INTERNAL section)
+
+---
 
 ## Finance group
 
-Proactive finance messages must go only to the designated finance group.
+Proactive finance messages go only to the designated finance group (`FINANCE_GROUP_CHAT_IDS`).
 
-The group identifier must be configuration/resource data, not hidden in prompt text.
+Group ID is configuration, not prompt text.
+
+---
 
 ## Clarification entity
 
-A clarification needs durable identity.
+Persistent identity with one-open-per-transaction/question-type invariant.
 
 Minimum concepts:
 
@@ -46,11 +116,11 @@ delivery_chat_id
 reply_message_id
 ```
 
-Preserve the existing one-open-per-transaction/question-type invariant.
+Delivery tracking: migration `012_clarification_delivery.sql`
+
+---
 
 ## Question types
-
-Examples:
 
 ```text
 CATEGORY
@@ -65,148 +135,63 @@ MERCHANT
 OTHER
 ```
 
-Do not create a new question type for every phrase variation.
+---
 
 ## Queue policy
-
-Historical backlog and normal flow are different modes.
 
 ### Historical/onboarding
 
 - suppress proactive one-by-one messaging;
-- expose count;
-- support month/account/card filtering;
-- support batch export/import;
+- expose dynamic count;
+- month/account/card filtering;
+- batch export/import;
 - owner explicitly chooses what to process.
 
 ### Ongoing/new transactions
 
 - prioritize recent ambiguous transactions;
-- avoid excessive frequency;
-- group related questions when appropriate;
-- never ask the same unresolved question after each sync;
-- no duplicate open clarification.
+- no duplicate open clarification;
+- no re-ask on every sync.
+
+---
 
 ## Reply binding
 
 Best path:
 
 ```text
-outbound WhatsApp question
-→ persist delivery_message_id + clarification_id
-→ owner quotes/replies to message
-→ inbound reply references quoted message ID
-→ resolve exact clarification
+outbound question → delivery_message_id + clarification_id
+→ owner quotes/replies → quoted message ID
+→ exact clarification resolved
 ```
 
-This must work hours or days later.
+Works hours/days later. LLM memory is irrelevant.
 
-LLM conversation memory is irrelevant to exact binding.
+Loose reply: strong confidence required; never resolve random transaction.
 
-## Loose reply fallback
-
-If owner sends a reply without quoting:
-
-1. inspect explicit references in text;
-2. inspect a small set of currently relevant/open clarifications;
-3. require strong confidence;
-4. if multiple plausible questions exist, ask which one;
-5. never resolve a random transaction.
-
-## Late reply
-
-If clarification is already resolved:
-
-- do not duplicate mutation;
-- explain it was already resolved;
-- allow owner to request correction/change.
-
-## Cancellation
-
-Owner can say:
-
-> Deixa essa para depois.
-
-or equivalent.
-
-Clarification remains unresolved but delivery should not immediately repeat.
-
-Support snooze/defer state if needed.
-
-## Historical count behavior
-
-Owner may ask:
-
-> Quantas pendências?
-
-Return a real dynamic count, not a cached historic number.
-
-Owner may ask:
-
-> Traga as de agosto.
-
-Filter by effective period semantics:
-
-- `competence_month` when known;
-- otherwise a documented fallback such as purchase month;
-- clearly mark items whose competence is still unknown.
+---
 
 ## Spreadsheet workflow
 
-Required onboarding capability:
-
 ```text
-filter pending
-→ export batch
-→ owner edits spreadsheet
-→ import
-→ validate
-→ apply accepted rows
-→ report rejected/ambiguous rows
+filter pending → export → owner edits → dry-run import → apply
 ```
 
-Minimum columns:
+Import: validate IDs, idempotent, row-level errors, no silent overwrite of newer corrections.
 
-```text
-transaction_id
-date
-institution
-account_alias
-merchant
-original_description
-amount
-currency
-competence_month
-category
-economic_owner
-responsible
-reimbursement
-notes
-action
-```
-
-The export must never expose secrets/full sensitive account numbers.
-
-The import must:
-
-- validate transaction IDs;
-- reject stale/unknown IDs;
-- validate enums/period;
-- be idempotent;
-- support dry-run;
-- return row-level errors;
-- not overwrite newer explicit corrections silently.
-
-CSV is acceptable if XLSX transport is materially harder. If existing stack supports XLSX safely, prefer XLSX.
+---
 
 ## Anti-spam acceptance
 
-A sync loop may run repeatedly while a clarification is open.
-
-Required:
-
 ```text
-SYNC x 10
-OPEN_QUESTION_COUNT remains 1
-OUTBOUND_QUESTION_COUNT does not grow unless retry policy explicitly requires delivery recovery
+SYNC x 10 → OPEN_QUESTION_COUNT remains 1
+OUTBOUND_QUESTION_COUNT does not grow unless delivery recovery policy requires
 ```
+
+---
+
+## Tests
+
+- `core/cognitive/tests/security/test_finance_acl.py`
+- `core/cognitive/tests/security/test_finance_acl_wiring.py`
+- `hermes/capability-intelligence/tests/test_finance_reply_binding.py`

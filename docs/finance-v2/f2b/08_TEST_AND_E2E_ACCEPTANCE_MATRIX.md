@@ -10,12 +10,51 @@ F2B requires end-to-end evidence across persistent state and actual routing.
 
 Before/after:
 
-- API suite all pass;
-- Web suite all pass;
-- Cognitive relevant suite pass;
-- Hermes relevant suite pass;
-- build pass;
+- API suite all pass (expected **299/299** on F2B head);
+- Web suite all pass (expected **48/48**);
+- Cognitive Python suite (expected **658 pass / 103 skip / 0 fail**);
+- Hermes relevant tests pass;
+- `tsc` pass;
 - no new secret/log violations.
+
+## Adapter ↔ Finance API route contract
+
+Two layers prove Cognitive adapter routes match the booted Finance app:
+
+### 1. Registry ↔ adapter map (Python)
+
+`core/cognitive/tests/unit/test_finance_api_route_selection.py`
+
+- Every `finance.*` capability in YAML has a route in `_ROUTES` / `_MODE_ROUTES`
+- Every adapter route belongs to a registered capability
+- `mode` enum values match YAML `input_schema` — no free-text routing
+- Unknown mode / unmapped capability → fail-closed
+
+### 2. Booted Fastify app (TypeScript)
+
+`apps/financeiro-pessoal-api/src/finance/e2eAcceptanceResilience.test.ts`
+
+- Parses `_ROUTES` and `_MODE_ROUTES` from `client.py`
+- **Under-parse guard:** all `(METHOD, path)` tuples in file must be captured by parser blocks
+- Translates `{param}` → `:param` and asserts `app.hasRoute()` for each
+
+**Note:** PDF route `/api/finance/statements/import/pdf` is **not** in Cognitive adapter — by design. Cognitive uses JSON import only.
+
+## PDF upload tests
+
+`apps/financeiro-pessoal-api/src/finance/e2eStatementPdf.test.ts`
+
+- multipart upload
+- magic-byte validation
+- text extraction → `importStatement`
+- oversize / non-PDF / no-text-layer errors
+
+## Sync composition-root test
+
+`apps/financeiro-pessoal-api/src/finance/e2eAcceptance.test.ts`
+
+- `POST /api/finance/sync` via real app proves `cycleAssignment` wired
+- temporal columns populated after sync
 
 ## E2E 1 — New ambiguous transaction
 
@@ -150,18 +189,26 @@ Expected:
 
 ## E2E 11 — Closed statement PDF
 
-Import fixture statement.
+Import fixture statement via **`POST /api/finance/statements/import/pdf`**.
 
 Expected:
 
 ```text
-statement parsed
+statement parsed (PDF_UPLOAD source)
 cycle draft created
 exact matches linked
 unmatched listed
 ambiguous not auto-resolved
-total discrepancy reported
+CONFLICT never auto-resolved
+AMOUNT_MISMATCH not counted as confirmed match
+total discrepancy reported when applicable
 ```
+
+## E2E 11b — Structured JSON import (Cognitive path)
+
+`POST /api/finance/statements/import` with `rawText` or `lines`.
+
+Same downstream reconcile semantics as PDF.
 
 ## E2E 12 — Reconciliation close
 
