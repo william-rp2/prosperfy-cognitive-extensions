@@ -125,6 +125,28 @@ class TestPathParams:
         assert seen["path"] == "/api/finance/clarifications/clar-1/delivery"
         assert seen["body"] == {"deliveryMessageId": "wamid.ABC", "deliveryChatId": "grp@g.us"}
 
+    async def test_clarification_list_propagates_delivery_message_id_and_any(self):
+        """F2B durable lookup: GET query deve carregar deliveryMessageId+status=any."""
+        clar_a = {
+            "id": "clar-A",
+            "status": "open",
+            "deliveryMessageId": "deliv-A",
+        }
+        seen, handler = _capture(200, {"clarifications": [clar_a], "total": 1})
+        result = await _adapter(handler).invoke_tool(
+            "finance.clarification.list",
+            {"deliveryMessageId": "deliv-A", "status": "any", "limit": 1},
+            TENANT,
+            CORRELATION,
+        )
+        assert seen["method"] == "GET"
+        assert seen["path"] == "/api/finance/clarifications"
+        assert seen["params"]["deliveryMessageId"] == "deliv-A"
+        assert seen["params"]["status"] == "any"
+        assert seen["params"]["limit"] == "1"
+        assert result["success"] is True
+        assert result["data"]["clarifications"][0]["id"] == "clar-A"
+
 
 # ─── seleção por mode ──────────────────────────────────────────────────────
 

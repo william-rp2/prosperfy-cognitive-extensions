@@ -96,6 +96,111 @@ describe('registerFinanceClarificationRoutes — GET list', () => {
     })
     expect(res.statusCode).toBe(400)
   })
+
+  it('status omitido → default open (contrato HTTP)', async () => {
+    const { row: openRow } = clarifications.getOrCreateOpen({
+      pluggyTransactionId: 'tx-1',
+      questionType: 'category',
+      questionText: 'open',
+    })
+    transactions.upsertTransaction({
+      pluggyTransactionId: 'tx-2',
+      pluggyAccountId: 'acc-1',
+      amountCents: -500,
+      date: '2026-08-02T12:00:00.000Z',
+      description: 'outra',
+    })
+    const { row: resolvedRow } = clarifications.getOrCreateOpen({
+      pluggyTransactionId: 'tx-2',
+      questionType: 'category',
+      questionText: 'resolved',
+    })
+    clarifications.resolve(resolvedRow.id, {
+      replyMessageId: 'r1',
+      resolvedBy: 'owner',
+      resolution: 'x',
+    })
+
+    const res = await app.inject({ method: 'GET', url: '/api/finance/clarifications', headers: AUTH })
+    expect(res.statusCode).toBe(200)
+    const ids = res.json().clarifications.map((c: { id: string }) => c.id)
+    expect(ids).toContain(openRow.id)
+    expect(ids).not.toContain(resolvedRow.id)
+  })
+
+  it('deliveryMessageId + status=any + limit=1 → exact A (HTTP)', async () => {
+    const { row: a } = clarifications.getOrCreateOpen({
+      pluggyTransactionId: 'tx-1',
+      questionType: 'category',
+      questionText: 'A',
+    })
+    await app.inject({
+      method: 'POST',
+      url: `/api/finance/clarifications/${a.id}/delivery`,
+      headers: AUTH,
+      payload: { deliveryMessageId: 'deliv-A' },
+    })
+    db.prepare('UPDATE finance_clarifications SET created_at = ? WHERE id = ?').run(
+      '2026-08-01T10:00:00.000Z',
+      a.id,
+    )
+
+    transactions.upsertTransaction({
+      pluggyTransactionId: 'tx-B',
+      pluggyAccountId: 'acc-1',
+      amountCents: -200,
+      date: '2026-08-03T12:00:00.000Z',
+      description: 'B',
+    })
+    const { row: b } = clarifications.getOrCreateOpen({
+      pluggyTransactionId: 'tx-B',
+      questionType: 'category',
+      questionText: 'B newer',
+    })
+    await app.inject({
+      method: 'POST',
+      url: `/api/finance/clarifications/${b.id}/delivery`,
+      headers: AUTH,
+      payload: { deliveryMessageId: 'deliv-B' },
+    })
+    db.prepare('UPDATE finance_clarifications SET created_at = ? WHERE id = ?').run(
+      '2026-08-02T10:00:00.000Z',
+      b.id,
+    )
+
+    // Resolve A — late-reply path must still find it via status=any.
+    await app.inject({
+      method: 'POST',
+      url: `/api/finance/clarifications/${a.id}/resolve`,
+      headers: AUTH,
+      payload: { replyMessageId: 'reply-a', resolution: 'Mercado' },
+    })
+
+    const anyRes = await app.inject({
+      method: 'GET',
+      url: '/api/finance/clarifications?deliveryMessageId=deliv-A&status=any&limit=1',
+      headers: AUTH,
+    })
+    expect(anyRes.statusCode).toBe(200)
+    expect(anyRes.json().clarifications).toHaveLength(1)
+    expect(anyRes.json().clarifications[0].id).toBe(a.id)
+    expect(anyRes.json().clarifications[0].status).toBe('resolved')
+    expect(anyRes.json().total).toBe(1)
+
+    const openMiss = await app.inject({
+      method: 'GET',
+      url: '/api/finance/clarifications?deliveryMessageId=deliv-A&status=open&limit=1',
+      headers: AUTH,
+    })
+    expect(openMiss.json().clarifications).toHaveLength(0)
+
+    const resolvedHit = await app.inject({
+      method: 'GET',
+      url: '/api/finance/clarifications?deliveryMessageId=deliv-A&status=resolved&limit=1',
+      headers: AUTH,
+    })
+    expect(resolvedHit.json().clarifications[0].id).toBe(a.id)
+  })
 })
 
 describe('registerFinanceClarificationRoutes — delivery/resolve, path param não se repete no corpo', () => {

@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 
 import type { AppConfig } from '../config.js'
-import type { ClarificationRow, ClarificationsRepository, ClarificationStatus } from '../finance/clarificationsRepository.js'
+import type { ClarificationRow, ClarificationsRepository, ClarificationListStatusFilter } from '../finance/clarificationsRepository.js'
 import { safeCompare } from '../safe.js'
 
 /**
@@ -19,7 +19,14 @@ export interface FinanceClarificationRouteDeps {
   clarifications: ClarificationsRepository
 }
 
-const STATUS_VALUES: readonly ClarificationStatus[] = ['open', 'resolved', 'dismissed']
+/** HTTP contract statuses from finance.clarification.list.yaml (+ dismissed legacy). */
+const QUERY_STATUS_VALUES: readonly ClarificationListStatusFilter[] = [
+  'open',
+  'resolved',
+  'dismissed',
+  'any',
+  'snoozed',
+]
 
 function requireFinanceToken(request: FastifyRequest, config: AppConfig): boolean {
   if (!config.FINANCE_API_TOKEN) return false
@@ -68,16 +75,20 @@ export function registerFinanceClarificationRoutes(app: FastifyInstance, deps: F
     clarificationApp.get('/api/finance/clarifications', async (request, reply) => {
       const query = (request.query ?? {}) as Record<string, unknown>
 
-      let status: ClarificationStatus | undefined
+      // Capability contract: "Default do servidor: open." Applied at HTTP boundary only —
+      // ClarificationsRepository.list({}) without status stays unfiltered for internal callers.
+      let status: ClarificationListStatusFilter = 'open'
       if (typeof query.status === 'string') {
-        if (!(STATUS_VALUES as readonly string[]).includes(query.status)) {
+        if (!(QUERY_STATUS_VALUES as readonly string[]).includes(query.status)) {
           return reply.code(400).send({ error: 'invalid_status', message: 'Status não suportado.' })
         }
-        status = query.status as ClarificationStatus
+        status = query.status as ClarificationListStatusFilter
       }
 
       const filters = {
         status,
+        deliveryMessageId:
+          typeof query.deliveryMessageId === 'string' ? query.deliveryMessageId : undefined,
         questionType: typeof query.questionType === 'string' ? query.questionType : undefined,
         competenceMonth: typeof query.competenceMonth === 'string' ? query.competenceMonth : undefined,
         pluggyItemId: typeof query.pluggyItemId === 'string' ? query.pluggyItemId : undefined,

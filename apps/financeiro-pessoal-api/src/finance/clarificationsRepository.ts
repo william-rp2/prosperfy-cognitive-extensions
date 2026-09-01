@@ -5,6 +5,9 @@ import type { FinanceDb } from './db.js'
 export type ClarificationStatus = 'open' | 'resolved' | 'dismissed'
 export type ClarificationPriority = 'low' | 'normal' | 'high'
 
+/** Filtro de status do list/count — inclui aliases de contrato (any/snoozed). */
+export type ClarificationListStatusFilter = ClarificationStatus | 'any' | 'snoozed'
+
 export interface ClarificationRow {
   id: string
   pluggy_transaction_id: string
@@ -26,7 +29,14 @@ export interface ClarificationRow {
 }
 
 export interface ClarificationListFilters {
-  status?: ClarificationStatus
+  /**
+   * Status filter. Undefined = no status predicate (direct repository callers).
+   * 'any' = no status predicate (contract: open+resolved+…).
+   * 'snoozed' = open rows with future snoozed_until (not a DB status value).
+   */
+  status?: ClarificationListStatusFilter
+  /** Exact match on source_message_id (persisted by recordDelivery). */
+  deliveryMessageId?: string
   questionType?: string
   competenceMonth?: string
   pluggyItemId?: string
@@ -114,30 +124,7 @@ export class ClarificationsRepository {
    * is excluded from a month filter rather than guessed.
    */
   list(filters: ClarificationListFilters = {}): ClarificationRow[] {
-    const conditions: string[] = []
-    const params: Record<string, unknown> = {}
-
-    if (filters.status) {
-      conditions.push('c.status = @status')
-      params.status = filters.status
-    }
-    if (filters.questionType) {
-      conditions.push('c.question_type = @questionType')
-      params.questionType = filters.questionType
-    }
-    if (filters.competenceMonth) {
-      conditions.push('t.competence_month = @competenceMonth')
-      params.competenceMonth = filters.competenceMonth
-    }
-    if (filters.pluggyAccountId) {
-      conditions.push('t.pluggy_account_id = @pluggyAccountId')
-      params.pluggyAccountId = filters.pluggyAccountId
-    }
-    if (filters.pluggyItemId) {
-      conditions.push('a.pluggy_item_id = @pluggyItemId')
-      params.pluggyItemId = filters.pluggyItemId
-    }
-
+    const { conditions, params } = this.buildListWhere(filters)
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
     const limit = Math.min(filters.limit ?? 200, 1000)
     const offset = filters.offset ?? 0
@@ -155,12 +142,47 @@ export class ClarificationsRepository {
   }
 
   count(filters: ClarificationListFilters = {}): number {
+    const { conditions, params } = this.buildListWhere(filters)
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) as count FROM finance_clarifications c
+         JOIN financial_transactions t ON t.pluggy_transaction_id = c.pluggy_transaction_id
+         LEFT JOIN financial_accounts a ON a.pluggy_account_id = t.pluggy_account_id
+         ${where}`,
+      )
+      .get(params) as { count: number }
+    return row.count
+  }
+
+  /**
+   * Shared WHERE for list/count. `status: 'any'` deliberately omits a status
+   * predicate — never emits `WHERE c.status = 'any'`. `deliveryMessageId`
+   * matches the column written by recordDelivery (source_message_id).
+   */
+  private buildListWhere(
+    filters: ClarificationListFilters,
+  ): { conditions: string[]; params: Record<string, unknown> } {
     const conditions: string[] = []
     const params: Record<string, unknown> = {}
 
-    if (filters.status) {
+    if (filters.status === 'any') {
+      // no status predicate
+    } else if (filters.status === 'snoozed') {
+      // Contract alias: snooze is modeled as status=open + future snoozed_until.
+      const nowIso = new Date().toISOString()
+      conditions.push("c.status = 'open'")
+      conditions.push('c.snoozed_until IS NOT NULL')
+      conditions.push('c.snoozed_until > @snoozedNow')
+      params.snoozedNow = nowIso
+    } else if (filters.status) {
       conditions.push('c.status = @status')
       params.status = filters.status
+    }
+
+    if (filters.deliveryMessageId) {
+      conditions.push('c.source_message_id = @deliveryMessageId')
+      params.deliveryMessageId = filters.deliveryMessageId
     }
     if (filters.questionType) {
       conditions.push('c.question_type = @questionType')
@@ -179,16 +201,7 @@ export class ClarificationsRepository {
       params.pluggyItemId = filters.pluggyItemId
     }
 
-    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
-    const row = this.db
-      .prepare(
-        `SELECT COUNT(*) as count FROM finance_clarifications c
-         JOIN financial_transactions t ON t.pluggy_transaction_id = c.pluggy_transaction_id
-         LEFT JOIN financial_accounts a ON a.pluggy_account_id = t.pluggy_account_id
-         ${where}`,
-      )
-      .get(params) as { count: number }
-    return row.count
+    return { conditions, params }
   }
 
   /**
