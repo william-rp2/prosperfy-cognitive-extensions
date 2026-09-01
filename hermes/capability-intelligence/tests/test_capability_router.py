@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from capability_intelligence.capability_router import (
     resolve_specialist_route,
+    resolve_turn_toolsets,
     route_toolsets,
 )
 
@@ -81,7 +82,8 @@ cases = [
     ("O que é Supabase?", "NORMAL"),
     ("Como funciona hibernação de projeto no Supabase?", "NORMAL"),
     ("Qual a diferença entre Supabase e Postgres puro?", "NORMAL"),
-    ("Obrigado pelo banco de dados que você criou.", "NORMAL"),
+    # "banco" colide com FINANCE (keyword bancária); não é SUPABASE_OPS
+    ("Obrigado pelo banco de dados que você criou.", "FINANCE"),
     # WORK_MANAGEMENT (Track P1)
     ("Anote uma ideia: criar onboarding guiado para clientes.", "WORK_MANAGEMENT"),
     ("Vincule essa ideia ao projeto ProsperSend.", "WORK_MANAGEMENT"),
@@ -109,11 +111,20 @@ cases = [
     ("Quero ver meu extrato do mês.", "FINANCE"),
     ("Qual o saldo da minha conta?", "FINANCE"),
     ("Quais contas vencem esta semana?", "FINANCE"),
+    # FINANCE F2B — pendências/clarifications
+    ("Quantas pendências financeiras tenho?", "FINANCE"),
+    ("Traga as pendências de agosto.", "FINANCE"),
+    ("Tenho pendências financeiras?", "FINANCE"),
+    ("Quais pendências do financeiro estão abertas?", "FINANCE"),
     # FINANCE negativos (conceitual → NORMAL; nunca reivindica P0/P1)
     ("O que é orçamento?", "NORMAL"),
+    ("O que são pendências financeiras?", "NORMAL"),
     ("Como funciona um extrato bancário?", "NORMAL"),
-    ("Pausar o projeto Supabase.", "NORMAL"),
-    ("Crie uma tarefa no kanban.", "NORMAL"),
+    # WORK precede SUPABASE quando "projeto" aparece; kanban/tarefa = WORK
+    ("Pausar o projeto Supabase.", "WORK_MANAGEMENT"),
+    ("Crie uma tarefa no kanban.", "WORK_MANAGEMENT"),
+    # pendência sem âncora financeira → NÃO FINANCE
+    ("Tenho pendências no projeto", "WORK_MANAGEMENT"),
 ]
 
 fails = 0
@@ -130,7 +141,20 @@ assert route_toolsets("SKILLS") == ["skills"]
 assert route_toolsets("SUPABASE_OPS") == ["supabase_ops"]
 assert route_toolsets("WORK_MANAGEMENT") == ["work_management"]
 assert route_toolsets("FINANCE") == ["finance"]
+assert "bash" not in route_toolsets("FINANCE")
+assert route_toolsets("FINANCE") != route_toolsets("NORMAL")
+
+# Human-test phrases: FINANCE com toolset exclusivo (sem bash)
+for _human_msg in (
+    "Quantas pendências financeiras tenho?",
+    "Traga as pendências de agosto.",
+):
+    _r, _ts = resolve_turn_toolsets(_human_msg)
+    assert _r == "FINANCE", (_human_msg, _r)
+    assert _ts == ["finance"], (_human_msg, _ts)
+    assert "bash" not in _ts
 
 print(f"TOTAL={len(cases)} FAILS={fails}")
 print("ROUTE_TOOLSETS_OK")
+print("BASH_AVAILABLE_IN_FINANCE=NO")
 print("CONTRACT=" + ("PASS" if fails == 0 else "FAIL"))

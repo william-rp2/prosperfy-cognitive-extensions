@@ -1,5 +1,5 @@
 """
-finance_tools.py — Financeiro Pessoal V1 (Track P2).
+finance_tools.py — Financeiro Pessoal F2B (Track P2).
 
 Tool Hermes NARROW que fala com o Cognitive (capabilities finance.*),
 preservando authorization/tenancy/audit do caminho canônico. NUNCA acessa
@@ -12,11 +12,14 @@ hermes/p0-supabase-ops/supabase_ops_tools.py.
 
 Só registrado no toolset "finance". NORMAL_CHAT_TOOLS continua 0: estas
 tools só entram no schema do turno quando capability_router.py resolve a
-rota FINANCE (ver _ROUTE_TOOLSETS).
+rota FINANCE (ver _ROUTE_TOOLSETS). Bash/general tools NÃO entram nessa rota.
 
 F2B: channel/chat_id/user_id/transport_principal NÃO entram no FINANCE_SCHEMA.
 O handler lê ContextEnvelope trusted via turn_context (ligado pelo gateway).
 Args LLM com esses campos são IGNORADOS (não autorizam transporte).
+
+Ops F2B de pendência (clarifications) mapeiam para finance.clarification.list
+— contagem/listagem dinâmica real; nunca cache/grep/bash/filesystem.
 """
 
 from __future__ import annotations
@@ -43,14 +46,16 @@ _TRANSPORT_SPOOF_KEYS = frozenset(
     }
 )
 
+_PENDING_OPS = frozenset({"pending_count", "pending_list"})
+
 FINANCE_SCHEMA = {
     "name": "finance",
     "description": (
-        "Consulta e registra dados do financeiro pessoal (gastos, receitas, saldo, "
-        "categorias, orcamento, faturas, sync bancario). Usa o Cognitive com "
-        "autorizacao do tenant — nunca acessa o banco financeiro direto. Leitura e "
-        "imediata; lancamento manual e orcamento sao permitidos quando explicitamente "
-        "pedidos. Editar/excluir lancamento existente NAO passa por aqui."
+        "Financeiro pessoal F2B via Cognitive (gastos, receitas, saldo, categorias, "
+        "orcamento, faturas, sync bancario, pendencias/clarifications abertas). "
+        "Nunca acessa o banco financeiro direto. Use pending_count/pending_list "
+        "para quantas/quais pendencias financeiras (com filtro de mes de "
+        "competencia). Nao use bash, filesystem, memory ou chute para isso."
     ),
     "parameters": {
         "type": "object",
@@ -62,19 +67,44 @@ FINANCE_SCHEMA = {
                     "manual_create", "category_update",
                     "budget_read", "budget_write",
                     "sync_run", "sync_status",
+                    "pending_count", "pending_list",
                 ],
                 "description": (
-                    "summary = entradas/saidas/saldo do mes (aceita month e category); "
+                    "summary = entradas/saidas/saldo do mes; "
                     "transactions = lista filtrada; accounts = contas e saldos; "
                     "bills = faturas a vencer; manual_create = registra despesa/receita; "
-                    "category_update = reclassifica UMA transacao; budget_read = orcamento "
-                    "do mes com gasto/restante; budget_write = define limite; "
-                    "sync_run = dispara sync bancario; sync_status = saude do sync."
+                    "category_update = reclassifica UMA transacao; budget_read/write = "
+                    "orcamento; sync_run/status = sync bancario; "
+                    "pending_count = quantas clarifications/pendencias (usa total "
+                    "dinamico); pending_list = lista pendencias (status/mes/conta/limit)."
                 ),
             },
             "month": {
                 "type": "string",
-                "description": "Mes YYYY-MM. Default: mes corrente. Usado por summary, budget_read e budget_write.",
+                "description": (
+                    "Mes YYYY-MM. Em summary/budget_* e mes do extrato; em "
+                    "pending_count/pending_list e alias de competenceMonth. "
+                    "Resolva 'agosto' para YYYY-MM real ANTES de chamar."
+                ),
+            },
+            "competenceMonth": {
+                "type": "string",
+                "description": (
+                    "Filtro de competencia efetiva YYYY-MM para pending_*. "
+                    "Preferir este campo; se ausente, month e usado como alias."
+                ),
+            },
+            "status": {
+                "type": "string",
+                "enum": ["open", "snoozed", "resolved", "any"],
+                "description": (
+                    "Estado da clarification em pending_*. Default: open "
+                    "(pendencias em aberto)."
+                ),
+            },
+            "account": {
+                "type": "string",
+                "description": "Conta/cartao (alias) para filtrar pending_*.",
             },
             "category": {
                 "type": "string",
@@ -109,7 +139,10 @@ FINANCE_SCHEMA = {
                 "description": "Limite planejado em reais. Obrigatorio em budget_write.",
             },
             "search": {"type": "string", "description": "Busca textual em transactions."},
-            "limit": {"type": "integer", "description": "Maximo de itens em transactions/bills."},
+            "limit": {
+                "type": "integer",
+                "description": "Maximo de itens em transactions/bills/pending_list.",
+            },
         },
         "required": ["operation"],
     },
@@ -139,12 +172,43 @@ _OPS: dict[str, tuple[str, tuple[str, ...], tuple[str, ...]]] = {
     ),
     "sync_run": ("finance.sync.run", (), ()),
     "sync_status": ("finance.sync.status", (), ()),
+    # F2B clarifications — mesma capability; ops distintas para o LLM escolher
+    # count vs list sem inventar filesystem/bash.
+    "pending_count": (
+        "finance.clarification.list",
+        ("status", "competenceMonth", "month", "account", "limit"),
+        (),
+    ),
+    "pending_list": (
+        "finance.clarification.list",
+        ("status", "competenceMonth", "month", "account", "limit"),
+        (),
+    ),
 }
 
 
 def _strip_transport_spoof(kwargs: dict[str, Any]) -> dict[str, Any]:
     """Remove tentativas de spoof de identidade/transporte vindas do LLM."""
     return {k: v for k, v in kwargs.items() if k not in _TRANSPORT_SPOOF_KEYS}
+
+
+def _build_params(
+    operation: str,
+    aceitas: tuple[str, ...],
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    params = {k: kwargs[k] for k in aceitas if kwargs.get(k) not in (None, "")}
+    if operation in _PENDING_OPS:
+        # Default: só pendências abertas (Human Acceptance / fila real).
+        params.setdefault("status", "open")
+        if "competenceMonth" not in params and "month" in params:
+            params["competenceMonth"] = params.pop("month")
+        elif "month" in params and "competenceMonth" in params:
+            params.pop("month", None)
+        # pending_count não precisa de itens — limit baixo evita payload grande.
+        if operation == "pending_count" and "limit" not in params:
+            params["limit"] = 1
+    return params
 
 
 def _trusted_channel():
@@ -187,7 +251,7 @@ def finance(operation: str = "summary", **kwargs: Any) -> str:
         )
     capability_id, aceitas, obrigatorias = spec
 
-    params = {k: kwargs[k] for k in aceitas if kwargs.get(k) not in (None, "")}
+    params = _build_params(operation, aceitas, kwargs)
     faltando = [k for k in obrigatorias if k not in params]
     if faltando:
         return tool_error(
@@ -232,6 +296,9 @@ registry.register(
     handler=lambda args, **kw: finance(
         operation=str(args.get("operation", "summary")),
         month=args.get("month"),
+        competenceMonth=args.get("competenceMonth"),
+        status=args.get("status"),
+        account=args.get("account"),
         category=args.get("category"),
         amount=args.get("amount"),
         direction=args.get("direction"),

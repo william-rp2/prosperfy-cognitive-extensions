@@ -237,6 +237,11 @@ def _is_browser(text: str) -> bool:
 # "tarefa"/"kanban" (P1). Bloqueio conceitual herdado do check global de
 # _has_conceptual em resolve_specialist_route (roda antes de qualquer rota
 # de domínio) — "o que é orçamento?" já cai em NORMAL antes de chegar aqui.
+#
+# F2B: "pendência(s)" sozinha NÃO roteia — exige âncora financeira
+# (financeira/financeiro/finanças…) OU mês de competência. Assim
+# "Tenho pendências no projeto" permanece fora de FINANCE (e cai em
+# WORK_MANAGEMENT pela precedência de domínio, se houver "projeto").
 _FINANCE_KEYWORDS = (
     "gastei", "gasto", "gastos", "receita", "receitas", "entrou", "entradas",
     "saldo", "orçamento", "orcamento", "orçamentos", "orcamentos",
@@ -260,22 +265,58 @@ _FINANCE_CATEGORY_NAMES = (
     "serviços", "servicos", "salário", "salario",
 )
 _FINANCE_MONEY_VALUE_RE = re.compile(r"\d+[.,]\d{2}\b")
+_FINANCE_DOMAIN_PHRASES = (
+    "pendência financeira", "pendências financeiras",
+    "pendencia financeira", "pendencias financeiras",
+    "pendências do financeiro", "pendencias do financeiro",
+    "pendência do financeiro", "pendencia do financeiro",
+    "financeiro pessoal", "finanças pessoais", "financas pessoais",
+)
+_FINANCE_PENDING_WORDS = (
+    "pendência", "pendências", "pendencia", "pendencias",
+)
+_FINANCE_PENDING_ANCHORS = (
+    "financeira", "financeiras", "financeiro", "finanças", "financas",
+)
+_FINANCE_MONTH_NAMES = (
+    "janeiro", "fevereiro", "março", "marco", "abril", "maio", "junho",
+    "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+)
+_FINANCE_COMPETENCE_MONTH_RE = re.compile(r"\b20\d{2}[-/]\d{1,2}\b")
+
+
+def _is_finance_pending_intent(low: str) -> bool:
+    """Pendências/clarifications F2B — frases compostas, nunca 'pendência' solta."""
+    if _has_any(low, _FINANCE_DOMAIN_PHRASES):
+        return True
+    has_pending = _has_any(low, _FINANCE_PENDING_WORDS)
+    if not has_pending:
+        return False
+    if _has_any(low, _FINANCE_PENDING_ANCHORS):
+        return True
+    if _has_any(low, _FINANCE_MONTH_NAMES) or bool(_FINANCE_COMPETENCE_MONTH_RE.search(low)):
+        return True
+    return False
 
 
 def _is_finance(text: str) -> bool:
     """Intenção financeira pessoal: leitura ("quanto gastei"), lançamento
-    manual, reclassificação de categoria, orçamento, sync com o banco.
+    manual, reclassificação de categoria, orçamento, sync com o banco,
+    pendências/clarifications F2B.
 
     Conservador: keyword de domínio OU frase de sync OU (valor monetário +
     verbo de lançamento) OU (valor monetário + nome de categoria conhecida)
-    — cobre "Registre 120 reais, mas foi ontem" (sem 'R$') e "Essa compra de
-    54,90 do X é Alimentação" (sem keyword nem verbo de lançamento) do doc
-    00 §7, sem deixar um valor monetário sozinho roteando qualquer frase.
+    OU pendência com âncora financeira/mês — cobre "Registre 120 reais, mas
+    foi ontem" (sem 'R$') e "Essa compra de 54,90 do X é Alimentação" (sem
+    keyword nem verbo de lançamento) do doc 00 §7, sem deixar um valor
+    monetário sozinho roteando qualquer frase.
     """
     low = text.lower()
     if _has_any(low, _FINANCE_KEYWORDS):
         return True
     if _has_any(low, _FINANCE_SYNC_PHRASES):
+        return True
+    if _is_finance_pending_intent(low):
         return True
     has_money = _has_any(low, _FINANCE_MONEY_MARKERS) or bool(_FINANCE_MONEY_VALUE_RE.search(low))
     if has_money and _has_any(low, _FINANCE_ACTION_VERBS):
