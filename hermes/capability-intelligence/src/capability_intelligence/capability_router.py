@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from .cron_router import is_cron_intent
 
@@ -316,14 +316,17 @@ def set_pending_restart_checker(checker: Callable[[str], bool] | None) -> None:
 # O predicado é INJETADO (mesmo seam de _pending_restart_checker) para o
 # router continuar puro e sem I/O. A verdade durável é a Finance API — ver
 # finance_reply_binding.install_router_hook.
-_finance_quoted_reply_checker: Callable[[str], bool] | None = None
+_finance_quoted_reply_checker: Callable[..., bool] | None = None
 
 
-def set_finance_quoted_reply_checker(checker: Callable[[str], bool] | None) -> None:
+def set_finance_quoted_reply_checker(checker: Callable[..., bool] | None) -> None:
     """Registra lookup read-only 'esse message id citado é uma pergunta financeira?'.
 
     Sem checker registrado o comportamento é o pré-F2B (só heurística de
     texto): nunca abre rota por acidente.
+
+    Assinatura preferida do checker: ``(message_id, context_envelope=None)``.
+    Callers legados ``(message_id)`` continuam válidos.
     """
     global _finance_quoted_reply_checker
     _finance_quoted_reply_checker = checker
@@ -429,9 +432,10 @@ def resolve_specialist_route(
     actor_id: str | None = None,
     *,
     reply_to_message_id: str = "",
+    context_envelope: Any = None,
 ) -> str:
     """Resolve a rota determinística do turno: NORMAL | CRON | SESSION_SEARCH |
-    MEMORY | SKILLS | INFRA_READ | INFRA_ACTION. Conservador: ambíguo → NORMAL.
+    MEMORY | SKILLS | INFRA_READ | INFRA_ACTION | FINANCE. Conservador: ambíguo → NORMAL.
 
     Phase 1B: confirmação afirmativa explícita + pending restart do mesmo actor
     → INFRA_ACTION (continuation routing — nunca "Sim" global).
@@ -440,6 +444,7 @@ def resolve_specialist_route(
     (ContextEnvelope.reply_to_message_id). Quando ele corresponde a uma
     pergunta financeira já entregue, a rota é FINANCE — decisão por metadado
     de transporte, antes de qualquer heurística de texto e antes do LLM.
+    `context_envelope` (opcional) propaga channel trusted para o lookup durável.
     Rotear para FINANCE não autoriza nada: a ACL de finance (Cognitive
     policy) decide ALLOW/DENY depois, sobre a identidade canônica do ator.
     """
@@ -448,8 +453,13 @@ def resolve_specialist_route(
     # Precede até o guard de texto vazio: a resposta citada pode ser só um
     # emoji/sticker e ainda assim é a resposta a uma pergunta específica.
     if reply_to_message_id and _finance_quoted_reply_checker is not None:
-        if _finance_quoted_reply_checker(reply_to_message_id):
-            return "FINANCE"
+        try:
+            if _finance_quoted_reply_checker(reply_to_message_id, context_envelope):
+                return "FINANCE"
+        except TypeError:
+            # Checker legado: Callable[[str], bool]
+            if _finance_quoted_reply_checker(reply_to_message_id):
+                return "FINANCE"
 
     if not text:
         return "NORMAL"
@@ -512,10 +522,14 @@ def resolve_turn_toolsets(
     actor_id: str | None = None,
     *,
     reply_to_message_id: str = "",
+    context_envelope: Any = None,
 ) -> tuple[str, list[str]]:
     """Boundary pré-LLM: rota + toolsets (espelha CAPABILITY_ROUTE / ENABLED_TOOLSETS)."""
     route = resolve_specialist_route(
-        message, actor_id=actor_id, reply_to_message_id=reply_to_message_id
+        message,
+        actor_id=actor_id,
+        reply_to_message_id=reply_to_message_id,
+        context_envelope=context_envelope,
     )
     return route, route_toolsets(route)
 

@@ -4,8 +4,7 @@ Pessoal (Track P2 — Financeiro pelo WhatsApp).
 
 Mesmo espírito de infra_service.py / work_management_service.py: o Hermes
 NÃO duplica policy/tenancy/auth/SQLite/Pluggy aqui — tudo isso vive no
-Cognitive (finance.* capabilities) e é alcançado via CognitiveApiAdapter
-(reuso total, zero mudança nele).
+Cognitive (finance.* capabilities) e é alcançado via CognitiveApiAdapter.
 
     Hermes → FinanceService → CognitiveApiAdapter → Cognitive API
     → Policy/Grant → FinanceApiAdapter (HTTP) → apps/financeiro-pessoal-api
@@ -20,6 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .models import TrustedChannel
 from .transport.cognitive_api_adapter import CognitiveApiAdapter
 
 
@@ -35,22 +35,27 @@ class FinanceService:
         (COGNITIVE_GATEWAY_URL / CREDENTIAL / TENANT_ID / ACTOR_ID)."""
         return cls(CognitiveApiAdapter())
 
-    async def call(self, capability_id: str, params: dict[str, Any]) -> dict[str, Any]:
+    async def call(
+        self,
+        capability_id: str,
+        params: dict[str, Any],
+        *,
+        channel: TrustedChannel | None = None,
+    ) -> dict[str, Any]:
         """Executa uma capability finance.* e retorna `data` em caso de sucesso.
 
-        Levanta RuntimeError (via CognitiveApiAdapter) em DENY/CONFIRM/erro de
-        transporte/validação — nunca retorna sucesso vazio/fabricado. Um 409
-        de ambiguidade ou 404 de "não encontrado" da Finance API chega aqui
-        como `result.data` normal (a Finance API responde 2xx-equivalente do
-        ponto de vista do Cognitive: ver FinanceApiAdapter — 400/404/409 são
-        {"success": False, "error": {...}} retornado como dado, não exceção),
-        então o caller (finance_tools.py) precisa inspecionar
-        `data.get("success")` além do try/except.
+        `channel` é metadado de transporte (irmão de params no body Cognitive).
+        Chamadas sem channel continuam válidas — finance.* fail-closed no ACL
+        quando o contexto WhatsApp é obrigatório.
         """
         from .models import ExecutionRequest
 
         ref = await self._adapter.execute(
-            ExecutionRequest(capability_id=capability_id, params=params)
+            ExecutionRequest(
+                capability_id=capability_id,
+                params=params,
+                channel=channel,
+            )
         )
         result = await self._adapter.get_result(ref)
         if not result.success:

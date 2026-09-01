@@ -10,29 +10,15 @@ finance_reply_binding.py — quoted-reply binding do WhatsApp (F2B).
     -> resolve exact clarification
 
 Este módulo é o lado Hermes dessas quatro setas. Ele NÃO reimplementa a
-decisão: a lógica determinística (caminho exato por quote, fallback solto com
-confiança forte, resposta tardia sem mutação duplicada) vive em
-`cognitive.finance.clarification_binding.ClarificationBinder`, que fala apenas
-com um `CapabilityCaller`. Aqui o caller é o `FinanceService` que o Hermes já
-usa (Hermes -> FinanceService -> CognitiveApiAdapter -> Cognitive -> policy/ACL
--> FinanceApiAdapter -> Finance API), então nenhum transporte novo é criado e
-nenhum bypass de policy existe.
+decisão: a lógica determinística vive em
+`cognitive.finance.clarification_binding.ClarificationBinder`. Aqui o caller
+é o `FinanceService` (Hermes -> CognitiveApiAdapter -> Cognitive ACL -> Finance).
 
 Invariantes:
 
-* O vínculo é METADADO DE TRANSPORTE. O identificador citado vem de
-  ContextEnvelope.reply_to_message_id — nunca do texto da mensagem, nunca de
-  memória conversacional do LLM, nunca de nome de exibição.
-* O vínculo é DURÁVEL. delivery_message_id -> clarification_id é persistido na
-  Finance API por `finance.clarification.deliver` e relido por
-  `finance.clarification.list?deliveryMessageId=...`. Funciona horas ou dias
-  depois e sobrevive a restart do processo. O cache local é só atalho de
-  roteamento — nunca fonte da verdade e nunca autorização.
-* Rotear para FINANCE não autoriza NADA. A autorização é decidida depois, na
-  ACL determinística do Cognitive (policy/finance_acl.py), sobre a identidade
-  canônica do ator. Um terceiro que cite a mensagem cai em DENY lá.
-* Nada aqui dispara mensagem: este módulo só registra entrega de perguntas já
-  enviadas e resolve respostas recebidas.
+* O vínculo é METADADO DE TRANSPORTE (ContextEnvelope.reply_to_message_id).
+* Capabilities finance.* usadas aqui propagam TrustedChannel do turno.
+* Rotear para FINANCE não autoriza NADA — ACL Cognitive decide depois.
 """
 
 from __future__ import annotations
@@ -50,31 +36,30 @@ from cognitive.finance.clarification_binding import (
 )
 
 from .capability_router import set_finance_quoted_reply_checker
+from .models import TrustedChannel
+from .turn_context import get_turn_envelope, trusted_channel_from_envelope
 
 logger = logging.getLogger(__name__)
 
 CAP_DELIVER = "finance.clarification.deliver"
 CAP_LIST = "finance.clarification.list"
 
-# Teto do cache de roteamento. Pequeno de propósito: é um atalho, não um
-# índice — a verdade está no banco da Finance API.
 DEFAULT_CACHE_SIZE = 512
 
 
 class CapabilityCaller(Protocol):
     """Mesmo contrato que FinanceService.call — executa uma capability finance.*."""
 
-    async def call(self, capability_id: str, params: dict[str, Any]) -> dict[str, Any]: ...
+    async def call(
+        self,
+        capability_id: str,
+        params: dict[str, Any],
+        *,
+        channel: TrustedChannel | None = None,
+    ) -> dict[str, Any]: ...
 
 
 class _BoundedFlagCache:
-    """Cache LRU minúsculo de message_id -> 'é pergunta financeira?'.
-
-    Guarda positivo e negativo. Ambos são estáveis por construção: um
-    provider_message_id outbound ou já é a entrega de uma clarification no
-    momento em que foi enviado, ou nunca será.
-    """
-
     def __init__(self, max_size: int = DEFAULT_CACHE_SIZE) -> None:
         self._max_size = max(1, max_size)
         self._items: OrderedDict[str, bool] = OrderedDict()
@@ -94,6 +79,17 @@ class _BoundedFlagCache:
             self._items.popitem(last=False)
 
 
+def _resolve_channel(
+    channel: TrustedChannel | None = None,
+    envelope: Any = None,
+) -> TrustedChannel | None:
+    if channel is not None:
+        return channel
+    if envelope is not None:
+        return trusted_channel_from_envelope(envelope)
+    return trusted_channel_from_envelope(get_turn_envelope())
+
+
 class FinanceReplyBinding:
     """Registra entrega de perguntas e amarra a resposta citada na clarification certa."""
 
@@ -107,17 +103,15 @@ class FinanceReplyBinding:
         self._binder = binder if binder is not None else ClarificationBinder(caller)
         self._cache = _BoundedFlagCache(cache_size)
 
-    # ---- seta 1: persistir delivery_message_id + clarification_id --------
-
     async def register_delivery(
         self,
         clarification_id: str,
         delivery_message_id: str,
         delivery_chat_id: str = "",
         delivered_at: str = "",
+        *,
+        channel: TrustedChannel | None = None,
     ) -> dict[str, Any]:
-        """Chamado logo APÓS o envio da pergunta, com o provider_message_id devolvido
-        pelo canal. Sem esta chamada o caminho por quote não existe."""
         if not clarification_id or not delivery_message_id:
             raise ValueError(
                 "register_delivery exige clarification_id e delivery_message_id"
@@ -132,17 +126,18 @@ class FinanceReplyBinding:
         if delivered_at:
             params["deliveredAt"] = delivered_at
 
-        data = await self._caller.call(CAP_DELIVER, params)
-        # Atalho de roteamento para os turnos seguintes deste processo. Uma
-        # falha do cache nunca quebra o binding: o lookup durável continua
-        # existindo.
+        data = await self._caller.call(
+            CAP_DELIVER, params, channel=_resolve_channel(channel)
+        )
         self._cache.put(delivery_message_id, True)
         return data
 
-    # ---- seta 3/4: o id citado é uma pergunta financeira? ----------------
-
-    async def is_quoted_finance_question(self, message_id: str) -> bool:
-        """Lookup durável (Finance API). Usado pelo router pré-LLM."""
+    async def is_quoted_finance_question(
+        self,
+        message_id: str,
+        *,
+        channel: TrustedChannel | None = None,
+    ) -> bool:
         if not message_id:
             return False
 
@@ -153,6 +148,7 @@ class FinanceReplyBinding:
         data = await self._caller.call(
             CAP_LIST,
             {"deliveryMessageId": message_id, "status": "any", "limit": 1},
+            channel=_resolve_channel(channel),
         )
         found = bool(data.get("clarifications"))
         self._cache.put(message_id, found)
@@ -165,19 +161,19 @@ class FinanceReplyBinding:
         text: str | None = None,
         competence_month: str = "",
         account: str = "",
+        *,
+        channel: TrustedChannel | None = None,
     ) -> BindingOutcome:
-        """Resolve a clarification correspondente à resposta do owner.
-
-        envelope:  ContextEnvelope (só metadados de transporte são lidos:
-                   reply_to_message_id / incoming_message_id).
-        actor_id:  ACTOR CANÔNICO já resolvido pela identidade. Nunca
-                   envelope.user_id cru — aquilo é principal de transporte, e
-                   autorização/atribuição jamais dependem dele aqui.
-        """
         if not actor_id:
             raise ValueError(
                 "bind_reply exige o actor canônico — principal de transporte não serve"
             )
+
+        # Propaga channel trusted do turno para lookups do binder via caller.
+        # ClarificationBinder chama caller.call(cap, params) — FinanceService
+        # aceita channel kw-only; o Protocol FakeCaller dos testes também.
+        # Aqui amarramos o envelope no contextvar se ainda não estiver ligado.
+        resolved = _resolve_channel(channel, envelope)
 
         reply = InboundReply(
             text=text if text is not None else "",
@@ -187,7 +183,24 @@ class FinanceReplyBinding:
             competence_month=competence_month,
             account=account,
         )
-        outcome = await self._binder.bind(reply)
+
+        # Wrap caller so binder's internal calls carry channel without changing
+        # ClarificationBinder's CapabilityCaller Protocol (positional-only).
+        original = self._caller
+
+        class _ChannelCaller:
+            async def call(self, capability_id: str, params: dict[str, Any]) -> dict[str, Any]:
+                return await original.call(capability_id, params, channel=resolved)
+
+        previous_binder_caller = getattr(self._binder, "_caller", None)
+        try:
+            if hasattr(self._binder, "_caller"):
+                self._binder._caller = _ChannelCaller()  # type: ignore[attr-defined]
+            outcome = await self._binder.bind(reply)
+        finally:
+            if previous_binder_caller is not None:
+                self._binder._caller = previous_binder_caller  # type: ignore[attr-defined]
+
         logger.info(
             "finance reply binding status=%s quoted=%s",
             outcome.status.value,
@@ -195,17 +208,14 @@ class FinanceReplyBinding:
         )
         return outcome
 
-    # ---- wiring do router (pré-LLM, síncrono, sem I/O no router) ---------
+    def route_checker(self) -> Callable[..., bool]:
+        """Predicado síncrono: (message_id, context_envelope=None) -> bool.
 
-    def route_checker(self) -> Callable[[str], bool]:
-        """Predicado síncrono para `set_finance_quoted_reply_checker`.
-
-        Fail-closed em direção a NORMAL: qualquer incerteza (erro de
-        transporte, loop asyncio já rodando) devolve False e o turno volta a
-        depender da heurística de texto. Nunca devolve True por suposição.
+        Fail-closed em direção a NORMAL. Aceita envelope trusted opcional
+        (segundo arg posicional ou kw) para propagar channel no lookup.
         """
 
-        def check(message_id: str) -> bool:
+        def check(message_id: str, context_envelope: Any = None) -> bool:
             if not message_id:
                 return False
 
@@ -218,15 +228,16 @@ class FinanceReplyBinding:
             except RuntimeError:
                 pass
             else:
-                # Já existe loop neste thread: bloquear aqui travaria o
-                # processo. Sem resposta durável, não afirma nada.
                 logger.debug(
                     "route_checker sem lookup durável (event loop ativo) — caindo para heurística de texto"
                 )
                 return False
 
+            channel = _resolve_channel(None, context_envelope)
             try:
-                return asyncio.run(self.is_quoted_finance_question(message_id))
+                return asyncio.run(
+                    self.is_quoted_finance_question(message_id, channel=channel)
+                )
             except Exception as exc:
                 logger.warning(
                     "route_checker falhou (%s) — caindo para heurística de texto",

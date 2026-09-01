@@ -52,6 +52,9 @@ class ContextEnvelope:
     blocked_tool_domains: list[str] = field(default_factory=list)
     intent_domain: str = "general"
     created_at: str = ""
+    # F2B: discriminator de grupo/DM do transporte autenticado (SessionSource.chat_type).
+    # Default False preserva callers existentes.
+    is_group: bool = False
 
     def __post_init__(self):
         # Usar object.__setattr__ porque o dataclass é frozen
@@ -80,6 +83,11 @@ class ContextEnvelopeBuilder:
 
     def with_user(self, user_id: str) -> "ContextEnvelopeBuilder":
         self._data["user_id"] = user_id
+        return self
+
+    def with_channel(self, channel_id: str, *, is_group: bool = False) -> "ContextEnvelopeBuilder":
+        self._data["channel_id"] = channel_id
+        self._data["is_group"] = bool(is_group)
         return self
 
     def with_session(self, session_id: str) -> "ContextEnvelopeBuilder":

@@ -14,19 +14,34 @@ Só registrado no toolset "finance". NORMAL_CHAT_TOOLS continua 0: estas
 tools só entram no schema do turno quando capability_router.py resolve a
 rota FINANCE (ver _ROUTE_TOOLSETS).
 
-Ambiguidade NÃO é falha (doc P2 §7.1): quando o texto casa com 2+
-transações, a capability responde {"success": false, "error": {...}} como
-DADO, não como exceção. Esta tool repassa isso ao LLM tal e qual, para ele
-pedir a desambiguação — nunca escolhe uma transação por conta própria.
+F2B: channel/chat_id/user_id/transport_principal NÃO entram no FINANCE_SCHEMA.
+O handler lê ContextEnvelope trusted via turn_context (ligado pelo gateway).
+Args LLM com esses campos são IGNORADOS (não autorizam transporte).
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
 
 from tools.registry import registry, tool_error
+
+logger = logging.getLogger(__name__)
+
+# Campos de identidade/transporte — NUNCA do schema LLM; se vierem em args, ignore.
+_TRANSPORT_SPOOF_KEYS = frozenset(
+    {
+        "channel",
+        "chat_id",
+        "user_id",
+        "transport_principal",
+        "is_group",
+        "incoming_message_id",
+        "reply_to_message_id",
+    }
+)
 
 FINANCE_SCHEMA = {
     "name": "finance",
@@ -127,10 +142,27 @@ _OPS: dict[str, tuple[str, tuple[str, ...], tuple[str, ...]]] = {
 }
 
 
+def _strip_transport_spoof(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Remove tentativas de spoof de identidade/transporte vindas do LLM."""
+    return {k: v for k, v in kwargs.items() if k not in _TRANSPORT_SPOOF_KEYS}
+
+
+def _trusted_channel():
+    from capability_intelligence.turn_context import (
+        get_turn_envelope,
+        trusted_channel_from_envelope,
+    )
+
+    return trusted_channel_from_envelope(get_turn_envelope())
+
+
 def _call(capability_id: str, params: dict[str, Any]) -> dict:
     from capability_intelligence.finance_service import FinanceService
 
-    return asyncio.run(FinanceService.from_env().call(capability_id, params))
+    channel = _trusted_channel()
+    return asyncio.run(
+        FinanceService.from_env().call(capability_id, params, channel=channel)
+    )
 
 
 def finance(operation: str = "summary", **kwargs: Any) -> str:
@@ -140,7 +172,11 @@ def finance(operation: str = "summary", **kwargs: Any) -> str:
     Fail-closed: qualquer excecao vira tool_error, nunca sucesso fabricado.
     Resposta de ambiguidade/nao-encontrado chega como data com success=false e
     e repassada integra para o LLM desambiguar.
+
+    kwargs de transporte (channel/chat_id/...) são IGNORADOS — só o envelope
+    trusted do turno autoriza body.channel no Cognitive.
     """
+    kwargs = _strip_transport_spoof(kwargs)
     spec = _OPS.get(operation)
     if spec is None:
         return tool_error(
@@ -204,6 +240,32 @@ registry.register(
         limitAmount=args.get("limitAmount"),
         search=args.get("search"),
         limit=args.get("limit"),
+        # Spoof deliberate: se o LLM injetar estes em args, finance() stripa.
+        channel=args.get("channel"),
+        chat_id=args.get("chat_id"),
+        user_id=args.get("user_id"),
+        transport_principal=args.get("transport_principal"),
     ),
     check_fn=check_finance_requirements,
 )
+
+
+def _wire_finance_router_hook() -> None:
+    """Uma instância FinanceReplyBinding no boot — sem side effect no import se falhar."""
+    try:
+        from capability_intelligence.finance_reply_binding import (
+            FinanceReplyBinding,
+            install_router_hook,
+        )
+        from capability_intelligence.finance_service import FinanceService
+
+        install_router_hook(FinanceReplyBinding(FinanceService.from_env()))
+        logger.info("finance router hook installed")
+    except Exception as exc:  # noqa: BLE001 — fail-closed; NORMAL continua
+        logger.warning(
+            "finance router hook not installed (%s) — quoted finance routing disabled",
+            type(exc).__name__,
+        )
+
+
+_wire_finance_router_hook()

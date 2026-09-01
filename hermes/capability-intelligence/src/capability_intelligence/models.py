@@ -123,11 +123,36 @@ class AuthorizationResult:
 # ─── Contrato: Execution ──────────────────────────────────────────────
 
 @dataclass
+class TrustedChannel:
+    """Metadado de transporte WhatsApp — irmão tipado de params no Cognitive.
+
+    Produzido SOMENTE a partir de ContextEnvelope autenticado do turno.
+    Nunca a partir de LLM args / tool arguments / texto.
+    """
+
+    chat_id: str = ""
+    is_group: bool = False
+    transport_principal: str = ""
+    incoming_message_id: str = ""
+    reply_to_message_id: str = ""
+
+    def to_body_dict(self) -> dict[str, Any]:
+        return {
+            "chat_id": self.chat_id,
+            "is_group": bool(self.is_group),
+            "transport_principal": self.transport_principal,
+            "incoming_message_id": self.incoming_message_id,
+            "reply_to_message_id": self.reply_to_message_id,
+        }
+
+
+@dataclass
 class ExecutionRequest:
     """Pedido de execucão de uma Capability."""
     capability_id: str
     params: dict[str, Any]
     identity: str = "hermes/default"
+    channel: TrustedChannel | None = None
 
 
 @dataclass

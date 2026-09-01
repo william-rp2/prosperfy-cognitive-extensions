@@ -229,6 +229,10 @@ class CognitiveApiAdapter(ProtocolAdapter):
         body: dict[str, Any] = {"params": params}
         if idem is not None:
             body["idempotency_key"] = idem
+        # F2B: channel é irmão de params — NUNCA dentro de params.
+        # Só o ExecutionRequest.channel (envelope trusted) popula body.channel.
+        if request.channel is not None:
+            body["channel"] = request.channel.to_body_dict()
 
         payload = await self._request("POST", url, json=body)
 

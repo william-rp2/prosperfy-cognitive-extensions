@@ -48,10 +48,18 @@ class FakeCaller:
 
     def __init__(self, responses: dict[str, Any] | None = None) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.channels: list[Any] = []
         self._responses = responses or {}
 
-    async def call(self, capability_id: str, params: dict[str, Any]) -> dict[str, Any]:
+    async def call(
+        self,
+        capability_id: str,
+        params: dict[str, Any],
+        *,
+        channel: Any = None,
+    ) -> dict[str, Any]:
         self.calls.append((capability_id, dict(params)))
+        self.channels.append(channel)
         response = self._responses.get(capability_id, {})
         if callable(response):
             return response(params)
