@@ -45,6 +45,7 @@ const DEFAULT_AMOUNT_TOLERANCE_CENTS = 0
 const AMOUNT_MISMATCH_OVERLAP_THRESHOLD = 0.6
 
 type Direction = 'CHARGE' | 'CREDIT'
+type SemanticDirection = Direction | 'UNKNOWN'
 
 /**
  * Statement side: PAYMENT and REFUND are money coming back (CREDIT); every other classified line
@@ -55,9 +56,48 @@ function lineDirection(lineType: StatementLineRow['line_type']): Direction {
   return lineType === 'PAYMENT' || lineType === 'REFUND' ? 'CREDIT' : 'CHARGE'
 }
 
-/** App side: the app's own sign convention — negative is a charge, positive is a credit. */
-function transactionDirection(amountCents: number): Direction {
-  return amountCents < 0 ? 'CHARGE' : 'CREDIT'
+/** Canonical types that behave as statement CHARGE (purchase / fee / money out). */
+const CHARGE_CANONICAL_TYPES = new Set([
+  'CREDIT_PURCHASE',
+  'DEBIT_PURCHASE',
+  'FEE',
+  'TAX',
+  'PIX_OUT',
+  'TRANSFER_OUT',
+  'EXPENSE',
+])
+
+/** Canonical types that behave as statement CREDIT (refund / payment / money in). */
+const CREDIT_CANONICAL_TYPES = new Set([
+  'REFUND',
+  'PIX_IN',
+  'TRANSFER_IN',
+  'INCOME',
+  'CARD_PAYMENT',
+])
+
+/**
+ * App-side semantic direction for statement matching.
+ *
+ * Priority:
+ * 1. enrichment.direction (OUT → CHARGE, IN → CREDIT)
+ * 2. enrichment.canonical_type (known charge/credit vocabularies)
+ * 3. UNKNOWN — never invent from Pluggy amount sign alone (homolog: purchases are often positive)
+ *
+ * UNKNOWN must not auto-match (keeps purchase↔refund / purchase↔payment safe).
+ */
+export function resolveTransactionDirection(transaction: CandidateTransactionRow): SemanticDirection {
+  const direction = transaction.enrichment_direction?.trim().toUpperCase()
+  if (direction === 'OUT') return 'CHARGE'
+  if (direction === 'IN') return 'CREDIT'
+
+  const canonical = transaction.enrichment_canonical_type?.trim().toUpperCase()
+  if (canonical) {
+    if (CHARGE_CANONICAL_TYPES.has(canonical)) return 'CHARGE'
+    if (CREDIT_CANONICAL_TYPES.has(canonical)) return 'CREDIT'
+  }
+
+  return 'UNKNOWN'
 }
 
 function dayDelta(a: string | null, b: string | null): number | null {
@@ -88,11 +128,9 @@ function transactionText(transaction: CandidateTransactionRow): string {
 }
 
 /**
- * Amount comparison is magnitude-only: the provider and the statement disagree on sign
- * convention for card charges depending on institution, and inventing a sign rule per bank would
- * be exactly the kind of silent guess this feature exists to avoid. Direction (charge vs. credit)
- * is decided separately, from `line_type` / the app's own sign convention, in `scoreCandidate` —
- * so a magnitude-only comparison here no longer risks matching a purchase against its own refund.
+ * Amount comparison is magnitude-only once semantic direction has already been validated.
+ * Provider and statement disagree on sign convention across institutions; inventing a global
+ * sign rule is exactly what broke LIVE card purchases (positive upstream amounts).
  */
 function amountsMatch(lineCents: number, transactionCents: number, toleranceCents: number): boolean {
   return Math.abs(Math.abs(lineCents) - Math.abs(transactionCents)) <= toleranceCents
@@ -104,9 +142,10 @@ function scoreCandidate(
   toleranceDays: number,
   amountToleranceCents: number,
 ): MatchCandidate | null {
-  // Direction gate: a charge can never satisfy a credit line (or vice versa), regardless of how
-  // close the magnitudes are — this is what keeps a purchase and its own refund from matching.
-  if (lineDirection(line.line_type) !== transactionDirection(transaction.amount_cents)) return null
+  // Semantic direction gate (enrichment) BEFORE amount magnitude.
+  const txDirection = resolveTransactionDirection(transaction)
+  if (txDirection === 'UNKNOWN') return null
+  if (lineDirection(line.line_type) !== txDirection) return null
 
   const currencyEqual = (transaction.currency_code ?? line.currency_code).toUpperCase() === line.currency_code.toUpperCase()
   // Currency now bars the match outright; it used to only shave the score.

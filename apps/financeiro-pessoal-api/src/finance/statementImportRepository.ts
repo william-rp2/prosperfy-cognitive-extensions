@@ -146,6 +146,10 @@ export interface CandidateTransactionRow {
   date: string
   statement_cycle_id: string | null
   cycle_assignment_source: string | null
+  /** From financial_transaction_enrichment — semantic direction (IN/OUT), not Pluggy sign. */
+  enrichment_direction: string | null
+  enrichment_canonical_type: string | null
+  enrichment_payment_method: string | null
 }
 
 export class StatementImportRepository {
@@ -459,11 +463,16 @@ export class StatementImportRepository {
   listCandidateTransactions(financialAccountId: string, startDate: string, endDate: string): CandidateTransactionRow[] {
     return this.db
       .prepare(
-        `SELECT pluggy_transaction_id, pluggy_account_id, description, description_raw, amount_cents,
-                currency_code, date, statement_cycle_id, cycle_assignment_source
-           FROM financial_transactions
-          WHERE pluggy_account_id = ? AND deleted_at IS NULL AND date(date) BETWEEN date(?) AND date(?)
-          ORDER BY date ASC, pluggy_transaction_id ASC`,
+        `SELECT t.pluggy_transaction_id, t.pluggy_account_id, t.description, t.description_raw, t.amount_cents,
+                t.currency_code, t.date, t.statement_cycle_id, t.cycle_assignment_source,
+                e.direction AS enrichment_direction,
+                e.canonical_type AS enrichment_canonical_type,
+                e.payment_method AS enrichment_payment_method
+           FROM financial_transactions t
+           LEFT JOIN financial_transaction_enrichment e
+             ON e.pluggy_transaction_id = t.pluggy_transaction_id
+          WHERE t.pluggy_account_id = ? AND t.deleted_at IS NULL AND date(t.date) BETWEEN date(?) AND date(?)
+          ORDER BY t.date ASC, t.pluggy_transaction_id ASC`,
       )
       .all(financialAccountId, startDate, endDate) as CandidateTransactionRow[]
   }

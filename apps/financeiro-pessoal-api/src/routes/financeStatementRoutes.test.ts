@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { AppConfig } from '../config.js'
 import { AccountsRepository } from '../finance/accountsRepository.js'
 import { openFinanceDb, type FinanceDb } from '../finance/db.js'
+import { EnrichmentRepository } from '../finance/enrichmentRepository.js'
 import { ItemsRepository } from '../finance/itemsRepository.js'
 import { ReconciliationService } from '../finance/reconciliationService.js'
 import { StatementCyclesRepository } from '../finance/statementCyclesRepository.js'
@@ -72,8 +73,9 @@ beforeEach(async () => {
     balanceCents: 0,
   })
   STATEMENT_FIXTURES.forEach((fixture, index) => {
+    const id = `rtx-${index}`
     transactions.upsertTransaction({
-      pluggyTransactionId: `rtx-${index}`,
+      pluggyTransactionId: id,
       pluggyAccountId: CARD_ACCOUNT,
       description: fixture.description,
       descriptionRaw: fixture.description,
@@ -81,6 +83,14 @@ beforeEach(async () => {
       currencyCode: 'BRL',
       date: fixture.date,
       rawData: { provider: 'pluggy' },
+    })
+    new EnrichmentRepository(db).upsert({
+      pluggyTransactionId: id,
+      direction: 'OUT',
+      canonicalType: 'CREDIT_PURCHASE',
+      paymentMethod: 'CREDIT_CARD',
+      classificationStatus: 'classified',
+      classificationSource: 'deterministic_rule',
     })
   })
 

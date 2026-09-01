@@ -2,12 +2,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { AccountsRepository } from './accountsRepository.js'
 import { openFinanceDb, type FinanceDb } from './db.js'
+import { EnrichmentRepository } from './enrichmentRepository.js'
 import { ItemsRepository } from './itemsRepository.js'
 import { ReconciliationService } from './reconciliationService.js'
 import { StatementCyclesRepository } from './statementCyclesRepository.js'
 import { StatementImportRepository } from './statementImportRepository.js'
 import { parseMoneyToCents, parseStatement } from './statementParser.js'
 import { TransactionsRepository } from './transactionsRepository.js'
+import type { CanonicalDirection, CanonicalTransactionType } from './transactionNormalizer.js'
 
 /**
  * Real runtime path: real SQLite, real migrations, real repositories. Nothing stubbed.
@@ -40,9 +42,28 @@ const toStatementLines = (fixtures: readonly Fixture[]) =>
 let db: FinanceDb
 let accounts: AccountsRepository
 let transactions: TransactionsRepository
+let enrichment: EnrichmentRepository
 let cycles: StatementCyclesRepository
 let statementImports: StatementImportRepository
 let service: ReconciliationService
+
+function seedEnrichment(
+  pluggyTransactionId: string,
+  opts: {
+    direction: CanonicalDirection
+    canonicalType: CanonicalTransactionType
+    paymentMethod?: string
+  },
+) {
+  enrichment.upsert({
+    pluggyTransactionId,
+    direction: opts.direction,
+    canonicalType: opts.canonicalType,
+    paymentMethod: opts.paymentMethod ?? 'CREDIT_CARD',
+    classificationStatus: 'classified',
+    classificationSource: 'deterministic_rule',
+  })
+}
 
 function seedTransactions(fixtures: readonly Fixture[], prefix = 'tx'): string[] {
   return fixtures.map((fixture, index) => {
@@ -57,6 +78,8 @@ function seedTransactions(fixtures: readonly Fixture[], prefix = 'tx'): string[]
       date: fixture.date,
       rawData: { provider: 'pluggy', id, description: fixture.description },
     })
+    // Matcher requires semantic enrichment — amount sign alone is not a direction contract.
+    seedEnrichment(id, { direction: 'OUT', canonicalType: 'CREDIT_PURCHASE' })
     return id
   })
 }
@@ -77,6 +100,7 @@ beforeEach(() => {
   db = openFinanceDb(':memory:')
   accounts = new AccountsRepository(db)
   transactions = new TransactionsRepository(db)
+  enrichment = new EnrichmentRepository(db)
   cycles = new StatementCyclesRepository(db)
   statementImports = new StatementImportRepository(db)
   service = new ReconciliationService({ statementImports, cycles, accounts })
@@ -363,6 +387,7 @@ describe('F2B matching hardening (direction, amount mismatch, conflict)', () => 
       date: '2026-07-10',
       rawData: { provider: 'pluggy', id: purchaseTx, description: 'COMPRA LOJA X' },
     })
+    seedEnrichment(purchaseTx, { direction: 'OUT', canonicalType: 'CREDIT_PURCHASE' })
 
     const imported = importFixture([
       { date: '2026-07-10', description: 'COMPRA LOJA X', amountCents: -10000 },
@@ -393,6 +418,7 @@ describe('F2B matching hardening (direction, amount mismatch, conflict)', () => 
       date: '2026-07-12',
       rawData: { provider: 'pluggy', id: usdTx, description: 'COMPRA EXTERIOR' },
     })
+    seedEnrichment(usdTx, { direction: 'OUT', canonicalType: 'CREDIT_PURCHASE' })
 
     const imported = importFixture([{ date: '2026-07-12', description: 'COMPRA EXTERIOR', amountCents: -5000 }], {
       lines: [{ date: '2026-07-12', description: 'COMPRA EXTERIOR', amountCents: -5000, currencyCode: 'USD' }],
@@ -416,6 +442,7 @@ describe('F2B matching hardening (direction, amount mismatch, conflict)', () => 
       date: '2026-07-04',
       rawData: { provider: 'pluggy', id: txId, description: 'PADARIA CENTRAL' },
     })
+    seedEnrichment(txId, { direction: 'OUT', canonicalType: 'CREDIT_PURCHASE' })
 
     const imported = importFixture([{ date: '2026-07-04', description: 'PADARIA CENTRAL', amountCents: -1550 }])
     const report = service.reconcile(imported.statementId)
@@ -458,6 +485,7 @@ describe('F2B matching hardening (direction, amount mismatch, conflict)', () => 
       date: '2026-07-10',
       rawData: { provider: 'pluggy', id: soleTx, description: 'LOJA UNICA' },
     })
+    seedEnrichment(soleTx, { direction: 'OUT', canonicalType: 'CREDIT_PURCHASE' })
 
     const imported = importFixture([
       { date: '2026-07-10', description: 'LOJA UNICA COMPRA A', amountCents: -5000 },
@@ -478,5 +506,104 @@ describe('F2B matching hardening (direction, amount mismatch, conflict)', () => 
 
     const persisted = statementImports.listReconciliations(imported.statementId)
     expect(persisted.filter(r => r.match_status === 'CONFLICT')).toHaveLength(2)
+  })
+
+  it('LIVE_DATA: positive card purchase + negative bill payment reconcile via enrichment, not sign', () => {
+    // Homolog contract: CARD_PURCHASE_UPSTREAM_SIGN=POSITIVE, CARD_PAYMENT_UPSTREAM_SIGN=NEGATIVE
+    const purchaseId = 'LIVE-POS-PURCHASE'
+    const paymentId = 'LIVE-NEG-PAYMENT'
+
+    transactions.upsertTransaction({
+      pluggyTransactionId: purchaseId,
+      pluggyAccountId: CARD_ACCOUNT,
+      description: 'MERCADO EXTRA',
+      descriptionRaw: 'MERCADO EXTRA',
+      amountCents: 5900,
+      currencyCode: 'BRL',
+      date: '2026-07-08',
+      rawData: { provider: 'pluggy', amount: 59.0, type: 'DEBIT', id: purchaseId },
+    })
+    seedEnrichment(purchaseId, {
+      direction: 'OUT',
+      canonicalType: 'CREDIT_PURCHASE',
+      paymentMethod: 'CREDIT_CARD',
+    })
+
+    transactions.upsertTransaction({
+      pluggyTransactionId: paymentId,
+      pluggyAccountId: CARD_ACCOUNT,
+      description: 'PAGAMENTO FATURA',
+      descriptionRaw: 'PAGAMENTO FATURA',
+      amountCents: -25000,
+      currencyCode: 'BRL',
+      date: '2026-07-20',
+      rawData: { provider: 'pluggy', amount: -250.0, type: 'CREDIT', id: paymentId },
+    })
+    seedEnrichment(paymentId, {
+      direction: 'IN',
+      canonicalType: 'CARD_PAYMENT',
+      paymentMethod: 'CREDIT_CARD',
+    })
+
+    const imported = importFixture([
+      { date: '2026-07-08', description: 'MERCADO EXTRA', amountCents: 5900 },
+      { date: '2026-07-20', description: 'PAGAMENTO FATURA', amountCents: -25000 },
+    ])
+    const report = service.reconcile(imported.statementId)
+
+    const purchaseLine = report.lines.find(line => line.descriptionRaw === 'MERCADO EXTRA')
+    const paymentLine = report.lines.find(line => line.descriptionRaw === 'PAGAMENTO FATURA')
+
+    expect(['EXACT', 'HIGH']).toContain(purchaseLine?.status)
+    expect(purchaseLine?.transactionId).toBe(purchaseId)
+    expect(['EXACT', 'HIGH']).toContain(paymentLine?.status)
+    expect(paymentLine?.transactionId).toBe(paymentId)
+    expect(report.matchedCount).toBe(2)
+
+    // Candidates returned by the real repository path must carry enrichment.
+    const candidates = statementImports.listCandidateTransactions(CARD_ACCOUNT, '2026-07-01', '2026-07-31')
+    const purchaseCandidate = candidates.find(c => c.pluggy_transaction_id === purchaseId)
+    expect(purchaseCandidate?.enrichment_direction).toBe('OUT')
+    expect(purchaseCandidate?.enrichment_canonical_type).toBe('CREDIT_PURCHASE')
+    expect(purchaseCandidate?.amount_cents).toBe(5900)
+  })
+
+  it('LIVE_DATA: purchase vs refund same magnitude — enrichment decides, not sign', () => {
+    const purchaseId = 'LIVE-PURCHASE-5900'
+    const refundId = 'LIVE-REFUND-5900'
+
+    transactions.upsertTransaction({
+      pluggyTransactionId: purchaseId,
+      pluggyAccountId: CARD_ACCOUNT,
+      description: 'LOJA Y',
+      descriptionRaw: 'LOJA Y',
+      amountCents: 5900,
+      currencyCode: 'BRL',
+      date: '2026-07-09',
+      rawData: { provider: 'pluggy', amount: 59.0, id: purchaseId },
+    })
+    seedEnrichment(purchaseId, { direction: 'OUT', canonicalType: 'CREDIT_PURCHASE' })
+
+    transactions.upsertTransaction({
+      pluggyTransactionId: refundId,
+      pluggyAccountId: CARD_ACCOUNT,
+      description: 'ESTORNO LOJA Y',
+      descriptionRaw: 'ESTORNO LOJA Y',
+      amountCents: 5900,
+      currencyCode: 'BRL',
+      date: '2026-07-09',
+      rawData: { provider: 'pluggy', amount: 59.0, id: refundId },
+    })
+    seedEnrichment(refundId, { direction: 'IN', canonicalType: 'REFUND' })
+
+    const imported = importFixture([
+      { date: '2026-07-09', description: 'LOJA Y', amountCents: 5900 },
+      { date: '2026-07-09', description: 'ESTORNO LOJA Y', amountCents: 5900 },
+    ])
+    const report = service.reconcile(imported.statementId)
+
+    expect(report.lines.find(l => l.descriptionRaw === 'LOJA Y')?.transactionId).toBe(purchaseId)
+    expect(report.lines.find(l => l.descriptionRaw === 'ESTORNO LOJA Y')?.transactionId).toBe(refundId)
+    expect(report.matchedCount).toBe(2)
   })
 })

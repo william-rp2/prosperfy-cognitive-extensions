@@ -7,6 +7,7 @@ import { AccountsRepository } from './accountsRepository.js'
 import { ClarificationQueueService } from './clarificationQueueService.js'
 import { ClarificationsRepository } from './clarificationsRepository.js'
 import { openFinanceDb, type FinanceDb } from './db.js'
+import { EnrichmentRepository } from './enrichmentRepository.js'
 import { ItemsRepository } from './itemsRepository.js'
 import { OnboardingRepository } from './onboardingRepository.js'
 import { StatementImportRepository } from './statementImportRepository.js'
@@ -87,6 +88,7 @@ let app: ReturnType<typeof createApp>
 let items: ItemsRepository
 let accounts: AccountsRepository
 let transactions: TransactionsRepository
+let enrichment: EnrichmentRepository
 let clarifications: ClarificationsRepository
 let onboarding: OnboardingRepository
 let statementImports: StatementImportRepository
@@ -104,10 +106,23 @@ beforeAll(() => {
   items = new ItemsRepository(db)
   accounts = new AccountsRepository(db)
   transactions = new TransactionsRepository(db)
+  enrichment = new EnrichmentRepository(db)
   clarifications = new ClarificationsRepository(db)
   onboarding = new OnboardingRepository(db)
   statementImports = new StatementImportRepository(db)
 })
+
+/** Matcher requires semantic enrichment — amount sign is not a direction contract. */
+function seedChargeEnrichment(pluggyTransactionId: string) {
+  enrichment.upsert({
+    pluggyTransactionId,
+    direction: 'OUT',
+    canonicalType: 'CREDIT_PURCHASE',
+    paymentMethod: 'CREDIT_CARD',
+    classificationStatus: 'classified',
+    classificationSource: 'deterministic_rule',
+  })
+}
 
 afterAll(async () => {
   await app.close()
@@ -261,6 +276,7 @@ describe('E2E 11 — closed statement PDF', () => {
       currencyCode: 'BRL',
       date: exactFixture.date,
     })
+    seedChargeEnrichment('e11-tx-exact')
     transactions.upsertTransaction({
       pluggyTransactionId: 'e11-tx-amb-1',
       pluggyAccountId: accountId,
@@ -269,6 +285,7 @@ describe('E2E 11 — closed statement PDF', () => {
       currencyCode: 'BRL',
       date: ambiguousFixture.date,
     })
+    seedChargeEnrichment('e11-tx-amb-1')
     transactions.upsertTransaction({
       pluggyTransactionId: 'e11-tx-amb-2',
       pluggyAccountId: accountId,
@@ -277,6 +294,7 @@ describe('E2E 11 — closed statement PDF', () => {
       currencyCode: 'BRL',
       date: ambiguousFixture.date,
     })
+    seedChargeEnrichment('e11-tx-amb-2')
     // App-only extra (never appears on the statement): drives appOnlyCount + APP_ONLY discrepancy.
     transactions.upsertTransaction({
       pluggyTransactionId: 'e11-tx-app-only',
@@ -286,6 +304,7 @@ describe('E2E 11 — closed statement PDF', () => {
       currencyCode: 'BRL',
       date: '2026-07-16',
     })
+    seedChargeEnrichment('e11-tx-app-only')
   })
 
   it('statement parsed, cycle draft created, exact linked, unmatched listed, ambiguous untouched, total discrepancy reported', async () => {
@@ -334,14 +353,16 @@ describe('E2E 12 — reconciliation close', () => {
   beforeAll(() => {
     seedItemAndCreditAccount(pluggyItemId, accountId)
     for (const [i, f] of fixtures.entries()) {
+      const id = `e12-tx-${i}`
       transactions.upsertTransaction({
-        pluggyTransactionId: `e12-tx-${i}`,
+        pluggyTransactionId: id,
         pluggyAccountId: accountId,
         description: f.description,
         amountCents: f.amountCents,
         currencyCode: 'BRL',
         date: f.date,
       })
+      seedChargeEnrichment(id)
     }
   })
 
@@ -365,6 +386,7 @@ describe('E2E 12 — reconciliation close', () => {
       currencyCode: 'BRL',
       date: '2026-07-10',
     })
+    seedChargeEnrichment('e12-tx-late')
 
     const second = (await reconcile(statementId)).json()
     expect(second.cycleStatus).toBe('DISCREPANT') // cycle flagged dirty/discrepant
