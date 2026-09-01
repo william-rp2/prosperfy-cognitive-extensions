@@ -1,7 +1,9 @@
 """
-Patch gateway/run.py — F2B async quoted-reply gate pré-LLM (V2).
+Patch gateway/run.py — F2B async quoted-reply gate (V2) + true eager boot.
 
-V2: eager binding boot + structured observability (sem silent swallow).
+Markers:
+  F2B_QUOTED_ASYNC_GATE_V2   — per-message gate + observability (+ ensure recovery)
+  F2B_QUOTED_BOOT_EAGER_V1   — once-per-process install in GatewayRunner.start
 
 Requer patch F2B_CHANNEL_PROPAGATION já aplicado.
 
@@ -16,7 +18,10 @@ from pathlib import Path
 
 MARKER = "F2B_QUOTED_ASYNC_GATE"
 MARKER_V2 = "F2B_QUOTED_ASYNC_GATE_V2"
+MARKER_BOOT = "F2B_QUOTED_BOOT_EAGER_V1"
 CHANNEL_MARKER = "F2B_CHANNEL_PROPAGATION"
+
+BOOT_ANCHOR = 'logger.info("Starting Hermes Gateway...")'
 
 # Pré-V1 (após channel patch, antes do quoted gate).
 INNER_AFTER_BIND_OLD = '''            _f2b_token = bind_turn_envelope(_f2b_envelope)
@@ -86,7 +91,7 @@ INNER_V2 = '''            _f2b_token = bind_turn_envelope(_f2b_envelope)
             _f2b_token = None
             _f2b_envelope = None
 
-        # F2B_QUOTED_ASYNC_GATE_V2: eager boot + durable lookup + observability.
+        # F2B_QUOTED_ASYNC_GATE_V2: durable lookup + observability (+ ensure recovery).
         _f2b_quoted = None
         _f2b_corr = "none"
         try:
@@ -101,7 +106,7 @@ INNER_V2 = '''            _f2b_token = bind_turn_envelope(_f2b_envelope)
             _f2b_log.getLogger("hermes.f2b").info(
                 "F2B_QUOTE_GATE_START corr=%s", _f2b_corr
             )
-            # Eager: binding pronto ANTES do roteamento textual / LLM.
+            # Idempotent recovery: boot já instalou; aqui só reusa / repara.
             ensure_finance_quoted_binding_ready()
             _f2b_reply_present = bool(str(reply_to_message_id or "").strip())
             _f2b_log.getLogger("hermes.f2b").info(
@@ -183,31 +188,103 @@ INNER_V2 = '''            _f2b_token = bind_turn_envelope(_f2b_envelope)
         )
 '''
 
+BOOT_OLD = '''        logger.info("Starting Hermes Gateway...")
+        try:
+            faulthandler.enable()
+'''
+
+BOOT_NEW = '''        logger.info("Starting Hermes Gateway...")
+
+        # F2B_QUOTED_BOOT_EAGER_V1
+        try:
+            from capability_intelligence.finance_quoted_boot import (
+                ensure_finance_quoted_binding_ready,
+            )
+            _f2b_boot_binding = ensure_finance_quoted_binding_ready()
+            if _f2b_boot_binding is None:
+                logger.warning(
+                    "FINANCE_QUOTED_BINDING_READY=NO "
+                    "F2B_FALLTHROUGH_REASON=BINDING_BOOT_FAILED"
+                )
+        except Exception as _f2b_boot_exc:
+            logger.warning(
+                "F2B_GATE_EXCEPTION type=%s stage=boot",
+                type(_f2b_boot_exc).__name__,
+            )
+
+        try:
+            faulthandler.enable()
+'''
+
+
+def _ensure_v2(text: str) -> tuple[str, str]:
+    """Return (new_text, status) where status is already|upgraded_v1|patched|miss."""
+    if MARKER_V2 in text:
+        return text, "already_v2"
+
+    if INNER_V1 in text:
+        if text.count(INNER_V1) != 1:
+            raise SystemExit("PATCH_AMBIGUOUS=inner_v1")
+        return text.replace(INNER_V1, INNER_V2, 1), "upgraded_v1"
+
+    if INNER_AFTER_BIND_OLD not in text:
+        raise SystemExit("PATCH_MISS=inner_after_bind")
+    if text.count(INNER_AFTER_BIND_OLD) != 1:
+        raise SystemExit("PATCH_AMBIGUOUS=inner_after_bind")
+    return text.replace(INNER_AFTER_BIND_OLD, INNER_V2, 1), "patched_v2"
+
+
+def _ensure_boot(text: str) -> tuple[str, str]:
+    """Return (new_text, status) where status is already|patched.
+
+    Raises SystemExit with BOOT_PATCH_MISS / BOOT_PATCH_AMBIGUOUS.
+    """
+    if MARKER_BOOT in text:
+        return text, "already_boot"
+
+    anchor_count = text.count(BOOT_ANCHOR)
+    if anchor_count == 0:
+        raise SystemExit("BOOT_PATCH_MISS")
+    if anchor_count > 1:
+        raise SystemExit("BOOT_PATCH_AMBIGUOUS")
+
+    if BOOT_OLD not in text:
+        raise SystemExit("BOOT_PATCH_MISS")
+    if text.count(BOOT_OLD) != 1:
+        raise SystemExit("BOOT_PATCH_AMBIGUOUS")
+
+    return text.replace(BOOT_OLD, BOOT_NEW, 1), "patched_boot"
+
 
 def apply(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     if CHANNEL_MARKER not in text:
         raise SystemExit(f"MISSING_PREREQ={CHANNEL_MARKER} path={path}")
 
-    if MARKER_V2 in text:
-        print(f"ALREADY_PATCHED_V2={path}")
-        return
+    original = text
+    text, v2_status = _ensure_v2(text)
+    text, boot_status = _ensure_boot(text)
 
-    if INNER_V1 in text:
-        text = text.replace(INNER_V1, INNER_V2, 1)
+    if text != original:
         path.write_text(text, encoding="utf-8")
+
+    if v2_status == "already_v2":
+        print(f"ALREADY_PATCHED_V2={path}")
+    elif v2_status == "upgraded_v1":
         print(f"UPGRADED_V1_TO_V2={path}")
         print(f"MARKER={MARKER_V2}=YES")
-        return
+    else:
+        print(f"PATCHED_V2={path}")
+        print(f"MARKER={MARKER_V2}=YES")
 
-    if INNER_AFTER_BIND_OLD not in text:
-        raise SystemExit(f"PATCH_MISS=inner_after_bind path={path}")
-    if text.count(INNER_AFTER_BIND_OLD) != 1:
-        raise SystemExit("PATCH_AMBIGUOUS=inner_after_bind")
-    text = text.replace(INNER_AFTER_BIND_OLD, INNER_V2, 1)
-    path.write_text(text, encoding="utf-8")
-    print(f"PATCHED={path}")
-    print(f"MARKER={MARKER_V2}=YES")
+    if boot_status == "already_boot":
+        print(f"ALREADY_PATCHED_BOOT={path}")
+    else:
+        print(f"PATCHED_BOOT={path}")
+        print(f"MARKER={MARKER_BOOT}=YES")
+
+    if text == original:
+        print("IDEMPOTENT=YES")
 
 
 def main() -> int:

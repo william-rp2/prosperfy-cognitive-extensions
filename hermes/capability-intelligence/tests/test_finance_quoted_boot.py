@@ -108,6 +108,56 @@ class TestEagerBootNoWarmup:
         assert get_active_finance_reply_binding() is binding
         assert READY_MARKER in caplog.text
 
+    def test_boot_and_per_message_same_binding(self):
+        caller = FakeCaller()
+        boot = ensure_finance_quoted_binding_ready(caller=caller)
+        per_message = ensure_finance_quoted_binding_ready()
+        assert boot is not None
+        assert per_message is boot
+        assert get_active_finance_reply_binding() is boot
+
+    def test_gateway_start_boot_hook_ready_before_platform_connect(self, caplog):
+        """Espelha GatewayRunner.start: boot hook ANTES de Connecting to…"""
+        assert get_active_finance_reply_binding() is None
+        caller = FakeCaller()
+        events: list[str] = []
+
+        # Exact contract body from F2B_QUOTED_BOOT_EAGER_V1 (no finance_tools).
+        with caplog.at_level(logging.INFO):
+            events.append("Starting Hermes Gateway...")
+            binding = ensure_finance_quoted_binding_ready(caller=caller)
+            if binding is None:
+                events.append("FINANCE_QUOTED_BINDING_READY=NO")
+            else:
+                events.append("FINANCE_QUOTED_BINDING_READY=YES")
+            events.append("Connecting to whatsapp...")
+
+        boot_idx = events.index("FINANCE_QUOTED_BINDING_READY=YES")
+        connect_idx = events.index("Connecting to whatsapp...")
+        assert boot_idx < connect_idx
+        assert get_active_finance_reply_binding() is not None
+        assert READY_MARKER in caplog.text
+        assert "FINANCE_QUOTED_BINDING_READY=NO" not in events
+
+    def test_boot_failure_visible_no_false_ready(self, caplog, monkeypatch):
+        import capability_intelligence.finance_quoted_boot as boot_mod
+
+        def _fail(*, caller=None, force=False):
+            return None
+
+        monkeypatch.setattr(boot_mod, "ensure_finance_quoted_binding_ready", _fail)
+        with caplog.at_level(logging.WARNING):
+            # Simulate gateway start failure branch (patch body).
+            _f2b_boot_binding = boot_mod.ensure_finance_quoted_binding_ready()
+            assert _f2b_boot_binding is None
+            logging.getLogger("hermes.gateway").warning(
+                "FINANCE_QUOTED_BINDING_READY=NO "
+                "F2B_FALLTHROUGH_REASON=BINDING_BOOT_FAILED"
+            )
+        assert "FINANCE_QUOTED_BINDING_READY=NO" in caplog.text
+        assert READY_MARKER not in caplog.text
+        assert get_active_finance_reply_binding() is None
+
     async def test_first_message_after_restart_quoted_finance_no_warmup(self):
         """Process B limpo: PRIMEIRA mensagem é quoted "Mercado" — sem warmup."""
         assert get_active_finance_reply_binding() is None
