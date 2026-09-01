@@ -201,7 +201,7 @@ class TestRouteCheckerFailsClosed:
         assert resolve_specialist_route("foi mercado", reply_to_message_id=DELIVERY_ID) == "NORMAL"
 
     async def test_checker_does_not_block_a_running_event_loop(self):
-        """Sem resposta durável possível aqui, o checker não afirma nada."""
+        """Cache miss + loop ativo: checker síncrono NÃO faz I/O (gate async faz)."""
         caller = FakeCaller(
             {"finance.clarification.list": {"clarifications": [_open_clarification()]}}
         )

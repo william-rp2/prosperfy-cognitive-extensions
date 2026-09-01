@@ -46,6 +46,8 @@ CAP_LIST = "finance.clarification.list"
 
 DEFAULT_CACHE_SIZE = 512
 
+_active_binding: "FinanceReplyBinding | None" = None
+
 
 class CapabilityCaller(Protocol):
     """Mesmo contrato que FinanceService.call — executa uma capability finance.*."""
@@ -209,10 +211,13 @@ class FinanceReplyBinding:
         return outcome
 
     def route_checker(self) -> Callable[..., bool]:
-        """Predicado síncrono: (message_id, context_envelope=None) -> bool.
+        """Predicado síncrono cache-only: (message_id, context_envelope=None) -> bool.
 
-        Fail-closed em direção a NORMAL. Aceita envelope trusted opcional
-        (segundo arg posicional ou kw) para propagar channel no lookup.
+        Com event loop ativo e cache miss NÃO faz I/O (evita bloquear o loop).
+        O caminho real de quoted reply no gateway é
+        ``try_handle_quoted_finance_reply`` (async, durable lookup).
+
+        Fail-closed em direção a NORMAL quando cache frio + loop ativo.
         """
 
         def check(message_id: str, context_envelope: Any = None) -> bool:
@@ -229,7 +234,8 @@ class FinanceReplyBinding:
                 pass
             else:
                 logger.debug(
-                    "route_checker sem lookup durável (event loop ativo) — caindo para heurística de texto"
+                    "route_checker cache miss com event loop ativo — "
+                    "durable lookup fica no gate async pré-LLM"
                 )
                 return False
 
@@ -248,13 +254,22 @@ class FinanceReplyBinding:
         return check
 
 
+def get_active_finance_reply_binding() -> FinanceReplyBinding | None:
+    """Instância instalada no boot (finance_tools) — usada pelo gate async."""
+    return _active_binding
+
+
 def install_router_hook(binding: FinanceReplyBinding) -> None:
     """Liga o binding ao boundary de roteamento pré-LLM do Hermes."""
+    global _active_binding
+    _active_binding = binding
     set_finance_quoted_reply_checker(binding.route_checker())
 
 
 def uninstall_router_hook() -> None:
     """Volta ao comportamento pré-F2B (só heurística de texto)."""
+    global _active_binding
+    _active_binding = None
     set_finance_quoted_reply_checker(None)
 
 
@@ -263,6 +278,7 @@ __all__ = [
     "BindingStatus",
     "CapabilityCaller",
     "FinanceReplyBinding",
+    "get_active_finance_reply_binding",
     "install_router_hook",
     "uninstall_router_hook",
 ]
