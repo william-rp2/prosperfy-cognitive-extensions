@@ -275,6 +275,7 @@ def install_router_hook(binding: FinanceReplyBinding) -> None:
     global _active_binding
     _active_binding = binding
     set_finance_quoted_reply_checker(binding.route_checker())
+    logger.info("FINANCE_QUOTED_BINDING_READY=YES")
 
 
 def uninstall_router_hook() -> None:

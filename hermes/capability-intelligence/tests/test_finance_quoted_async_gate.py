@@ -242,9 +242,32 @@ class TestRecoverAfterPriorMissWithoutRestart:
         assert hit.outcome.status is BindingStatus.RESOLVED
         assert hit.skip_llm is True
         assert hit.success_text_emitted is True
+        assert hit.gate_outcome == "FINANCE_RESOLVED"
 
 
-# ─── exact bind + persist first ─────────────────────────────────────────────
+class TestStructuredGateTrace:
+    async def test_exact_quote_emits_structured_outcome(self, caplog):
+        import logging
+
+        caller = FakeCaller(
+            {
+                "finance.clarification.list": {"clarifications": [_open()]},
+                "finance.clarification.resolve": {"resolved": True},
+            }
+        )
+        with caplog.at_level(logging.INFO):
+            result = await try_handle_quoted_finance_reply(
+                FinanceReplyBinding(caller),
+                message_text="Mercado",
+                envelope=_envelope(),
+            )
+        assert result.gate_outcome == "FINANCE_RESOLVED"
+        assert "F2B_LOOKUP_START" in caplog.text
+        assert "F2B_LOOKUP_RESULT" in caplog.text
+        assert "F2B_SKIP_LLM" in caplog.text
+        assert "QUOTED_GATE_OUTCOME" in caplog.text
+        # No raw delivery id in structured trace lines.
+        assert DELIVERY_ID not in caplog.text
 
 
 class TestExactBindAndPersistFirst:

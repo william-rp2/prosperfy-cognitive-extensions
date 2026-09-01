@@ -366,20 +366,12 @@ class _LazyFinanceCaller:
 
 
 def _wire_finance_router_hook() -> None:
-    """Uma instância FinanceReplyBinding no boot — sem exigir Cognitive env no import."""
-    try:
-        from capability_intelligence.finance_reply_binding import (
-            FinanceReplyBinding,
-            install_router_hook,
-        )
+    """Eager boot: FinanceReplyBinding disponível antes de qualquer mensagem Finance."""
+    from capability_intelligence.finance_quoted_boot import (
+        ensure_finance_quoted_binding_ready,
+    )
 
-        install_router_hook(FinanceReplyBinding(_LazyFinanceCaller()))
-        logger.info("finance router hook installed")
-    except Exception as exc:  # noqa: BLE001 — fail-closed; NORMAL continua
-        logger.warning(
-            "finance router hook not installed (%s) — quoted finance routing disabled",
-            type(exc).__name__,
-        )
+    ensure_finance_quoted_binding_ready()
 
 
 _wire_finance_router_hook()
