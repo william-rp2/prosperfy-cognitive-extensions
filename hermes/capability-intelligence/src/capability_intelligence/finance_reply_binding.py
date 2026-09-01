@@ -62,6 +62,13 @@ class CapabilityCaller(Protocol):
 
 
 class _BoundedFlagCache:
+    """Positive-only bounded cache for known Finance delivery message IDs.
+
+    NEGATIVE results must NEVER be stored: a transient/empty durable lookup
+    (e.g. Finance API before a hotfix) would poison quoted reply until
+    process restart. Only True is cacheable; False means "not in cache".
+    """
+
     def __init__(self, max_size: int = DEFAULT_CACHE_SIZE) -> None:
         self._max_size = max(1, max_size)
         self._items: OrderedDict[str, bool] = OrderedDict()
@@ -73,9 +80,10 @@ class _BoundedFlagCache:
         return self._items[key]
 
     def put(self, key: str, value: bool) -> None:
-        if not key:
+        if not key or not value:
+            # Negative cache is forbidden — miss must re-query durable source.
             return
-        self._items[key] = value
+        self._items[key] = True
         self._items.move_to_end(key)
         while len(self._items) > self._max_size:
             self._items.popitem(last=False)
@@ -153,7 +161,10 @@ class FinanceReplyBinding:
             channel=_resolve_channel(channel),
         )
         found = bool(data.get("clarifications"))
-        self._cache.put(message_id, found)
+        # Positive cache only — never persist a miss (live: stale False after
+        # Finance API transient empty blocked recover without Hermes restart).
+        if found:
+            self._cache.put(message_id, True)
         return found
 
     async def bind_reply(

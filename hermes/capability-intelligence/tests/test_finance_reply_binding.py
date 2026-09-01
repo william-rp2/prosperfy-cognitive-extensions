@@ -180,7 +180,7 @@ class TestDurableLookup:
         assert await FinanceReplyBinding(caller).is_quoted_finance_question("") is False
         assert caller.calls == []
 
-    async def test_lookup_result_is_cached(self):
+    async def test_positive_lookup_result_is_cached(self):
         caller = FakeCaller(
             {"finance.clarification.list": {"clarifications": [_open_clarification()]}}
         )
@@ -188,6 +188,52 @@ class TestDurableLookup:
         await binding.is_quoted_finance_question(DELIVERY_ID)
         await binding.is_quoted_finance_question(DELIVERY_ID)
         assert len(caller.calls) == 1
+
+    async def test_miss_is_not_cached_recovers_without_restart(self):
+        """Live bug: MISS transitório (API quebrada) NÃO pode envenenar até restart."""
+        store: dict[str, Any] = {"clarifications": []}
+
+        def list_resp(_params: dict[str, Any]) -> dict[str, Any]:
+            return {"clarifications": list(store["clarifications"])}
+
+        caller = FakeCaller({"finance.clarification.list": list_resp})
+        binding = FinanceReplyBinding(caller)
+
+        assert await binding.is_quoted_finance_question(DELIVERY_ID) is False
+        assert len(caller.calls) == 1
+
+        # Backend corrigido / binding passou a existir — MESMA instância Hermes.
+        store["clarifications"] = [_open_clarification()]
+        assert await binding.is_quoted_finance_question(DELIVERY_ID) is True
+        assert len(caller.calls) == 2
+        assert binding._cache.get(DELIVERY_ID) is True
+
+    async def test_unknown_quote_requeries_each_time_remains_normal(self):
+        caller = FakeCaller({"finance.clarification.list": {"clarifications": []}})
+        binding = FinanceReplyBinding(caller)
+        assert await binding.is_quoted_finance_question("wamid.NEVER-FINANCE") is False
+        assert await binding.is_quoted_finance_question("wamid.NEVER-FINANCE") is False
+        assert len(caller.calls) == 2
+        assert binding._cache.get("wamid.NEVER-FINANCE") is None
+
+    async def test_transient_list_error_does_not_poison_cache(self):
+        attempts = {"n": 0}
+
+        def list_resp(_params: dict[str, Any]) -> dict[str, Any]:
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise RuntimeError("Finance API transient")
+            return {"clarifications": [_open_clarification()]}
+
+        caller = FakeCaller({"finance.clarification.list": list_resp})
+        binding = FinanceReplyBinding(caller)
+
+        with pytest.raises(RuntimeError):
+            await binding.is_quoted_finance_question(DELIVERY_ID)
+        assert binding._cache.get(DELIVERY_ID) is None
+
+        assert await binding.is_quoted_finance_question(DELIVERY_ID) is True
+        assert len(caller.calls) == 2
 
 
 class TestRouteCheckerFailsClosed:

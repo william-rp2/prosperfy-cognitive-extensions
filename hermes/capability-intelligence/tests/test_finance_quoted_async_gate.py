@@ -180,6 +180,70 @@ class TestAsyncColdCacheQuote:
         assert result.outcome.status is BindingStatus.RESOLVED
 
 
+class TestRecoverAfterPriorMissWithoutRestart:
+    async def test_async_gate_reliooks_after_transient_miss_same_process(self):
+        """Live sequence: T0 MISS → T1 API fixed → T2 quote again, same binding.
+
+        route_checker still returns False on cold miss (no I/O in loop), but
+        negative cache must NOT prevent async durable relookup.
+        """
+        store: dict[str, Any] = {"clarifications": []}
+
+        def list_resp(_params: dict[str, Any]) -> dict[str, Any]:
+            return {"clarifications": list(store["clarifications"])}
+
+        caller = FakeCaller(
+            {
+                "finance.clarification.list": list_resp,
+                "finance.clarification.resolve": {
+                    "resolved": True,
+                    "clarification": {"id": CLAR_A},
+                },
+            }
+        )
+        binding = FinanceReplyBinding(caller)
+
+        # T0 — backend broken / empty (poisoned the old negative cache).
+        miss = await try_handle_quoted_finance_reply(
+            binding,
+            message_text="Mercado",
+            envelope=_envelope(),
+        )
+        assert miss.handled is False
+        assert miss.quoted_finance is False
+        assert miss.durable_lookup_called is True
+        assert miss.skip_llm is False
+        list_calls_after_miss = sum(
+            1 for c, _ in caller.calls if c == "finance.clarification.list"
+        )
+        assert list_calls_after_miss >= 1
+        assert binding._cache.get(DELIVERY_ID) is None
+        # Sync route_checker must not claim finance from a prior miss.
+        assert binding.route_checker()(DELIVERY_ID) is False
+
+        # T1 — Finance API hotfix; same Hermes process / same binding instance.
+        store["clarifications"] = [_open()]
+
+        # T2 — owner quotes again.
+        hit = await try_handle_quoted_finance_reply(
+            binding,
+            message_text="Mercado",
+            envelope=_envelope(),
+        )
+        list_calls_after_hit = sum(
+            1 for c, _ in caller.calls if c == "finance.clarification.list"
+        )
+        assert list_calls_after_hit > list_calls_after_miss
+        assert hit.durable_lookup_called is True
+        assert hit.quoted_finance is True
+        assert hit.bind_reply_called is True
+        assert "finance.clarification.resolve" in caller.caps()
+        assert hit.outcome is not None
+        assert hit.outcome.status is BindingStatus.RESOLVED
+        assert hit.skip_llm is True
+        assert hit.success_text_emitted is True
+
+
 # ─── exact bind + persist first ─────────────────────────────────────────────
 
 
