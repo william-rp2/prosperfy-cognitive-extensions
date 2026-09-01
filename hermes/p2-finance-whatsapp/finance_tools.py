@@ -159,6 +159,7 @@ def _trusted_channel():
 def _call(capability_id: str, params: dict[str, Any]) -> dict:
     from capability_intelligence.finance_service import FinanceService
 
+    _ensure_cognitive_env_from_dotenv()
     channel = _trusted_channel()
     return asyncio.run(
         FinanceService.from_env().call(capability_id, params, channel=channel)
@@ -250,16 +251,62 @@ registry.register(
 )
 
 
+def _ensure_cognitive_env_from_dotenv() -> None:
+    """Garante COGNITIVE_* no os.environ a partir de HERMES_HOME/.env se ausente.
+
+    O gateway pode descobrir tools antes de exportar o dotenv no process env.
+    """
+    import os
+    from pathlib import Path
+
+    if os.environ.get("COGNITIVE_GATEWAY_CREDENTIAL"):
+        return
+    home = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
+    env_path = home / ".env"
+    if not env_path.is_file():
+        return
+    for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        key = key.strip()
+        if not key.startswith("COGNITIVE_"):
+            continue
+        if key not in os.environ or not os.environ.get(key):
+            os.environ[key] = val.strip().strip('"').strip("'")
+
+
+class _LazyFinanceCaller:
+    """Caller que monta FinanceService só no primeiro uso (env já disponível)."""
+
+    def __init__(self) -> None:
+        self._svc = None
+
+    async def call(
+        self,
+        capability_id: str,
+        params: dict[str, Any],
+        *,
+        channel: Any = None,
+    ) -> dict[str, Any]:
+        if self._svc is None:
+            _ensure_cognitive_env_from_dotenv()
+            from capability_intelligence.finance_service import FinanceService
+
+            self._svc = FinanceService.from_env()
+        return await self._svc.call(capability_id, params, channel=channel)
+
+
 def _wire_finance_router_hook() -> None:
-    """Uma instância FinanceReplyBinding no boot — sem side effect no import se falhar."""
+    """Uma instância FinanceReplyBinding no boot — sem exigir Cognitive env no import."""
     try:
         from capability_intelligence.finance_reply_binding import (
             FinanceReplyBinding,
             install_router_hook,
         )
-        from capability_intelligence.finance_service import FinanceService
 
-        install_router_hook(FinanceReplyBinding(FinanceService.from_env()))
+        install_router_hook(FinanceReplyBinding(_LazyFinanceCaller()))
         logger.info("finance router hook installed")
     except Exception as exc:  # noqa: BLE001 — fail-closed; NORMAL continua
         logger.warning(
