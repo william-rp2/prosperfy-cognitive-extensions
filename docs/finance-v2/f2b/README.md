@@ -81,7 +81,9 @@ Core areas:
 
 ## Implementation status (Bloco 4 — pre-deploy)
 
-Functional code is **closed** on `dev/finance-v2-f2b` @ `21bccff`.
+Functional code is **closed** on `dev/finance-v2-f2b` @ `21bccff` (last functional SHA).
+
+Docs Bloco 4 aligned @ `b719bf1` (and any later docs-only tip). Homolog deploy uses branch tip that includes both.
 
 | Area | Status |
 |---|---|

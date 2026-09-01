@@ -11,14 +11,17 @@ This runbook complements `11_HOMOLOG_DEPLOY_MANIFEST.md` — the manifest is the
 ## Step 0 — Pre-deploy record
 
 ```text
-SOURCE_SHA=21bccff2788cd354452d3c1ef664dcbc3e3f7a34
+SOURCE_SHA=b719bf14780acf05a4fae91607d93bff67516628
+FUNCTIONAL_CODE_SHA=21bccff2788cd354452d3c1ef664dcbc3e3f7a34
 BRANCH=dev/finance-v2-f2b
 WORKTREE_CLEAN=YES
 MASTER_UNTOUCHED=YES   # origin/master = f4f491c745c970766274f0f37abfdb3874bc1222
 PRODUCTION_TOUCHED=NO
 ```
 
-Run all relevant suites/build on SOURCE_SHA before copying artifacts.
+Checkout tip must include `FUNCTIONAL_CODE_SHA` and the Bloco 4 docs tip (`SOURCE_SHA` or later docs-only).
+
+Run all relevant suites/build on SOURCE_SHA (or tip) before copying artifacts.
 
 Expected minimum (Bloco 4 handoff):
 

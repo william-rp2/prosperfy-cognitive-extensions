@@ -6,15 +6,23 @@
 
 ```text
 BRANCH=dev/finance-v2-f2b
-SOURCE_SHA=21bccff2788cd354452d3c1ef664dcbc3e3f7a34
+SOURCE_SHA=b719bf14780acf05a4fae91607d93bff67516628
+FUNCTIONAL_CODE_SHA=21bccff2788cd354452d3c1ef664dcbc3e3f7a34
 CANONICAL_MASTER=f4f491c745c970766274f0f37abfdb3874bc1222  (must remain untouched)
 ```
+
+- `FUNCTIONAL_CODE_SHA` — último commit de código funcional F2B (pré-docs).
+- `SOURCE_SHA` — tip com documentação Bloco 4 alinhada (runtime idêntico ao functional SHA).
+- Tip docs-only posterior na mesma branch também é válido se incluir ambos como ancestors.
 
 Verificar após checkout:
 
 ```bash
 git rev-parse HEAD
-# must equal SOURCE_SHA
+git merge-base --is-ancestor 21bccff2788cd354452d3c1ef664dcbc3e3f7a34 HEAD
+git merge-base --is-ancestor b719bf14780acf05a4fae91607d93bff67516628 HEAD
+# both ancestor checks must exit 0
+# HEAD may equal SOURCE_SHA or a later docs-only tip on this branch
 ```
 
 ---
