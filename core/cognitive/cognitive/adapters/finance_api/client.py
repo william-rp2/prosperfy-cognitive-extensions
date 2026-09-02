@@ -150,6 +150,7 @@ class FinanceApiAdapter:
         # CONSUMIDO; segmentos {param} do path são preenchidos e removidos do
         # payload. O que sobra é o corpo/query enviado à Finance API.
         method, path, payload = _resolve_route(tool_name, arguments)
+        payload = _normalize_tool_payload(tool_name, payload)
 
         if not self._token:
             raise RuntimeError("FINANCE_API_TOKEN não configurado")
@@ -298,6 +299,45 @@ def _resolve_route(tool_name: str, arguments: dict[str, Any]) -> tuple[str, str,
     method, path = route
     path, payload = _render_path(path, payload)
     return method, path, payload
+
+
+def _normalize_tool_payload(tool_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Traduz contrato Cognitive → HTTP Finance API (tool-specific).
+
+    ClarificationBinder / capability YAML usam freeText + resolvedByActorId.
+    A rota POST .../resolve consome resolution + actorId. O mapeamento vive
+    só neste boundary — ClarificationBinder não conhece nomes HTTP.
+    """
+    if tool_name != "finance.clarification.resolve":
+        return payload
+
+    out = dict(payload)
+
+    free_text = out.pop("freeText", None)
+    resolved_by_actor = out.pop("resolvedByActorId", None)
+
+    if free_text is not None and "resolution" in out and out["resolution"] != free_text:
+        raise RuntimeError(
+            "FinanceApiAdapter: finance.clarification.resolve payload conflitante "
+            "(freeText vs resolution)."
+        )
+    if (
+        resolved_by_actor is not None
+        and "actorId" in out
+        and out["actorId"] != resolved_by_actor
+    ):
+        raise RuntimeError(
+            "FinanceApiAdapter: finance.clarification.resolve payload conflitante "
+            "(resolvedByActorId vs actorId)."
+        )
+
+    if free_text is not None:
+        out["resolution"] = free_text
+    if resolved_by_actor is not None:
+        # Exact canonical actor id — no display name / JID rewrite.
+        out["actorId"] = resolved_by_actor
+
+    return out
 
 
 def _stringify_query(arguments: dict[str, Any]) -> dict[str, str]:

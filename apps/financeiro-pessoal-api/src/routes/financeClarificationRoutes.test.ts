@@ -245,6 +245,40 @@ describe('registerFinanceClarificationRoutes — delivery/resolve, path param n�
     expect(body.alreadyResolved).toBe(false)
   })
 
+  it('POST .../resolve persiste resolution + actorId + replyMessageId (HTTP contract)', async () => {
+    const { row } = clarifications.getOrCreateOpen({
+      pluggyTransactionId: 'tx-1',
+      questionType: 'category',
+      questionText: 'Qual categoria?',
+    })
+    expect(row.resolution).toBeNull()
+    expect(row.resolved_by).toBeNull()
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/finance/clarifications/${row.id}/resolve`,
+      headers: AUTH,
+      payload: {
+        resolution: 'mercado',
+        actorId: 'finance-owner-1',
+        replyMessageId: 'reply-1',
+      },
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.alreadyResolved).toBe(false)
+    expect(body.clarification.status).toBe('resolved')
+    expect(body.clarification.resolution).toBe('mercado')
+    expect(body.clarification.resolvedBy).toBe('finance-owner-1')
+    expect(body.clarification.replyMessageId).toBe('reply-1')
+    expect(body.clarification.resolvedAt).toBeTruthy()
+
+    const persisted = clarifications.getById(row.id)
+    expect(persisted?.resolution).toBe('mercado')
+    expect(persisted?.resolved_by).toBe('finance-owner-1')
+    expect(persisted?.quoted_message_id).toBe('reply-1')
+  })
+
   it('resolve idempotente: segunda chamada não duplica a mutação', async () => {
     const { row } = clarifications.getOrCreateOpen({
       pluggyTransactionId: 'tx-1',

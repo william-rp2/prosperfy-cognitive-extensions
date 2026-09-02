@@ -93,14 +93,112 @@ class TestPathParams:
         seen, handler = _capture(200, {"clarification": {"id": "clar-1"}})
         await _adapter(handler).invoke_tool(
             "finance.clarification.resolve",
-            {"clarificationId": "clar-1", "freeText": "foi mercado", "resolvedByActorId": "actor-owner"},
+            {
+                "clarificationId": "clar-1",
+                "freeText": "foi mercado",
+                "resolvedByActorId": "actor-owner",
+                "replyMessageId": "wamid.reply-1",
+            },
             TENANT,
             CORRELATION,
         )
         assert seen["method"] == "POST"
         assert seen["path"] == "/api/finance/clarifications/clar-1/resolve"
         assert "clarificationId" not in seen["body"]
-        assert seen["body"] == {"freeText": "foi mercado", "resolvedByActorId": "actor-owner"}
+        assert seen["body"] == {
+            "resolution": "foi mercado",
+            "actorId": "actor-owner",
+            "replyMessageId": "wamid.reply-1",
+        }
+
+    async def test_resolve_maps_capability_fields_to_finance_http_contract(self):
+        """Cognitive freeText/resolvedByActorId → Finance resolution/actorId."""
+        seen, handler = _capture(200, {"clarification": {"id": "clar-42"}, "alreadyResolved": False})
+        await _adapter(handler).invoke_tool(
+            "finance.clarification.resolve",
+            {
+                "clarificationId": "clar-42",
+                "freeText": "mercado",
+                "resolvedByActorId": "finance-owner-1",
+                "replyMessageId": "wamid.reply-1",
+            },
+            TENANT,
+            CORRELATION,
+        )
+        assert seen["method"] == "POST"
+        assert seen["path"] == "/api/finance/clarifications/clar-42/resolve"
+        assert seen["body"] == {
+            "resolution": "mercado",
+            "actorId": "finance-owner-1",
+            "replyMessageId": "wamid.reply-1",
+        }
+        assert "freeText" not in seen["body"]
+        assert "resolvedByActorId" not in seen["body"]
+        assert "clarificationId" not in seen["body"]
+
+    async def test_resolve_preserves_exact_resolution_and_canonical_actor(self):
+        seen, handler = _capture(200, {"ok": True})
+        await _adapter(handler).invoke_tool(
+            "finance.clarification.resolve",
+            {
+                "clarificationId": "clar-42",
+                "freeText": "mercado",
+                "resolvedByActorId": "finance-owner-1",
+                "replyMessageId": "wamid.reply-1",
+            },
+            TENANT,
+            CORRELATION,
+        )
+        assert seen["body"]["resolution"] == "mercado"
+        assert seen["body"]["actorId"] == "finance-owner-1"
+
+    def test_resolve_conflicting_free_text_and_resolution_fails_closed(self):
+        from cognitive.adapters.finance_api.client import _normalize_tool_payload
+
+        with pytest.raises(RuntimeError, match="conflitante"):
+            _normalize_tool_payload(
+                "finance.clarification.resolve",
+                {"freeText": "mercado", "resolution": "outro", "replyMessageId": "r1"},
+            )
+
+    async def test_non_resolve_payloads_unchanged(self):
+        seen_list, handler_list = _capture(200, {"clarifications": [], "total": 0})
+        await _adapter(handler_list).invoke_tool(
+            "finance.clarification.list",
+            {"deliveryMessageId": "deliv-A", "status": "any", "limit": 1},
+            TENANT,
+            CORRELATION,
+        )
+        assert seen_list["params"] == {
+            "deliveryMessageId": "deliv-A",
+            "status": "any",
+            "limit": "1",
+        }
+
+        seen_del, handler_del = _capture(200, {"ok": True})
+        await _adapter(handler_del).invoke_tool(
+            "finance.clarification.deliver",
+            {
+                "clarificationId": "clar-1",
+                "deliveryMessageId": "wamid.ABC",
+                "deliveryChatId": "grp@g.us",
+            },
+            TENANT,
+            CORRELATION,
+        )
+        assert seen_del["body"] == {
+            "deliveryMessageId": "wamid.ABC",
+            "deliveryChatId": "grp@g.us",
+        }
+
+        seen_sum, handler_sum = _capture(200, {"ok": True})
+        await _adapter(handler_sum).invoke_tool(
+            "finance.summary.read",
+            {"month": "2026-08"},
+            TENANT,
+            CORRELATION,
+        )
+        assert seen_sum["params"] == {"month": "2026-08"}
 
     async def test_get_with_path_param_does_not_repeat_it_in_the_query(self):
         seen, handler = _capture(200, {"corrections": []})
