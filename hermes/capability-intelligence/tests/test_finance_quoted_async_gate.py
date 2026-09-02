@@ -270,6 +270,42 @@ class TestStructuredGateTrace:
         assert DELIVERY_ID not in caplog.text
 
 
+class TestHuman2249CognitiveEnvelope:
+    """Human forensic 22:49 — Cognitive envelope nested success/data shape."""
+
+    async def test_human_2249_regression_exact_quote_resolves(self):
+        caller = FakeCaller(
+            {
+                "finance.clarification.list": {
+                    "success": True,
+                    "data": {
+                        "clarifications": [_open()],
+                        "total": 1,
+                    },
+                },
+                "finance.clarification.resolve": {
+                    "success": True,
+                    "data": {"clarification": {"id": CLAR_A}},
+                },
+            }
+        )
+        binding = FinanceReplyBinding(caller)
+        result = await try_handle_quoted_finance_reply(
+            binding,
+            message_text="Mercado",
+            envelope=_envelope(),
+        )
+        assert result.durable_lookup_called is True
+        assert result.quoted_finance is True
+        assert result.bind_reply_called is True
+        assert "finance.clarification.resolve" in caller.caps()
+        assert result.outcome is not None
+        assert result.outcome.status is BindingStatus.RESOLVED
+        assert result.skip_llm is True
+        assert result.gate_outcome == "FINANCE_RESOLVED"
+        assert result.success_text_emitted is True
+
+
 class TestExactBindAndPersistFirst:
     async def test_exact_binding_among_many_open(self):
         def list_resp(params: dict[str, Any]) -> dict[str, Any]:

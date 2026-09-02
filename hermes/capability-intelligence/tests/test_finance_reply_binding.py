@@ -387,3 +387,134 @@ class TestBindReply:
         resolve_params = caller.calls[1][1]
         # user_id (principal de transporte) jamais vira atribuição de autoria.
         assert "5519999999999@s.whatsapp.net" not in resolve_params.values()
+
+
+# ─── Cognitive result envelope {success, data} (human forensic 22:49) ──────
+
+
+def _cognitive_envelope(business: dict[str, Any]) -> dict[str, Any]:
+    return {"success": True, "data": business}
+
+
+class TestCognitiveResultEnvelope:
+    async def test_real_cognitive_envelope_lookup_hit(self):
+        caller = FakeCaller(
+            {
+                "finance.clarification.list": _cognitive_envelope(
+                    {
+                        "clarifications": [_open_clarification()],
+                        "total": 1,
+                    }
+                )
+            }
+        )
+        binding = FinanceReplyBinding(caller)
+        assert await binding.is_quoted_finance_question(DELIVERY_ID) is True
+        assert binding._cache.get(DELIVERY_ID) is True
+
+    async def test_real_cognitive_empty_envelope_miss_no_negative_cache(self):
+        caller = FakeCaller(
+            {
+                "finance.clarification.list": _cognitive_envelope(
+                    {"clarifications": [], "total": 0}
+                )
+            }
+        )
+        binding = FinanceReplyBinding(caller)
+        assert await binding.is_quoted_finance_question(DELIVERY_ID) is False
+        assert binding._cache.get(DELIVERY_ID) is None
+
+    async def test_direct_payload_backcompat(self):
+        caller = FakeCaller(
+            {"finance.clarification.list": {"clarifications": [_open_clarification()]}}
+        )
+        assert await FinanceReplyBinding(caller).is_quoted_finance_question(DELIVERY_ID) is True
+
+    async def test_failed_delivery_not_cached(self):
+        caller = FakeCaller(
+            {"finance.clarification.deliver": {"success": False, "error": {"code": "x"}}}
+        )
+        binding = FinanceReplyBinding(caller)
+        with pytest.raises(RuntimeError, match="unsuccessful result") as excinfo:
+            await binding.register_delivery(CLARIFICATION_ID, DELIVERY_ID)
+        assert "code" not in str(excinfo.value)
+        assert binding._cache.get(DELIVERY_ID) is None
+
+    async def test_unsuccessful_list_fail_closed(self):
+        caller = FakeCaller(
+            {"finance.clarification.list": {"success": False, "error": {"msg": "secret"}}}
+        )
+        binding = FinanceReplyBinding(caller)
+        with pytest.raises(RuntimeError) as excinfo:
+            await binding.is_quoted_finance_question(DELIVERY_ID)
+        assert "secret" not in str(excinfo.value)
+        assert binding._cache.get(DELIVERY_ID) is None
+
+    async def test_unsuccessful_resolve_not_reported_as_success(self):
+        caller = FakeCaller(
+            {
+                "finance.clarification.list": _cognitive_envelope(
+                    {"clarifications": [_open_clarification()], "total": 1}
+                ),
+                "finance.clarification.resolve": {
+                    "success": False,
+                    "error": {"denied": True},
+                },
+            }
+        )
+        with pytest.raises(RuntimeError, match="unsuccessful result"):
+            await FinanceReplyBinding(caller).bind_reply(
+                _envelope(), actor_id=OWNER_ACTOR, text="Mercado"
+            )
+
+    async def test_real_envelope_bind_reply_and_resolve(self):
+        caller = FakeCaller(
+            {
+                "finance.clarification.list": _cognitive_envelope(
+                    {
+                        "clarifications": [_open_clarification()],
+                        "total": 1,
+                    }
+                ),
+                "finance.clarification.resolve": _cognitive_envelope(
+                    {"clarification": {"id": CLARIFICATION_ID}}
+                ),
+            }
+        )
+        outcome = await FinanceReplyBinding(caller).bind_reply(
+            _envelope(), actor_id=OWNER_ACTOR, text="Mercado"
+        )
+        assert outcome.status is BindingStatus.RESOLVED
+        assert outcome.clarification_id == CLARIFICATION_ID
+        assert "Atualizei" in outcome.message
+        assert caller.calls[0] == (
+            "finance.clarification.list",
+            {"deliveryMessageId": DELIVERY_ID, "status": "any", "limit": 2},
+        )
+        resolve_cap, resolve_params = caller.calls[1]
+        assert resolve_cap == "finance.clarification.resolve"
+        assert resolve_params["clarificationId"] == CLARIFICATION_ID
+        assert resolve_params["freeText"] == "Mercado"
+        assert resolve_params["replyMessageId"] == REPLY_ID
+        assert resolve_params["resolvedByActorId"] == OWNER_ACTOR
+
+    async def test_real_envelope_late_reply_idempotent(self):
+        caller = FakeCaller(
+            {
+                "finance.clarification.list": _cognitive_envelope(
+                    {
+                        "clarifications": [
+                            _open_clarification(
+                                status="resolved", resolvedAt="2026-09-01T10:00:00Z"
+                            )
+                        ],
+                        "total": 1,
+                    }
+                )
+            }
+        )
+        outcome = await FinanceReplyBinding(caller).bind_reply(
+            _envelope(), actor_id=OWNER_ACTOR, text="Mercado"
+        )
+        assert outcome.status is BindingStatus.ALREADY_RESOLVED
+        assert "finance.clarification.resolve" not in caller.capabilities_called()

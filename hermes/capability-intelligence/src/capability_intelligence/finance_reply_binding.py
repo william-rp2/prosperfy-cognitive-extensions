@@ -19,6 +19,8 @@ Invariantes:
 * O vínculo é METADADO DE TRANSPORTE (ContextEnvelope.reply_to_message_id).
 * Capabilities finance.* usadas aqui propagam TrustedChannel do turno.
 * Rotear para FINANCE não autoriza NADA — ACL Cognitive decide depois.
+* ClarificationBinder recebe business payload ("data de sucesso"), nunca o
+  envelope Cognitive ``{success, data}`` — unwrap fica neste boundary.
 """
 
 from __future__ import annotations
@@ -100,6 +102,33 @@ def _resolve_channel(
     return trusted_channel_from_envelope(get_turn_envelope())
 
 
+def _unwrap_binding_capability_data(result: Any) -> dict[str, Any]:
+    """Normaliza payload do boundary FinanceReplyBinding → ClarificationBinder.
+
+    Aceita:
+      * shape direto/teste: ``{"clarifications": [...]}`` / ``{"alreadyResolved": ...}``
+      * envelope Cognitive real: ``{"success": true, "data": <business>}``
+
+    Em ``success=false`` ou envelope malformado: fail-closed sem ecoar payload/PII.
+    """
+    if not isinstance(result, dict):
+        raise RuntimeError("finance binding capability returned unsuccessful result")
+
+    # Direct / legacy / FakeCaller shape — already business payload.
+    if "success" not in result:
+        return result
+
+    if result.get("success") is not True:
+        raise RuntimeError("finance binding capability returned unsuccessful result")
+
+    data = result.get("data")
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise RuntimeError("finance binding capability returned unsuccessful result")
+    return data
+
+
 class FinanceReplyBinding:
     """Registra entrega de perguntas e amarra a resposta citada na clarification certa."""
 
@@ -112,6 +141,19 @@ class FinanceReplyBinding:
         self._caller = caller
         self._binder = binder if binder is not None else ClarificationBinder(caller)
         self._cache = _BoundedFlagCache(cache_size)
+
+    async def _call_binding_capability(
+        self,
+        capability_id: str,
+        params: dict[str, Any],
+        *,
+        channel: TrustedChannel | None = None,
+    ) -> dict[str, Any]:
+        """Chama a capability e devolve o business payload (sem envelope success/data)."""
+        raw = await self._caller.call(
+            capability_id, params, channel=_resolve_channel(channel)
+        )
+        return _unwrap_binding_capability_data(raw)
 
     async def register_delivery(
         self,
@@ -136,9 +178,10 @@ class FinanceReplyBinding:
         if delivered_at:
             params["deliveredAt"] = delivered_at
 
-        data = await self._caller.call(
-            CAP_DELIVER, params, channel=_resolve_channel(channel)
+        data = await self._call_binding_capability(
+            CAP_DELIVER, params, channel=channel
         )
+        # Positive cache only after validated success (unwrap raises on failure).
         self._cache.put(delivery_message_id, True)
         return data
 
@@ -155,10 +198,10 @@ class FinanceReplyBinding:
         if cached is not None:
             return cached
 
-        data = await self._caller.call(
+        data = await self._call_binding_capability(
             CAP_LIST,
             {"deliveryMessageId": message_id, "status": "any", "limit": 1},
-            channel=_resolve_channel(channel),
+            channel=channel,
         )
         found = bool(data.get("clarifications"))
         # Positive cache only — never persist a miss (live: stale False after
@@ -197,13 +240,14 @@ class FinanceReplyBinding:
             account=account,
         )
 
-        # Wrap caller so binder's internal calls carry channel without changing
-        # ClarificationBinder's CapabilityCaller Protocol (positional-only).
+        # Wrap caller so binder's internal calls carry channel AND receive the
+        # unwrapped business payload (ClarificationBinder Protocol: "data de sucesso").
         original = self._caller
 
         class _ChannelCaller:
             async def call(self, capability_id: str, params: dict[str, Any]) -> dict[str, Any]:
-                return await original.call(capability_id, params, channel=resolved)
+                raw = await original.call(capability_id, params, channel=resolved)
+                return _unwrap_binding_capability_data(raw)
 
         previous_binder_caller = getattr(self._binder, "_caller", None)
         try:
