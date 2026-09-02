@@ -5,6 +5,10 @@ Markers:
   F2B_QUOTED_ASYNC_GATE_V2   — per-message gate + observability (+ ensure recovery)
   F2B_QUOTED_BOOT_EAGER_V1   — once-per-process install in GatewayRunner.start
 
+Boot strategy: INSERT immediately after the unique anchor line
+  `        logger.info("Starting Hermes Gateway...")`
+without depending on faulthandler or intervening comments.
+
 Requer patch F2B_CHANNEL_PROPAGATION já aplicado.
 
   python3 ops/hermes/update/apply_finance_quoted_async_gateway_patch.py \\
@@ -20,8 +24,6 @@ MARKER = "F2B_QUOTED_ASYNC_GATE"
 MARKER_V2 = "F2B_QUOTED_ASYNC_GATE_V2"
 MARKER_BOOT = "F2B_QUOTED_BOOT_EAGER_V1"
 CHANNEL_MARKER = "F2B_CHANNEL_PROPAGATION"
-
-BOOT_ANCHOR = 'logger.info("Starting Hermes Gateway...")'
 
 # Pré-V1 (após channel patch, antes do quoted gate).
 INNER_AFTER_BIND_OLD = '''            _f2b_token = bind_turn_envelope(_f2b_envelope)
@@ -188,13 +190,11 @@ INNER_V2 = '''            _f2b_token = bind_turn_envelope(_f2b_envelope)
         )
 '''
 
-BOOT_OLD = '''        logger.info("Starting Hermes Gateway...")
-        try:
-            faulthandler.enable()
-'''
+BOOT_ANCHOR = '        logger.info("Starting Hermes Gateway...")'
 
-BOOT_NEW = '''        logger.info("Starting Hermes Gateway...")
-
+# Inserted immediately AFTER the unique anchor line. Does not consume/replace
+# whatever follows (comments, blank lines, faulthandler, …).
+BOOT_HOOK_INSERT = '''
         # F2B_QUOTED_BOOT_EAGER_V1
         try:
             from capability_intelligence.finance_quoted_boot import (
@@ -211,9 +211,6 @@ BOOT_NEW = '''        logger.info("Starting Hermes Gateway...")
                 "F2B_GATE_EXCEPTION type=%s stage=boot",
                 type(_f2b_boot_exc).__name__,
             )
-
-        try:
-            faulthandler.enable()
 '''
 
 
@@ -235,9 +232,10 @@ def _ensure_v2(text: str) -> tuple[str, str]:
 
 
 def _ensure_boot(text: str) -> tuple[str, str]:
-    """Return (new_text, status) where status is already|patched.
+    """Insert boot hook immediately after the unique GatewayRunner.start anchor.
 
     Raises SystemExit with BOOT_PATCH_MISS / BOOT_PATCH_AMBIGUOUS.
+    Does not depend on faulthandler or intervening comments.
     """
     if MARKER_BOOT in text:
         return text, "already_boot"
@@ -248,20 +246,25 @@ def _ensure_boot(text: str) -> tuple[str, str]:
     if anchor_count > 1:
         raise SystemExit("BOOT_PATCH_AMBIGUOUS")
 
-    if BOOT_OLD not in text:
-        raise SystemExit("BOOT_PATCH_MISS")
-    if text.count(BOOT_OLD) != 1:
-        raise SystemExit("BOOT_PATCH_AMBIGUOUS")
+    idx = text.index(BOOT_ANCHOR)
+    line_end = text.find("\n", idx)
+    if line_end == -1:
+        insert_at = len(text)
+    else:
+        insert_at = line_end + 1
 
-    return text.replace(BOOT_OLD, BOOT_NEW, 1), "patched_boot"
+    new_text = text[:insert_at] + BOOT_HOOK_INSERT + text[insert_at:]
+    return new_text, "patched_boot"
 
 
 def apply(path: Path) -> None:
+    """Apply V2 + boot patches atomically (single write after both gates PASS)."""
     text = path.read_text(encoding="utf-8")
     if CHANNEL_MARKER not in text:
         raise SystemExit(f"MISSING_PREREQ={CHANNEL_MARKER} path={path}")
 
     original = text
+    # Compute full result in memory first — never write a partial patch.
     text, v2_status = _ensure_v2(text)
     text, boot_status = _ensure_boot(text)
 

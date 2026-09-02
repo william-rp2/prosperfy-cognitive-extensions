@@ -47,6 +47,22 @@ class GatewayRunner:
         logger.info("Connecting to %s...", "whatsapp")
 '''
 
+# Exact live gap: comments between Starting Hermes Gateway and faulthandler.
+LIVE_STYLE_START_STUB = '''
+class GatewayRunner:
+    async def start(self) -> bool:
+        """Start the gateway and all configured platform adapters."""
+        logger.info("Starting Hermes Gateway...")
+
+        # comentário A
+        # comentário B
+        try:
+            faulthandler.enable()
+        except Exception:
+            pass
+        logger.info("Connecting to %s...", "whatsapp")
+'''
+
 
 def _write(tmp_path: Path, body: str) -> Path:
     target = tmp_path / "run.py"
@@ -90,6 +106,24 @@ def test_v2_to_v2_plus_boot(tmp_path: Path):
     assert text.count("F2B_QUOTED_ASYNC_GATE_V2:") == 1
 
 
+def test_live_style_comment_block_preserved(tmp_path: Path):
+    """Host live gap: comments between Starting Hermes Gateway and faulthandler."""
+    target = _write(tmp_path, LIVE_STYLE_START_STUB + "\n" + INNER_V2)
+    before = target.read_text(encoding="utf-8")
+    assert "# comentário A" in before
+    assert "# comentário B" in before
+    apply(target)
+    text = target.read_text(encoding="utf-8")
+    assert text.count(MARKER_BOOT) == 1
+    assert text.index("Starting Hermes Gateway") < text.index(MARKER_BOOT)
+    assert text.index(MARKER_BOOT) < text.index("# comentário A")
+    assert text.index("# comentário A") < text.index("# comentário B")
+    assert text.index("# comentário B") < text.index("faulthandler.enable()")
+    assert text.index(MARKER_BOOT) < text.index("Connecting to")
+    assert "# comentário A" in text
+    assert "# comentário B" in text
+
+
 def test_second_apply_idempotent(tmp_path: Path):
     target = _write(tmp_path, START_STUB + "\n" + CHANNEL_STUB)
     apply(target)
@@ -108,7 +142,15 @@ def test_boot_anchor_miss_fails(tmp_path: Path):
 
 
 def test_boot_anchor_ambiguous_fails(tmp_path: Path):
-    dup = START_STUB + "\n" + 'logger.info("Starting Hermes Gateway...")\n' + INNER_V2
+    dup = (
+        START_STUB.replace(
+            BOOT_ANCHOR,
+            BOOT_ANCHOR + "\n" + BOOT_ANCHOR,
+            1,
+        )
+        + "\n"
+        + INNER_V2
+    )
     target = _write(tmp_path, dup)
     assert target.read_text(encoding="utf-8").count(BOOT_ANCHOR) > 1
     with pytest.raises(SystemExit, match="BOOT_PATCH_AMBIGUOUS"):
@@ -121,3 +163,17 @@ def test_boot_marker_already_present_idempotent(tmp_path: Path):
     text_once = target.read_text(encoding="utf-8")
     apply(target)
     assert target.read_text(encoding="utf-8") == text_once
+
+
+def test_patch_failure_leaves_file_unchanged(tmp_path: Path):
+    """V2 mutation computed in memory must not write if boot gate fails."""
+    # CHANNEL_STUB upgrades to V2, but no start() anchor → boot miss.
+    target = _write(tmp_path, CHANNEL_STUB)
+    before = target.read_text(encoding="utf-8")
+    assert MARKER_V2 not in before
+    with pytest.raises(SystemExit, match="BOOT_PATCH_MISS"):
+        apply(target)
+    after = target.read_text(encoding="utf-8")
+    assert after == before
+    assert MARKER_V2 not in after
+    assert MARKER_BOOT not in after
