@@ -77,5 +77,43 @@ elif phase=="spa":
         raise SystemExit("SHOT_FAIL")
     print("REMOTE_SCREENSHOT=PASS")
     print("POST_ACTION_SCREENSHOT=PASS")
+elif phase=="vue_custom":
+    url=os.environ.get("QA_VUE_PRODUCT_URL","https://homologacao.prospersend.com.br/app/facilitadores/produtos/cdacd3a3-9211-41c9-8e28-945771fdbadd")
+    data=call({"operation":"interact","url":url,"steps":[
+        {"op":"wait","seconds":2},
+        {"op":"click","text":"Quem compra"},
+        {"op":"click","text":"Empresas"},
+        {"op":"click","text":"Pessoas"},
+        {"op":"click","text":"Os dois"},
+        {"op":"type","selector":"div.flex.gap-2 input","value":"Dor QA Vue Smoke"},
+        {"op":"click","text":"Adicionar"},
+        {"op":"wait","seconds":1},
+    ]})
+    clicks=data.get("clicks") or []
+    states=data.get("click_states") or {}
+    by_text={}
+    order=["Quem compra","Empresas","Pessoas","Os dois","Adicionar"]
+    click_rows=[c for c in clicks]
+    print("VUE_CLICKS", json.dumps(click_rows, ensure_ascii=False))
+    print("VUE_STATES", json.dumps(states, ensure_ascii=False))
+    labels={"Empresas":False,"Pessoas":False,"Os dois":False}
+    for value in states.values():
+        for label in labels:
+            if str(value).startswith(label):
+                labels[label]=True
+    if not all(labels.values()):
+        raise SystemExit("VUE_STATE_FAIL "+json.dumps(labels))
+    if "Dor QA Vue Smoke" not in (data.get("main_excerpt") or ""):
+        raise SystemExit("VUE_DOR_FAIL")
+    native=any(c.get("strategy")=="semantic" and c.get("tag")=="button" for c in click_rows)
+    custom=any(c.get("strategy")=="semantic-ancestor" and c.get("tag")=="button" for c in click_rows)
+    if not native or not custom:
+        raise SystemExit("VUE_STRATEGY_FAIL")
+    print("VUE_CUSTOM_CLICK=PASS")
+    print("CLICK_EMPRESAS=PASS")
+    print("CLICK_PESSOAS=PASS")
+    print("CLICK_OS_DOIS=PASS")
+    print("CLICK_ADICIONAR_DORES=PASS")
+    print("NATIVE_BUTTON_REGRESSION=PASS")
 else:
     raise SystemExit("unknown")

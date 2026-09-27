@@ -546,6 +546,104 @@ print(js("document.title") or "")
         "page_excerpt": final_text[:1200],
     }
 
+def pick_click_target(candidates: list[dict], text: str) -> dict | None:
+    """Pick the visible text target. Exact beats contains. Semantic beats custom."""
+    query = " ".join(str(text or "").split())
+    if not query or not isinstance(candidates, list):
+        return None
+    visible: list[dict] = []
+    for idx, raw in enumerate(candidates):
+        if not isinstance(raw, dict) or not raw.get("visible", True) or raw.get("disabled"):
+            continue
+        width = float(raw.get("width") or 0)
+        height = float(raw.get("height") or 0)
+        if width < 2 or height < 2:
+            continue
+        label = " ".join(str(raw.get("text") or "").split())
+        if not label:
+            continue
+        exact = label == query
+        contains = (not exact) and query in label and len(label) <= max(len(query) + 48, 80)
+        if not exact and not contains:
+            continue
+        item = dict(raw)
+        item["_idx"] = idx
+        item["_label"] = label
+        item["_area"] = width * height
+        item["_exact"] = exact
+        visible.append(item)
+    exact_pool = [item for item in visible if item["_exact"]]
+    pool = exact_pool or [item for item in visible if not item["_exact"]]
+    if not pool:
+        return None
+
+    def tier(item: dict) -> int:
+        if item.get("semantic"):
+            return 3
+        if item.get("interactive"):
+            return 2
+        return 1
+
+    pool.sort(key=lambda item: (-tier(item), item["_area"], -int(item.get("depth") or 0), -item["_idx"]))
+    chosen = pool[0]
+    strategy = {3: "semantic", 2: "interactive-signal", 1: "custom-visible-text"}[tier(chosen)]
+    matched_exact = bool(exact_pool)
+    if not matched_exact:
+        strategy = "contains-fallback"
+    if not chosen.get("semantic"):
+        parent_idx = chosen.get("parent")
+        hops = 0
+        seen: set[int] = set()
+        semantic_parent = None
+        signal_parent = None
+        while isinstance(parent_idx, int) and parent_idx not in seen and hops < 5:
+            seen.add(parent_idx)
+            if parent_idx < 0 or parent_idx >= len(candidates):
+                break
+            parent = candidates[parent_idx]
+            hops += 1
+            if not isinstance(parent, dict):
+                break
+            pw = float(parent.get("width") or 0)
+            ph = float(parent.get("height") or 0)
+            if pw > 640 or ph > 320:
+                break
+            usable = parent.get("visible", True) and not parent.get("disabled") and pw >= 2 and ph >= 2
+            if usable and parent.get("semantic"):
+                semantic_parent = parent
+                semantic_parent["_idx"] = parent_idx
+                break
+            if usable and signal_parent is None and parent.get("interactive"):
+                signal_parent = dict(parent)
+                signal_parent["_idx"] = parent_idx
+            parent_idx = parent.get("parent")
+        promoted = semantic_parent or (signal_parent if tier(chosen) == 1 else None)
+        if promoted is not None:
+            chosen = promoted if isinstance(promoted, dict) else dict(promoted)
+            if "_idx" not in chosen:
+                chosen["_idx"] = parent_idx
+            chosen["_label"] = " ".join(str(chosen.get("text") or "").split())[:160]
+            strategy = "semantic-ancestor" if semantic_parent is not None else "interactive-ancestor"
+    return {
+        "found": True,
+        "tag": str(chosen.get("tag") or ""),
+        "text": str(chosen.get("_label") or "")[:160],
+        "strategy": strategy,
+        "matched_exact": matched_exact,
+    }
+
+
+def resolve_click_target_by_text(text: str) -> str:
+    """JS click resolver for semantic controls and custom Vue elements."""
+    query = json.dumps(" ".join(str(text or "").split()))
+    return ("(function(){\nvar t=__QUERY__;\nfunction norm(s){return String(s||'').replace(/[ \\t\\r\\n]+/g,' ').trim();}\nfunction vis(el){if(!el||el.disabled||el.getAttribute('aria-disabled')==='true'||el.getAttribute('aria-hidden')==='true')return false;var r=el.getBoundingClientRect();if(r.width<2||r.height<2)return false;var s=getComputedStyle(el);if(s.visibility==='hidden'||s.display==='none'||s.pointerEvents==='none')return false;if(parseFloat(s.opacity||'1')===0)return false;return true;}\nfunction semantic(el){var tag=el.tagName.toLowerCase();var role=(el.getAttribute('role')||'').toLowerCase();return tag==='button'||tag==='a'||tag==='label'||tag==='input'||tag==='textarea'||tag==='select'||role==='button'||role==='option'||role==='menuitem'||role==='tab'||role==='link';}\nfunction signal(el){var tab=el.getAttribute('tabindex');if(tab!==null&&tab!==''&&Number(tab)>=0)return true;if(el.onclick||el.getAttribute('onclick'))return true;if(getComputedStyle(el).cursor==='pointer')return true;var cls='';try{cls=String(el.className||'');}catch(e){cls='';}return /card|choice|selectable|clickable|chip|option/i.test(cls);}\nfunction tier(el){if(semantic(el))return 3;if(signal(el))return 2;return 1;}\nvar nodes=document.querySelectorAll('button,a,[role=button],[role=option],[role=menuitem],[role=tab],label,input,textarea,select,[tabindex],[onclick],div,span,section,article,p,li');\nvar exact=[];var loose=[];\nfor(var i=0;i<nodes.length;i++){var el=nodes[i];if(!vis(el))continue;var label=norm(el.innerText||el.value||el.textContent||'');if(!label)continue;var rect=el.getBoundingClientRect();var depth=0;var walk=el;while(walk&&depth<40){depth++;walk=walk.parentElement;}var item={el:el,text:label,area:rect.width*rect.height,depth:depth,index:i};if(label===t)exact.push(item);else if(label.indexOf(t)>=0&&label.length<=Math.max(t.length+48,80))loose.push(item);}\nfunction inChrome(el){return !!(el.closest&&el.closest('nav,aside,header'));}var mex=exact.filter(function(x){return !inChrome(x.el);});if(mex.length)exact=mex;var mlo=loose.filter(function(x){return !inChrome(x.el);});if(mlo.length)loose=mlo;var pool=exact.length?exact:loose;if(!pool.length)return {found:false};\npool.sort(function(a,b){var dt=tier(b.el)-tier(a.el);if(dt)return dt;if(Math.abs(a.area-b.area)>1)return a.area-b.area;if(b.depth!==a.depth)return b.depth-a.depth;return b.index-a.index;});\nvar chosen=pool[0];var strategy=tier(chosen.el)===3?'semantic':(tier(chosen.el)===2?'interactive-signal':'custom-visible-text');if(!exact.length)strategy='contains-fallback';\nif(!semantic(chosen.el)){var anc=chosen.el.parentElement;var hops=0;var sem=null;var sig=null;while(anc&&hops<5){var ar=anc.getBoundingClientRect();if(ar.width>640||ar.height>320)break;if(vis(anc)&&semantic(anc)){sem=anc;break;}if(!sig&&vis(anc)&&signal(anc))sig=anc;anc=anc.parentElement;hops++;}var use=sem||(tier(chosen.el)===1?sig:null);if(use){var ur=use.getBoundingClientRect();chosen={el:use,text:norm(use.innerText||use.textContent||'').slice(0,160),area:ur.width*ur.height,depth:chosen.depth,index:chosen.index};strategy=sem?'semantic-ancestor':'interactive-ancestor';}}\nchosen.el.scrollIntoView({block:'center',inline:'center'});var rr=chosen.el.getBoundingClientRect();\nreturn {found:true,tag:chosen.el.tagName.toLowerCase(),text:norm(chosen.el.innerText||chosen.el.value||chosen.el.textContent||'').slice(0,160),x:rr.left+rr.width/2,y:rr.top+rr.height/2,strategy:strategy,matched_exact:exact.length>0};})()").replace("__QUERY__", query)
+
+
+def interactive_candidates_js() -> str:
+    """Short visible custom controls for inspect. No page HTML."""
+    return "(function(){function norm(s){return String(s||'').replace(/[ \\t\\r\\n]+/g,' ').trim();}function vis(el){if(!el||el.disabled||el.getAttribute('aria-disabled')==='true'||el.getAttribute('aria-hidden')==='true')return false;var r=el.getBoundingClientRect();if(r.width<2||r.height<2)return false;var s=getComputedStyle(el);if(s.visibility==='hidden'||s.display==='none'||s.pointerEvents==='none')return false;if(parseFloat(s.opacity||'1')===0)return false;return true;}function signal(el){var tab=el.getAttribute('tabindex');if(tab!==null&&tab!==''&&Number(tab)>=0)return true;if(getComputedStyle(el).cursor==='pointer')return true;var role=(el.getAttribute('role')||'').toLowerCase();if(role==='button'||role==='option'||role==='menuitem'||role==='tab')return true;var cls='';try{cls=String(el.className||'');}catch(e){cls='';}return /card|choice|selectable|clickable|chip|option/i.test(cls);}var nodes=document.querySelectorAll('button,a,[role=button],[role=option],[role=menuitem],[role=tab],[tabindex],[onclick],div,span,section,article,p,li');var out=[];var seen={};for(var i=0;i<nodes.length;i++){var el=nodes[i];if(!vis(el))continue;if(el.closest&&el.closest('nav,aside,header'))continue;var label=norm(el.innerText||el.value||el.textContent||'');if(!label||label.length>60)continue;var tag=el.tagName.toLowerCase();var interactive=signal(el);var custom=tag==='div'||tag==='span'||tag==='section'||tag==='article'||tag==='p'||tag==='li';var rect=el.getBoundingClientRect();if(!interactive){if(!custom||el.children.length>4||rect.width>520||rect.height>180)continue;}var key=tag+'|'+label;if(seen[key])continue;seen[key]=1;var tab=el.getAttribute('tabindex');out.push({tag:tag,text:label.slice(0,80),role:el.getAttribute('role')||'',cursor:getComputedStyle(el).cursor||'',tabindex:tab===null||tab===''?null:Number(tab),interactive:!!interactive});if(out.length>=60)break;}return JSON.stringify(out);})()"
+
+
 def action_interact(job: dict) -> dict:
     """Perform structured UI interactions on an authenticated SPA page."""
     url = str(job.get("url") or "").strip()
@@ -597,26 +695,25 @@ def action_interact(job: dict) -> dict:
                     "label:(e.innerText||e.value||e.textContent||e.tagName||'').toString().slice(0,160)};})()"
                 )
             elif text_value:
-                target_expr = (
-                    "(function(){var t=" + json.dumps(text_value) + ";"
-                    "var xs=Array.from(document.querySelectorAll('button,a,[role=button],[role=option],[role=menuitem],label,input,textarea,select'));"
-                    "function vis(x){var r=x.getBoundingClientRect();if(r.width<2||r.height<2)return false;var s=getComputedStyle(x);return s.visibility!=='hidden'&&s.display!=='none';}"
-                    "var e=xs.filter(x=>vis(x)&&((x.innerText||x.value||x.textContent||'').trim()===t)).pop()"
-                    "||xs.filter(x=>vis(x)&&((x.innerText||x.value||x.textContent||'').includes(t))).pop();"
-                    "if(!e)return null;e.scrollIntoView({block:'center',inline:'center'});"
-                    "var r=e.getBoundingClientRect();"
-                    "return {x:r.left+r.width/2,y:r.top+r.height/2,"
-                    "label:(e.innerText||e.value||e.textContent||e.tagName||'').toString().slice(0,160)};})()"
-                )
+                target_expr = resolve_click_target_by_text(text_value)
             else:
                 return {"success": False, "error": f"click_target_required:{idx}"}
             code_lines.append(f"_click_target_{idx}=js({target_expr!r})")
-            code_lines.append(f"if not _click_target_{idx}: raise RuntimeError('click target missing')")
+            code_lines.append(
+                f"if not _click_target_{idx} or _click_target_{idx}.get('found') is False: raise RuntimeError('click target missing')"
+            )
             code_lines.append(
                 f"click_at_xy(float(_click_target_{idx}['x']), float(_click_target_{idx}['y']))"
             )
-            code_lines.append(f"print('===STEP{idx}===', _click_target_{idx}.get('label','clicked'))")
+            code_lines.append(
+                f"print('===STEP{idx}===', _click_target_{idx}.get('label') or _click_target_{idx}.get('text') or 'clicked')"
+            )
+            code_lines.append(
+                f"print('===CLICKMETA{idx}===', _click_target_{idx}.get('strategy') or 'selector', _click_target_{idx}.get('tag') or 'node', _click_target_{idx}.get('matched_exact'))"
+            )
             code_lines.append("wait(0.8)")
+            _state_js = "(function(){var out=[];var nodes=document.querySelectorAll('button');for(var i=0;i<nodes.length;i++){var b=nodes[i];if(String(b.className||'').indexOf('border-primary')<0)continue;out.push((b.innerText||'').replace(/\\s+/g,' ').trim().slice(0,60));}return out.join('|');})()"
+            code_lines.append(f"print('===CLICKSTATE{idx}===', js({_state_js!r}) or '')")
         elif op == "type":
             if not selector:
                 return {"success": False, "error": f"type_selector_required:{idx}"}
@@ -663,6 +760,8 @@ def action_interact(job: dict) -> dict:
         "print(js('location.href') or '')",
         "print('===FINALTITLE===')",
         "print(js('document.title') or '')",
+        "print('===MAINTEXT===')",
+        'print((js("(document.querySelector(\'main\')||document.body).innerText||\'\'") or \'\')[:4000])',
         "print('===FINALTEXT===')",
         "print((js('document.body.innerText') or '')[:6000])",
         "print('===SPINNERS===')",
@@ -682,12 +781,28 @@ def action_interact(job: dict) -> dict:
 
     final_match = re.search(r"===FINALTEXT===\r?\n(.*?)===SPINNERS===", out, re.S)
     final_text = final_match.group(1).strip() if final_match else ""
+    main_match = re.search(r"===MAINTEXT===\r?\n(.*?)===FINALTEXT===", out, re.S)
+    main_text = main_match.group(1).strip() if main_match else ""
+    clicks = []
+    click_states = {}
+    for state_match in re.finditer(r"===CLICKSTATE(\d+)===[ 	]*(.*)", out):
+        click_states[int(state_match.group(1))] = state_match.group(2).strip()
+    for match in re.finditer(r"===CLICKMETA(\d+)===\s+(\S+)\s+(\S+)\s+(\S+)", out):
+        clicks.append({
+            "step": int(match.group(1)),
+            "strategy": match.group(2),
+            "tag": match.group(3),
+            "matched_exact": match.group(4) == "True",
+        })
     return {
         "success": True,
         "url": marker_line("FINALURL"),
         "title": marker_line("FINALTITLE"),
         "page_excerpt": final_text[:2000],
+        "main_excerpt": main_text[:4000],
         "spinner_count": int(marker_line("SPINNERS") or 0),
+        "clicks": clicks,
+        "click_states": click_states,
         "steps_executed": len(steps[:30]),
     }
 
@@ -742,6 +857,8 @@ def action_inspect(job: dict) -> dict:
         + f"print(js({inputs_expr!r}) or '[]')\n"
         + "print('===BUTTONS===')\n"
         + f"print(js({buttons_expr!r}) or '[]')\n"
+        + "print('===CANDIDATES===')\n"
+        + f"print(js({interactive_candidates_js()!r}) or '[]')\n"
         + "print('===FORMS===')\n"
         + f"print(js({forms_expr!r}) or '[]')\n"
     )
@@ -764,7 +881,8 @@ def action_inspect(job: dict) -> dict:
     title = section("TITLE","URL")
     final_url = section("URL","INPUTS") or url
     raw_inputs = section("INPUTS","BUTTONS") or "[]"
-    raw_buttons = section("BUTTONS","FORMS") or "[]"
+    raw_buttons = section("BUTTONS","CANDIDATES") or "[]"
+    raw_candidates = section("CANDIDATES","FORMS") or "[]"
     raw_forms = section("FORMS") or "[]"
     try:
         inputs = json.loads(raw_inputs)
@@ -774,6 +892,10 @@ def action_inspect(job: dict) -> dict:
         buttons = json.loads(raw_buttons)
     except Exception:
         buttons = []
+    try:
+        candidates = json.loads(raw_candidates)
+    except Exception:
+        candidates = []
     try:
         forms = json.loads(raw_forms)
     except Exception:
@@ -785,6 +907,7 @@ def action_inspect(job: dict) -> dict:
             "url": final_url,
             "inputs": inputs[:80],
             "buttons": buttons[:120],
+            "interactive_candidates": candidates[:60] if isinstance(candidates, list) else [],
             "forms": forms[:20],
         },
     }
