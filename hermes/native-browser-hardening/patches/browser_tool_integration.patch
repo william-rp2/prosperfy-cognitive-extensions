@@ -1,0 +1,74 @@
+--- a/tools/browser_tool.py
++++ b/tools/browser_tool.py
+@@ -505,6 +505,28 @@
+             "required": ["key"]
+         }
+     },
++    {
++        "name": "browser_upload",
++        "description": "Attach an authorized file to the page (hidden file inputs and custom dropzones). "
++        "Discovers input[type=file] generically; optional ref from snapshot or target_hint (nearby label/area text). "
++        "file_path must be an attachment path already allowed for this task (no arbitrary directories).",
++        "parameters": {
++            "type": "object",
++            "properties": {
++                "file_path": {"type": "string", "description": "Path to the authorized file to upload"},
++                "ref": {"type": "string", "description": "Optional @eN ref for the upload control or dropzone"},
++                "target_hint": {"type": "string", "description": "Optional semantic hint to pick among file inputs"}
++            },
++            "required": ["file_path"]
++        }
++    },
+     {
+         "name": "browser_get_images",
+         "description": "Get a list of all images on the current page with their URLs and alt text. Useful for finding images to analyze with the vision tool. Requires browser_navigate to be called first.",
+@@ -848,12 +870,28 @@
+ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
+     """Click the element ``ref`` (e.g. \"@e5\")."""
+     if _is_camofox_mode():
+         return _camofox("camofox_click", ref, task_id)
+     ref = _at_ref(ref)
++    effective_task_id = _last_session_key(task_id or "default")
++    blocked = _blocked_private_page_action(effective_task_id, "click")
++    if blocked is not None:
++        return blocked
++    primary = _session._run_browser_command(effective_task_id, "click", [ref])
++    if primary.get("success"):
++        return _tool_response(primary, {"clicked": ref}, f"Failed to click {ref}")
++    from tools.browser_tool_generic_fallback import _failure_suggests_missing_target, try_click_fallback
++    err = str(primary.get("error") or "")
++    if _failure_suggests_missing_target(err):
++        fb = try_click_fallback(task_id or "default", ref)
++        if fb.get("success"):
++            return _dumps({"success": True, "clicked": ref, "fallback_used": fb.get("method"), **fb})
++    return _failed_response(primary, f"Failed to click {ref}")
+ 
+ 
+ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
+@@ -872,6 +910,14 @@
+     if result.get("success"):
+         response = {"success": True, "typed": display_text, "element": ref}
+     else:
++        from tools.browser_tool_generic_fallback import _failure_suggests_missing_target, try_type_fallback
++        if _failure_suggests_missing_target(str(result.get("error") or "")):
++            fb = try_type_fallback(task_id or "default", ref, text)
++            if fb.get("success"):
++                response = {"success": True, "typed": display_text, "element": ref, "fallback_used": fb.get("method"), **fb}
++                return _dumps(redact_browser_typed_text_for_display(_lp._copy_fallback_warning(response, result), text))
+         response = _err(result.get("error", f"Failed to type into {ref}"))
+     return _dumps(redact_browser_typed_text_for_display(_lp._copy_fallback_warning(response, result), text))
+ 
++
++def browser_upload(file_path: str, ref: Optional[str] = None, target_hint: Optional[str] = None, task_id: Optional[str] = None) -> str:
++    """Upload an authorized file using generic discovery + upstream agent-browser/CDP."""
++    from tools.browser_tool_generic_fallback import try_upload_fallback
++    fb = try_upload_fallback(task_id or "default", file_path, ref=ref, target_hint=target_hint)
++    if fb.get("success"):
++        return _dumps({"success": True, **fb})
++    return _dumps(_err(fb.get("error") or "upload failed"))
++
+@@ -1288,6 +1334,7 @@
+     ("browser_click", "👆", None, {"ref": ""}),
+     ("browser_type", "⌨️", None, {"ref": "", "text": ""}),
++    ("browser_upload", "📎", None, {"file_path": "", "ref": None, "target_hint": None}),
+     ("browser_scroll", "📜", None, {"direction": "down"}),
