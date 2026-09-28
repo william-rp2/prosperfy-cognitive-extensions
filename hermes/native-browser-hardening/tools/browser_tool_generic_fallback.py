@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -20,6 +21,8 @@ _DEFAULT_UPLOAD_ROOT_NAMES = (
     "browser_uploads",
     "files",
 )
+
+DISCOVERY_CLICK_REFS = frozenset({"?", "*", "discover", "interactive"})
 
 
 def _hermes_home() -> Path:
@@ -62,7 +65,6 @@ def resolve_authorized_upload_path(file_path: str) -> Tuple[Optional[Path], Opti
             return resolved, None
         except ValueError:
             continue
-    # Also allow explicit subpaths under home by name (attachments under profile)
     for name in _DEFAULT_UPLOAD_ROOT_NAMES:
         for candidate in home.rglob(name):
             if candidate.is_dir():
@@ -72,6 +74,119 @@ def resolve_authorized_upload_path(file_path: str) -> Tuple[Optional[Path], Opti
                 except ValueError:
                     pass
     return None, "upload path not under an authorized directory"
+
+
+# --- Click failure normalization (complement, not primary architecture) -----
+
+
+def is_unknown_ref_error(error: str) -> bool:
+    if not error:
+        return False
+    e = error.lower()
+    return "unknown ref" in e or re.search(r"\bunknown ref\b", e) is not None
+
+
+def failure_suggests_locate_or_click_failure(error: str) -> bool:
+    """Trigger B: native click/fill could not act on the given ref."""
+    if not error or is_unknown_ref_error(error):
+        return False
+    e = error.lower()
+    needles = (
+        "not found",
+        "no element",
+        "could not find",
+        "could not locate",
+        "unable to locate",
+        "not clickable",
+        "not visible",
+        "not interactable",
+        "intercept",
+        "timeout",
+        "invalid ref",
+    )
+    return any(n in e for n in needles)
+
+
+def _failure_suggests_missing_target(error: str) -> bool:
+    """Whether to attempt any fallback after a primary browser command failure."""
+    if not error:
+        return False
+    if is_unknown_ref_error(error):
+        return True
+    return failure_suggests_locate_or_click_failure(error)
+
+
+def is_discovery_click_ref(ref: str, target_hint: Optional[str]) -> bool:
+    """Trigger A: explicit discovery request (no usable @ref)."""
+    if not target_hint or not str(target_hint).strip():
+        return False
+    bare = ref.strip().lstrip("@").lower()
+    return bare in DISCOVERY_CLICK_REFS
+
+
+# --- Modal editable selection (Python — unit-tested) --------------------------
+
+
+def _norm_text(s: Optional[str]) -> str:
+    return re.sub(r"\s+", " ", (s or "")).strip().lower()
+
+
+def select_editable_in_dialog(
+    candidates: List[Dict[str, Any]],
+    field_hint: Optional[str],
+    field_index: Optional[int],
+) -> Tuple[Optional[int], Optional[str]]:
+    """
+    Pick one editable inside an active dialog. Returns (index, error_code).
+    error_code is AMBIGUOUS_EDITABLE when disambiguation fails.
+    """
+    if not candidates:
+        return None, "NO_EDITABLE_IN_DIALOG"
+
+    if field_index is not None and field_index >= 0:
+        if field_index < len(candidates):
+            return field_index, None
+        return None, "FIELD_INDEX_OUT_OF_RANGE"
+
+    hint_n = _norm_text(field_hint)
+
+    def score(c: Dict[str, Any]) -> int:
+        s = 0
+        parts = [
+            c.get("labelText"),
+            c.get("ariaLabel"),
+            c.get("placeholder"),
+            c.get("name"),
+            c.get("id"),
+            c.get("nearbyText"),
+        ]
+        blob = _norm_text(" ".join(str(p) for p in parts if p))
+        if hint_n:
+            if hint_n in blob:
+                s += 30
+            for token in hint_n.split():
+                if len(token) > 2 and token in blob:
+                    s += 8
+        if c.get("type") == "search":
+            s -= 100
+        if c.get("role") == "searchbox":
+            s -= 100
+        return s
+
+    if hint_n:
+        scored = [(i, score(c)) for i, c in enumerate(candidates)]
+        scored.sort(key=lambda x: (-x[1], x[0]))
+        best_i, best_s = scored[0]
+        if best_s < 15:
+            return None, "AMBIGUOUS_EDITABLE"
+        tied = [i for i, sc in scored if sc >= best_s - 1 and sc >= 15]
+        if len(tied) > 1:
+            return None, "AMBIGUOUS_EDITABLE"
+        return best_i, None
+
+    if len(candidates) == 1:
+        return 0, None
+    return None, "AMBIGUOUS_EDITABLE"
 
 
 # --- JS helpers (generic) ----------------------------------------------------
@@ -113,6 +228,51 @@ _DISCOVER_FILE_INPUT_JS = r"""
 })(%s)
 """
 
+_DISCOVER_INTERACTIVE_CLICK_JS = r"""
+(function(hint){
+  const norm = (s) => (s||'').replace(/\s+/g,' ').trim().toLowerCase();
+  const hintN = hint ? norm(hint) : '';
+  const visible = (el) => {
+    if (!el || el.nodeType !== 1) return false;
+    const st = window.getComputedStyle(el);
+    if (st.visibility === 'hidden' || st.display === 'none') return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  const interactive = (el) => {
+    const tag = (el.tagName||'').toLowerCase();
+    const role = (el.getAttribute('role')||'').toLowerCase();
+    if (tag === 'button' || tag === 'a') return true;
+    if (role === 'button' || role === 'link' || role === 'menuitem') return true;
+    if (el.onclick) return true;
+    if (window.getComputedStyle(el).cursor === 'pointer') return true;
+    return false;
+  };
+  const score = (el) => {
+    let s = 0;
+    const txt = norm(el.innerText || el.textContent || '');
+    const aria = norm(el.getAttribute('aria-label')||'');
+    const title = norm(el.getAttribute('title')||'');
+    if (hintN) {
+      if (txt === hintN || aria === hintN) s += 40;
+      else if (txt.includes(hintN) || aria.includes(hintN) || title.includes(hintN)) s += 25;
+    }
+    if ((el.tagName||'').toLowerCase() === 'button') s += 2;
+    return s;
+  };
+  const nodes = [...document.querySelectorAll('button, a, [role=button], [role=link], [role=menuitem], [onclick]')]
+    .filter(visible)
+    .filter(interactive);
+  nodes.sort((a,b)=>score(b)-score(a));
+  const best = nodes[0];
+  if (!best) return {ok:false, error:'no interactive candidate'};
+  if (hintN && score(best) < 15) return {ok:false, error:'no interactive match for hint'};
+  const r = best.getBoundingClientRect();
+  best.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view: window}));
+  return {ok:true, tag: best.tagName, x: r.x + r.width/2, y: r.y + r.height/2, score: score(best)};
+})(%s)
+"""
+
 _CLICK_ANCESTOR_JS = r"""
 (function(ref){
   const r = ref.replace(/^@/,'');
@@ -135,49 +295,86 @@ _CLICK_ANCESTOR_JS = r"""
 })(%s)
 """
 
-_MODAL_FILL_JS = r"""
-(function(text, fieldHint, fieldIndex){
-  const norm = (s) => (s||'').replace(/\s+/g,' ').trim().toLowerCase();
-  const root = document.querySelector('[role=dialog],[aria-modal="true"],dialog[open]') || document.body;
+_LIST_DIALOG_EDITABLES_JS = r"""
+(function(){
   const visible = (el) => {
     if (!el) return false;
     const st = window.getComputedStyle(el);
     if (st.visibility === 'hidden' || st.display === 'none') return false;
     return el.offsetParent !== null || el.isContentEditable;
   };
+  const dialogs = [...document.querySelectorAll('[role=dialog], dialog[open], [aria-modal="true"]')].filter(visible);
+  if (!dialogs.length) return {ok:false, error:'NO_ACTIVE_DIALOG'};
+  const root = dialogs[dialogs.length - 1];
+  const labelFor = (el) => {
+    if (el.labels && el.labels[0]) return (el.labels[0].innerText||'').trim();
+    const aria = el.getAttribute('aria-label');
+    if (aria) return aria.trim();
+    const lid = el.getAttribute('aria-labelledby');
+    if (lid) {
+      const n = document.getElementById(lid);
+      if (n) return (n.innerText||'').trim();
+    }
+    let p = el.parentElement;
+    for (let d = 0; d < 4 && p && p !== root; d++, p = p.parentElement) {
+      if (p.tagName === 'LABEL') return (p.innerText||'').trim();
+      const leg = p.querySelector(':scope > legend');
+      if (leg) return (leg.innerText||'').trim();
+    }
+    return '';
+  };
+  const nearby = (el) => {
+    const g = el.closest('fieldset, [role=group], label');
+    return g && root.contains(g) ? (g.innerText||'').slice(0, 240) : '';
+  };
   const fields = [...root.querySelectorAll('input:not([type=hidden]):not([type=file]),textarea,[contenteditable="true"]')]
     .filter(visible);
-  if (!fields.length) return {ok:false, error:'no editable fields in active surface'};
-  let target = null;
-  const hintN = fieldHint ? norm(fieldHint) : '';
-  if (hintN) {
-    for (const el of fields) {
-      const id = norm(el.id||'');
-      const name = norm(el.name||'');
-      const ph = norm(el.placeholder||'');
-      const aria = norm(el.getAttribute('aria-label')||'');
-      let label = '';
-      if (el.labels && el.labels[0]) label = norm(el.labels[0].innerText);
-      if ([id,name,ph,aria,label].some(x => x && x.includes(hintN))) { target = el; break; }
-    }
-  }
-  if (!target && typeof fieldIndex === 'number' && fieldIndex >= 0 && fieldIndex < fields.length) {
-    target = fields[fieldIndex];
-  }
-  if (!target && fields.length === 1) target = fields[0];
-  if (!target) return {ok:false, error:'ambiguous modal fields', count: fields.length};
-  if (target.isContentEditable) {
-    target.focus();
-    target.textContent = text;
-    target.dispatchEvent(new Event('input', {bubbles:true}));
+  return {
+    ok: true,
+    activeDialog: true,
+    fields: fields.map((el, index) => ({
+      index,
+      tag: el.tagName,
+      type: el.type || '',
+      id: el.id || '',
+      name: el.name || '',
+      placeholder: el.placeholder || '',
+      ariaLabel: el.getAttribute('aria-label') || '',
+      role: el.getAttribute('role') || '',
+      labelText: labelFor(el),
+      nearbyText: nearby(el)
+    }))
+  };
+})()
+"""
+
+_SET_DIALOG_EDITABLE_JS = r"""
+(function(fieldIndex, text){
+  const visible = (el) => {
+    if (!el) return false;
+    const st = window.getComputedStyle(el);
+    if (st.visibility === 'hidden' || st.display === 'none') return false;
+    return el.offsetParent !== null || el.isContentEditable;
+  };
+  const dialogs = [...document.querySelectorAll('[role=dialog], dialog[open], [aria-modal="true"]')].filter(visible);
+  if (!dialogs.length) return {ok:false, error:'NO_ACTIVE_DIALOG'};
+  const root = dialogs[dialogs.length - 1];
+  const fields = [...root.querySelectorAll('input:not([type=hidden]):not([type=file]),textarea,[contenteditable="true"]')]
+    .filter(visible);
+  const el = fields[fieldIndex];
+  if (!el) return {ok:false, error:'FIELD_INDEX_OUT_OF_RANGE'};
+  if (el.isContentEditable) {
+    el.focus();
+    el.textContent = text;
+    el.dispatchEvent(new Event('input', {bubbles:true}));
   } else {
-    target.focus();
-    target.value = text;
-    target.dispatchEvent(new Event('input', {bubbles:true}));
-    target.dispatchEvent(new Event('change', {bubbles:true}));
+    el.focus();
+    el.value = text;
+    el.dispatchEvent(new Event('input', {bubbles:true}));
+    el.dispatchEvent(new Event('change', {bubbles:true}));
   }
-  return {ok:true, tag: target.tagName, type: target.type || 'textarea'};
-})(%s, %s, %s)
+  return {ok:true, tag: el.tagName, type: el.type || 'textarea', activeDialogScoped: true};
+})(%s, %s)
 """
 
 
@@ -307,24 +504,28 @@ def try_upload_fallback(
     }
 
 
-def _failure_suggests_missing_target(error: str) -> bool:
-    if not error:
-        return False
-    e = error.lower()
-    needles = (
-        "not found",
-        "no element",
-        "could not find",
-        "not clickable",
-        "not visible",
-        "timeout",
-        "invalid ref",
-        "unknown ref",
-    )
-    return any(n in e for n in needles)
+def try_click_discovery(task_id: str, target_hint: str) -> Dict[str, Any]:
+    """Trigger A: click interactive target by semantic hint (no @ref)."""
+    hint = (target_hint or "").strip()
+    if not hint:
+        return {"success": False, "error": "target_hint required for discovery click", "fallback": "click"}
+    expr = _DISCOVER_INTERACTIVE_CLICK_JS % _js_string(hint)
+    val, eval_err = _eval_json(task_id, expr)
+    if eval_err:
+        return {"success": False, "error": eval_err, "fallback": "click", "trigger": "discovery"}
+    if isinstance(val, dict) and val.get("ok"):
+        return {
+            "success": True,
+            "method": "js-discover-interactive-click",
+            "target_hint": hint,
+            "detail": val,
+        }
+    err = (val or {}).get("error") if isinstance(val, dict) else "discovery click failed"
+    return {"success": False, "error": err or "discovery click failed", "fallback": "click", "trigger": "discovery"}
 
 
 def try_click_fallback(task_id: str, ref: str) -> Dict[str, Any]:
+    """Trigger B supplement: coordinate / ancestor click when ref exists but native click failed."""
     ref_norm = ref if ref.startswith("@") else f"@{ref}"
     box = _run(task_id, "get", ["box", ref_norm])
     if box.get("success"):
@@ -335,7 +536,7 @@ def try_click_fallback(task_id: str, ref: str) -> Dict[str, Any]:
             y = float(rect.get("y", 0)) + float(rect.get("height", 0)) / 2
         except (TypeError, ValueError):
             x = y = None
-        if x is not None and y is not None:
+        if x is not None and y is not None and (rect.get("width") or 0) > 0 and (rect.get("height") or 0) > 0:
             for method, params in (
                 ("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y}),
                 ("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1}),
@@ -365,21 +566,50 @@ def try_type_fallback(
     result = _run(task_id, "fill", [ref_norm, text])
     if result.get("success"):
         return {"success": True, "method": "agent-browser-fill-retry", "element": ref_norm}
-    idx = field_index if field_index is not None else -1
-    expr = _MODAL_FILL_JS % (_js_string(text), _js_string(field_hint or ""), json.dumps(idx))
-    val, eval_err = _eval_json(task_id, expr)
-    if not eval_err and isinstance(val, dict) and val.get("ok"):
-        return {"success": True, "method": "js-modal-editable", "detail": val}
-    if field_hint:
-        fb = _run(task_id, "find", ["label", field_hint, "fill", text])
-        if fb.get("success"):
-            return {"success": True, "method": "agent-browser-find-label-fill", "field_hint": field_hint}
-    role_fb = _run(task_id, "find", ["role", "textbox", "fill", text])
-    if role_fb.get("success"):
-        return {"success": True, "method": "agent-browser-find-role-textbox-fill"}
+
+    listed, list_err = _eval_json(task_id, _LIST_DIALOG_EDITABLES_JS)
+    if list_err or not isinstance(listed, dict):
+        return {
+            "success": False,
+            "error": list_err or "dialog field listing failed",
+            "fallback": "type",
+            "element": ref_norm,
+        }
+    if not listed.get("ok"):
+        return {
+            "success": False,
+            "error": listed.get("error") or "NO_ACTIVE_DIALOG",
+            "fallback": "type",
+            "element": ref_norm,
+        }
+
+    candidates = listed.get("fields") or []
+    pick, pick_err = select_editable_in_dialog(candidates, field_hint, field_index)
+    if pick_err:
+        return {
+            "success": False,
+            "error": pick_err,
+            "fallback": "type",
+            "element": ref_norm,
+            "active_dialog_scoped": True,
+        }
+
+    assert pick is not None
+    set_expr = _SET_DIALOG_EDITABLE_JS % (json.dumps(pick), _js_string(text))
+    val, eval_err = _eval_json(task_id, set_expr)
+    if eval_err:
+        return {"success": False, "error": eval_err, "fallback": "type", "element": ref_norm}
+    if isinstance(val, dict) and val.get("ok"):
+        return {
+            "success": True,
+            "method": "js-modal-editable",
+            "active_dialog_scoped": True,
+            "detail": val,
+            "field_index": pick,
+        }
     return {
         "success": False,
-        "error": result.get("error") or eval_err or "modal fill fallback failed",
+        "error": (val or {}).get("error") if isinstance(val, dict) else "modal set failed",
         "fallback": "type",
         "element": ref_norm,
     }
