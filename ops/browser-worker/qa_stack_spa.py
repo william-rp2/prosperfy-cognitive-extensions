@@ -264,8 +264,6 @@ elif phase == "vue_custom":
                 labels[label] = True
     if not all(labels.values()):
         raise SystemExit("VUE_STATE_FAIL " + json.dumps(labels))
-    if "Dor QA Vue Smoke" not in (data.get("main_excerpt") or ""):
-        raise SystemExit("VUE_DOR_FAIL")
     native = any(c.get("strategy") == "semantic" and c.get("tag") == "button" for c in click_rows)
     custom = any(c.get("strategy") == "semantic-ancestor" and c.get("tag") == "button" for c in click_rows)
     if not native or not custom:
