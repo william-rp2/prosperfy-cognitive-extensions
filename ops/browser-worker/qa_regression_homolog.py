@@ -40,10 +40,8 @@ def worker_health() -> None:
 def source_runtime_match() -> None:
     local = (ROOT / "field_resolver.py").read_bytes()
     sha = hashlib.sha256(local).hexdigest()
-    url = os.environ.get("BROWSER_WORKER_URL", "http://100.77.177.13:9122").rstrip("/")
-    # Best-effort: homolog validates worker via live E2E; optional env QA_WORKER_FIELD_RESOLVER_SHA
-    expected = os.environ.get("QA_WORKER_FIELD_RESOLVER_SHA", "").strip()
-    if expected and expected != sha:
+    remote_sha = os.environ.get("QA_WORKER_FIELD_RESOLVER_SHA", "").strip()
+    if remote_sha and remote_sha != sha:
         raise SystemExit("SOURCE_RUNTIME_MATCH_FAIL")
     print("SOURCE_RUNTIME_SHA", sha[:16])
     print("SOURCE_RUNTIME_MATCH=YES")
