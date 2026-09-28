@@ -124,6 +124,11 @@ def is_discovery_click_ref(ref: str, target_hint: Optional[str]) -> bool:
     return bare in DISCOVERY_CLICK_REFS
 
 
+def is_discovery_ref_token(ref: str) -> bool:
+    bare = ref.strip().lstrip("@").lower()
+    return bare in DISCOVERY_CLICK_REFS
+
+
 # --- Modal editable selection (Python — unit-tested) --------------------------
 
 

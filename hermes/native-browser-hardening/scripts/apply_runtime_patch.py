@@ -31,10 +31,13 @@ NEW_CLICK = '''def browser_click(ref: str, task_id: Optional[str] = None, target
     from tools.browser_tool_generic_fallback import (
         failure_suggests_locate_or_click_failure,
         is_discovery_click_ref,
+        is_discovery_ref_token,
         is_unknown_ref_error,
         try_click_discovery,
         try_click_fallback,
     )
+    if is_discovery_ref_token(ref) and not (target_hint and str(target_hint).strip()):
+        return _dumps(_err("target_hint is required when ref is @? (discovery click without native @ref)"))
     if is_discovery_click_ref(ref, target_hint):
         fb = try_click_discovery(task_id or "default", (target_hint or "").strip())
         if fb.get("success"):
@@ -121,11 +124,74 @@ def _dedupe_browser_type_tail(text: str) -> str:
     return re.sub(dup, r"\1\n", text, count=1)
 
 
+def _patch_tool_schemas(text: str) -> str:
+    click_old = '''        "name": "browser_click",
+        "description": "Click on an element identified by its ref ID from the snapshot (e.g., '@e5'). The ref IDs are shown in square brackets in the snapshot output. Requires browser_navigate and browser_snapshot to be called first.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "The element reference from the snapshot (e.g., '@e5', '@e12')"
+                }
+            },
+            "required": ["ref"]
+        }
+    },'''
+    click_new = '''        "name": "browser_click",
+        "description": "Click on an element identified by its ref ID from the snapshot (e.g., '@e5'). When no usable @ref exists, use ref '@?' plus target_hint (visible label/text). Requires browser_navigate and browser_snapshot first.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "Element reference from snapshot (e.g., '@e5') or '@?' for discovery click"
+                },
+                "target_hint": {
+                    "type": "string",
+                    "description": "Semantic hint for discovery click (required with ref '@?')"
+                }
+            },
+            "required": ["ref"]
+        }
+    },'''
+    type_old = '''                "text": {
+                    "type": "string",
+                    "description": "The text to type into the field"
+                }
+            },
+            "required": ["ref", "text"]
+        }
+    },
+    {
+        "name": "browser_press",'''
+    type_new = '''                "text": {
+                    "type": "string",
+                    "description": "The text to type into the field"
+                },
+                "field_hint": {
+                    "type": "string",
+                    "description": "When fill fails inside a dialog, hint to pick the correct editable (label/name/text)"
+                }
+            },
+            "required": ["ref", "text"]
+        }
+    },
+    {
+        "name": "browser_press",'''
+    if click_old in text:
+        text = text.replace(click_old, click_new, 1)
+    if type_old in text:
+        text = text.replace(type_old, type_new, 1)
+    return text
+
+
 def upgrade_v2(text: str) -> str:
     text = _replace_browser_click(text)
     text = _replace_browser_type_signature(text)
     text = _replace_type_fallback_tail(text)
     text = _dedupe_browser_type_tail(text)
+    text = _patch_tool_schemas(text)
     if MARKER_V2 not in text:
         text = text.rstrip() + "\n" + MARKER_V2 + "\n"
     return text
@@ -216,6 +282,7 @@ def browser_upload(file_path: str, ref: Optional[str] = None, target_hint: Optio
         table_line + '\n    ("browser_upload", "📎", None, {"file_path": "", "ref": None, "target_hint": None}),',
         1,
     )
+    text = _patch_tool_schemas(text)
     text = text.rstrip() + "\n" + MARKER + "\n" + MARKER_V2 + "\n"
     bak = BROWSER_TOOL.with_suffix(".py.bak-native-hardening")
     shutil.copy2(BROWSER_TOOL, bak)
