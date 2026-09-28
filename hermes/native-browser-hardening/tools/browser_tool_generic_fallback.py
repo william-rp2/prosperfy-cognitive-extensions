@@ -152,21 +152,27 @@ def select_editable_in_dialog(
 
     def score(c: Dict[str, Any]) -> int:
         s = 0
-        parts = [
-            c.get("labelText"),
-            c.get("ariaLabel"),
-            c.get("placeholder"),
-            c.get("name"),
-            c.get("id"),
-            c.get("nearbyText"),
-        ]
-        blob = _norm_text(" ".join(str(p) for p in parts if p))
+        label = _norm_text(c.get("labelText"))
+        aria = _norm_text(c.get("ariaLabel"))
+        placeholder = _norm_text(c.get("placeholder"))
+        name = _norm_text(c.get("name"))
+        id_ = _norm_text(c.get("id"))
+        nearby = _norm_text(c.get("nearbyText"))
         if hint_n:
-            if hint_n in blob:
+            if label == hint_n:
+                s += 60
+            elif label and hint_n in label:
+                s += 40
+            elif aria == hint_n or (aria and hint_n in aria):
+                s += 35
+            elif placeholder and hint_n in placeholder:
                 s += 30
-            for token in hint_n.split():
-                if len(token) > 2 and token in blob:
-                    s += 8
+            elif name and hint_n in name:
+                s += 25
+            elif id_ and hint_n in id_:
+                s += 20
+            elif nearby and hint_n in nearby:
+                s += 6
         if c.get("type") == "search":
             s -= 100
         if c.get("role") == "searchbox":
@@ -177,9 +183,9 @@ def select_editable_in_dialog(
         scored = [(i, score(c)) for i, c in enumerate(candidates)]
         scored.sort(key=lambda x: (-x[1], x[0]))
         best_i, best_s = scored[0]
-        if best_s < 15:
+        if best_s < 20:
             return None, "AMBIGUOUS_EDITABLE"
-        tied = [i for i, sc in scored if sc >= best_s - 1 and sc >= 15]
+        tied = [i for i, sc in scored if sc >= best_s - 1 and sc >= 20]
         if len(tied) > 1:
             return None, "AMBIGUOUS_EDITABLE"
         return best_i, None
@@ -327,7 +333,7 @@ _LIST_DIALOG_EDITABLES_JS = r"""
     const g = el.closest('fieldset, [role=group], label');
     return g && root.contains(g) ? (g.innerText||'').slice(0, 240) : '';
   };
-  const fields = [...root.querySelectorAll('input:not([type=hidden]):not([type=file]),textarea,[contenteditable="true"]')]
+  const fields = [...root.querySelectorAll('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea,[contenteditable="true"]')]
     .filter(visible);
   return {
     ok: true,
@@ -359,7 +365,7 @@ _SET_DIALOG_EDITABLE_JS = r"""
   const dialogs = [...document.querySelectorAll('[role=dialog], dialog[open], [aria-modal="true"]')].filter(visible);
   if (!dialogs.length) return {ok:false, error:'NO_ACTIVE_DIALOG'};
   const root = dialogs[dialogs.length - 1];
-  const fields = [...root.querySelectorAll('input:not([type=hidden]):not([type=file]),textarea,[contenteditable="true"]')]
+  const fields = [...root.querySelectorAll('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea,[contenteditable="true"]')]
     .filter(visible);
   const el = fields[fieldIndex];
   if (!el) return {ok:false, error:'FIELD_INDEX_OUT_OF_RANGE'};

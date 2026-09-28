@@ -76,6 +76,8 @@ NEW_TYPE_TAIL = '''    if result.get("success"):
             if fb.get("success"):
                 response = {"success": True, "typed": display_text, "element": ref, "fallback_used": fb.get("method"), **fb}
                 return _dumps(redact_browser_typed_text_for_display(_lp._copy_fallback_warning(response, result), text))
+            response = _err(fb.get("error") or result.get("error", f"Failed to type into {ref}"))
+            return _dumps(redact_browser_typed_text_for_display(_lp._copy_fallback_warning(response, result), text))
         response = _err(result.get("error", f"Failed to type into {ref}"))
     return _dumps(redact_browser_typed_text_for_display(_lp._copy_fallback_warning(response, result), text))'''
 
@@ -110,10 +112,20 @@ def _replace_type_fallback_tail(text: str) -> str:
     return re.sub(pattern, NEW_TYPE_TAIL, text, count=1, flags=re.DOTALL)
 
 
+def _dedupe_browser_type_tail(text: str) -> str:
+    dup = (
+        r"(    return _dumps\(redact_browser_typed_text_for_display\(_lp\._copy_fallback_warning\(response, result\), text\)\))\n"
+        r"        response = _err\(result\.get\(\"error\", f\"Failed to type into \{ref\}\"\)\)\n"
+        r"    return _dumps\(redact_browser_typed_text_for_display\(_lp\._copy_fallback_warning\(response, result\), text\)\)\n"
+    )
+    return re.sub(dup, r"\1\n", text, count=1)
+
+
 def upgrade_v2(text: str) -> str:
     text = _replace_browser_click(text)
     text = _replace_browser_type_signature(text)
     text = _replace_type_fallback_tail(text)
+    text = _dedupe_browser_type_tail(text)
     if MARKER_V2 not in text:
         text = text.rstrip() + "\n" + MARKER_V2 + "\n"
     return text
