@@ -27,15 +27,21 @@ class TestUploadPathAuth(unittest.TestCase):
         self.assertIn("traversal", err or "")
 
     def test_denies_arbitrary_directory(self):
+        if not Path("/var/tmp").is_dir():
+            self.skipTest("/var/tmp unavailable")
         with tempfile.TemporaryDirectory() as td:
             home = Path(td) / "hermes_home"
             home.mkdir()
-            outside = Path(td) / "outside.bin"
+            outside = Path("/var/tmp") / f"hermes_upload_deny_{os.getpid()}.bin"
             outside.write_bytes(b"x")
-            with patch("browser_tool_generic_fallback._hermes_home", return_value=home):
-                p, err = resolve_authorized_upload_path(str(outside))
-            self.assertIsNone(p)
-            self.assertIn("authorized", err or "")
+            try:
+                with patch("browser_tool_generic_fallback._hermes_home", return_value=home):
+                    with patch.dict(os.environ, {"TMPDIR": str(home / "empty_tmp")}):
+                        p, err = resolve_authorized_upload_path(str(outside))
+                self.assertIsNone(p)
+                self.assertIn("authorized", err or "")
+            finally:
+                outside.unlink(missing_ok=True)
 
     def test_denies_missing(self):
         with patch("browser_tool_generic_fallback._hermes_home", return_value=Path(tempfile.gettempdir())):

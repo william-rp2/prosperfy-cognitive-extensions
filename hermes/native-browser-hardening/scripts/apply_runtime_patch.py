@@ -31,8 +31,7 @@ def main() -> int:
     if 'name": "browser_press"' not in text:
         print("unexpected browser_tool.py layout", file=sys.stderr)
         return 1
-    upload_schema = '''
-    {
+    upload_schema = '''    {
         "name": "browser_upload",
         "description": "Attach an authorized file (hidden file inputs / dropzones). Discovers input[type=file] generically.",
         "parameters": {
@@ -45,11 +44,12 @@ def main() -> int:
             "required": ["file_path"]
         }
     },'''
-    text = text.replace(
-        '        "name": "browser_get_images",',
-        upload_schema + '\n    {\n        "name": "browser_get_images",',
-        1,
-    )
+    get_images_anchor = '''    {
+        "name": "browser_get_images",'''
+    if get_images_anchor not in text:
+        print("browser_get_images anchor not found", file=sys.stderr)
+        return 1
+    text = text.replace(get_images_anchor, upload_schema + "\n" + get_images_anchor, 1)
     old_click = '''def browser_click(ref: str, task_id: Optional[str] = None) -> str:
     """Click the element ``ref`` (e.g. "@e5")."""
     if _is_camofox_mode():
