@@ -15,6 +15,29 @@ def _hint_str(hints: dict[str, Any], key: str) -> str:
     return _norm(hints.get(key) or "")
 
 
+_ROOT_PANEL_JS = (
+    "function rootPanel(){var tp=document.querySelector('[role=tabpanel]:not([hidden])');"
+    "if(tp){var n=tp.querySelectorAll('input,textarea,select,[contenteditable=\"true\"],[contenteditable=\"\"]').length;"
+    "if(n>0)return tp;}var main=document.querySelector('main,[role=main]');return main||document;}"
+)
+
+_LABEL_FOR_JS = (
+    "function labelFor(el){var id=el.id;if(id){var lb=document.querySelector('label[for=\"'+id+'\"]');"
+    "if(lb)return norm(lb.innerText||lb.textContent||'');}var wrap=el.closest('label');"
+    "if(wrap)return norm(wrap.innerText||wrap.textContent||'');var lid=el.getAttribute('aria-labelledby');"
+    "if(lid){var parts=lid.split(/\\s+/).map(function(x){var n=document.getElementById(x);"
+    "return n?norm(n.innerText||n.textContent||''):'';}).filter(Boolean);if(parts.length)return parts.join(' ');}"
+    "var box=el.closest('[data-slot=form-item],fieldset,.form-item');"
+    "if(box){var lb2=box.querySelector('label');if(lb2)return norm(lb2.innerText||lb2.textContent||'').slice(0,120);}"
+    "return '';}"
+)
+
+_NEAR_TEXT_JS = (
+    "function nearText(el){var p=el.parentElement;var hops=0;var bits=[];while(p&&hops<4){"
+    "bits.push(norm(p.innerText||p.textContent||''));p=p.parentElement;hops++;}return bits.join(' ').slice(0,240);}"
+)
+
+
 def pick_editable_target(candidates: list[dict], hints: dict[str, Any]) -> dict | None:
     if not isinstance(candidates, list) or not candidates:
         return None
@@ -50,10 +73,15 @@ def pick_editable_target(candidates: list[dict], hints: dict[str, Any]) -> dict 
             lab = _norm(item.get("label") or item.get("label_text") or "")
             if lab == label or (label in lab and len(lab) <= len(label) + 48):
                 return True, "label"
+            ctx = _norm(item.get("near_text") or item.get("context") or "")
+            if label in ctx:
+                return True, "label"
         if near_text and near_text in _norm(item.get("near_text") or item.get("context") or ""):
             return True, "near_text"
         if target_mode == "editable_any" and item.get("editable"):
             return True, "editable_any"
+        if want_active and item.get("active") and item.get("editable"):
+            return True, "active"
         return False, ""
 
     matched: list[tuple[dict, str]] = []
@@ -75,13 +103,23 @@ def pick_editable_target(candidates: list[dict], hints: dict[str, Any]) -> dict 
         "placeholder": 7,
         "name": 6,
         "near_text": 5,
+        "active": 5,
         "editable_any": 4,
     }
 
     def score(pair: tuple[dict, str]) -> tuple:
         item, strategy = pair
         area = float(item.get("width") or 0) * float(item.get("height") or 0)
-        return (-tier.get(strategy, 0), -area, item["_idx"])
+        tag = str(item.get("tag") or "")
+        type_bonus = 0
+        if strategy == "editable_any":
+            if tag == "textarea":
+                type_bonus = 3
+            elif item.get("contenteditable"):
+                type_bonus = 2
+            elif tag == "input":
+                type_bonus = 1
+        return (-tier.get(strategy, 0), -type_bonus, -area, item["_idx"])
 
     matched.sort(key=score)
     chosen, strategy = matched[0]
@@ -117,25 +155,33 @@ def resolve_editable_target_js(hints: dict[str, Any]) -> str:
         "if(tag==='textarea'||tag==='select')return true;if(tag==='input'){var tp=(el.type||'text').toLowerCase();"
         "return tp!=='hidden'&&tp!=='file'&&tp!=='submit'&&tp!=='button';}"
         "return !!(el.isContentEditable||el.getAttribute('contenteditable')==='true');}"
-        "function rootPanel(){return document.querySelector('[role=tabpanel]:not([hidden])')||document;}"
-        "function labelFor(el){var id=el.id;if(id){var lb=document.querySelector('label[for=\"'+id+'\"]');"
-        "if(lb)return norm(lb.innerText||lb.textContent||'');}var wrap=el.closest('label');"
-        "if(wrap)return norm(wrap.innerText||wrap.textContent||'');var lid=el.getAttribute('aria-labelledby');"
-        "if(lid){var parts=lid.split(/\\s+/).map(function(x){var n=document.getElementById(x);"
-        "return n?norm(n.innerText||n.textContent||''):'';}).filter(Boolean);if(parts.length)return parts.join(' ');}"
-        "return '';}"
-        "function nearText(el){var p=el.parentElement;var hops=0;var bits=[];while(p&&hops<3){"
-        "bits.push(norm(p.innerText||p.textContent||''));p=p.parentElement;hops++;}return bits.join(' ').slice(0,240);}"
-        "function sel(el){if(el.id)return '#'+CSS.escape(el.id);var tag=el.tagName.toLowerCase();"
+        + _ROOT_PANEL_JS
+        + _LABEL_FOR_JS
+        + _NEAR_TEXT_JS
+        + "function sel(el){if(el.id)return '#'+CSS.escape(el.id);var tag=el.tagName.toLowerCase();"
         "var nm=el.getAttribute('name');if(nm)return tag+'[name=\"'+nm+'\"]';return tag;}"
         "function cand(el){var r=el.getBoundingClientRect();return {el:el,tag:el.tagName.toLowerCase(),selector:sel(el),"
         "placeholder:norm(el.placeholder||''),name:norm(el.name||''),aria:norm(el.getAttribute('aria-label')||''),"
         "label:labelFor(el),near_text:nearText(el),editable:editable(el),"
         "contenteditable:!!(el.isContentEditable||el.getAttribute('contenteditable')==='true'),"
         "active:document.activeElement===el,width:r.width,height:r.height,visible:vis(el)};}"
-        "function score(c,st){var tier={selector:10,label:9,'aria-label':8,placeholder:7,name:6,near_text:5,editable_any:4}[st]||0;"
-        "return tier*10000+c.width*c.height;}"
-        "var root=rootPanel();var nodes=root.querySelectorAll('input,textarea,select,[contenteditable=\"true\"],[contenteditable=\"\"]');"
+        "function score(c,st){var tier={selector:10,label:9,'aria-label':8,placeholder:7,name:6,near_text:5,active:5,editable_any:4}[st]||0;"
+        "var tb=0;if(st==='editable_any'){if(c.tag==='textarea')tb=3;else if(c.contenteditable)tb=2;else if(c.tag==='input')tb=1;}"
+        "return tier*10000+tb*1000+c.width*c.height;}"
+        "function fieldFromLabel(want){var W=norm(want);if(!W)return null;var labs=root.querySelectorAll('label');"
+        "for(var li=0;li<labs.length;li++){var t=norm(labs[li].innerText||'');if(!t)continue;"
+        "if(t===W||t.indexOf(W)>=0||W.indexOf(t)>=0){var box=labs[li].closest('[data-slot=form-item],fieldset,div')||labs[li].parentElement;"
+        "if(box){var inp=box.querySelector('input,textarea,select,[contenteditable=true],[contenteditable=\"\"]');"
+        "if(inp&&editable(inp)&&vis(inp))return inp;}var fid=labs[li].htmlFor||labs[li].getAttribute('for');"
+        "if(fid){var byId=document.getElementById(fid);if(byId&&editable(byId)&&vis(byId))return byId;}}}return null;}"
+        "var root=rootPanel();"
+        "if(H.label){var byLab=fieldFromLabel(H.label);if(byLab){var lc=cand(byLab);"
+        "byLab.scrollIntoView({block:'center',inline:'center'});var lr=byLab.getBoundingClientRect();"
+        "return {found:true,strategy:'label',tag:lc.tag,selector:lc.selector,contenteditable:lc.contenteditable,x:lr.left+lr.width/2,y:lr.top+lr.height/2};}}"
+        "if(H.active){var ae=document.activeElement;if(ae&&editable(ae)&&vis(ae)){var ac=cand(ae);"
+        "ae.scrollIntoView({block:'center',inline:'center'});var ar=ae.getBoundingClientRect();"
+        "return {found:true,strategy:'active',tag:ac.tag,selector:ac.selector,contenteditable:ac.contenteditable,x:ar.left+ar.width/2,y:ar.top+ar.height/2};}}"
+        "var nodes=root.querySelectorAll('input,textarea,select,[contenteditable=\"true\"],[contenteditable=\"\"]');"
         "var list=[];for(var i=0;i<nodes.length;i++){var el=nodes[i];if(!editable(el))continue;var c=cand(el);"
         "if(H.active&&!c.active)continue;list.push(c);}"
         "if(H.selector){var q=root.querySelector(H.selector)||document.querySelector(H.selector);"
@@ -145,7 +191,7 @@ def resolve_editable_target_js(hints: dict[str, Any]) -> str:
         "var best=null,bst=-1,bstr='';for(var j=0;j<list.length;j++){var c=list[j];if(!c.visible)continue;var st='';"
         "if(H.name&&c.name===norm(H.name))st='name';else if(H.placeholder&&c.placeholder===norm(H.placeholder))st='placeholder';"
         "else if(H.aria_label&&c.aria===norm(H.aria_label))st='aria-label';"
-        "else if(H.label&&(c.label===norm(H.label)||c.label.indexOf(norm(H.label))>=0))st='label';"
+        "else if(H.label&&(c.label===norm(H.label)||c.label.indexOf(norm(H.label))>=0||c.near_text.indexOf(norm(H.label))>=0))st='label';"
         "else if(H.near_text&&c.near_text.indexOf(norm(H.near_text))>=0)st='near_text';"
         "else if((H.target_mode||'').toLowerCase()==='editable_any'&&c.editable)st='editable_any';"
         "if(!st)continue;var sc=score(c,st);if(sc>bst){bst=sc;best=c;bstr=st;}}"
@@ -165,10 +211,10 @@ def editable_candidates_js() -> str:
         "if(tag==='input'){var tp=(el.type||'text').toLowerCase();"
         "return tp!=='hidden'&&tp!=='file'&&tp!=='submit'&&tp!=='button';}"
         "return !!(el.isContentEditable||el.getAttribute('contenteditable')==='true');}"
-        "function rootPanel(){return document.querySelector('[role=tabpanel]:not([hidden])')||document;}"
-        "function labelFor(el){var id=el.id;if(id){var lb=document.querySelector('label[for=\"'+id+'\"]');"
-        "if(lb)return norm(lb.innerText||'');}var w=el.closest('label');return w?norm(w.innerText||''):'';}"
-        "function sel(el){if(el.id)return '#'+CSS.escape(el.id);var tag=el.tagName.toLowerCase();"
+        + _ROOT_PANEL_JS
+        + _LABEL_FOR_JS
+        + _NEAR_TEXT_JS
+        + "function sel(el){if(el.id)return '#'+CSS.escape(el.id);var tag=el.tagName.toLowerCase();"
         "var nm=el.name;if(nm)return tag+'[name=\"'+nm+'\"]';return tag;}"
         "var root=rootPanel();var out=[];"
         "var nodes=root.querySelectorAll('input,textarea,select,[contenteditable=\"true\"],[contenteditable=\"\"]');"
@@ -177,7 +223,7 @@ def editable_candidates_js() -> str:
         "id:el.id||'',name:el.name||'',placeholder:el.placeholder||'',label:labelFor(el).slice(0,120),"
         "aria:el.getAttribute('aria-label')||'',selector:sel(el),contenteditable:!!(el.isContentEditable||"
         "el.getAttribute('contenteditable')==='true'),editable:true,visible:true,width:r.width,height:r.height,"
-        "active:document.activeElement===el,near_text:''});if(out.length>=80)break;}return JSON.stringify(out);})()"
+        "active:document.activeElement===el,near_text:nearText(el)});if(out.length>=80)break;}return JSON.stringify(out);})()"
     )
 
 
@@ -201,7 +247,15 @@ def step_field_hints(raw_step: dict[str, Any]) -> dict[str, Any]:
         return {}
     out: dict[str, Any] = {}
     for key in (
-        "selector", "label", "placeholder", "near_text", "target_mode", "active", "name", "aria_label", "aria-label",
+        "selector",
+        "label",
+        "placeholder",
+        "near_text",
+        "target_mode",
+        "active",
+        "name",
+        "aria_label",
+        "aria-label",
     ):
         val = raw_step.get(key)
         if val not in (None, ""):
@@ -224,7 +278,7 @@ def _harness_js_fill(idx: int, value: str, mode: str) -> str:
     i = str(idx)
     if mode == "select":
         body = (
-            "print('===STEP" + i + "===', js('(function(){var e=document.querySelector('+json.dumps(_s_"
+            "print('===STEP" + i + "===', js('(function(){var e=document.querySelector('+json.dumps(_s_
             + i
             + ")+');if(!e)return \"missing\";var p=Object.getPrototypeOf(e);"
             "var d=Object.getOwnPropertyDescriptor(p,\\\"value\\\");"
@@ -236,7 +290,7 @@ def _harness_js_fill(idx: int, value: str, mode: str) -> str:
         )
         return body
     body = (
-        "  print('===STEP" + i + "===', js('(function(){var e=document.querySelector('+json.dumps(_s_"
+        "  print('===STEP" + i + "===', js('(function(){var e=document.querySelector('+json.dumps(_s_
         + i
         + ")+');if(!e)return \"missing\";var v=" + val + ";e.focus();e.textContent=v;"
         "try{e.dispatchEvent(new InputEvent(\\\"input\\\",{bubbles:true,inputType:\\\"insertText\\\",data:v}));}"
