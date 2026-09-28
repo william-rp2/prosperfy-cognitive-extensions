@@ -137,9 +137,88 @@ def test_click_target_policy():
 
 
 
+
+
+def _field(**kwargs):
+    base = {
+        "visible": True,
+        "disabled": False,
+        "editable": True,
+        "width": 120,
+        "height": 24,
+    }
+    base.update(kwargs)
+    return base
+
+
+def test_editable_target_policy():
+    from field_resolver import (
+        build_fill_step_lines,
+        build_wait_enabled_lines,
+        editable_candidates_js,
+        file_inputs_js,
+        pick_editable_target,
+        resolve_editable_target_js,
+    )
+
+    by_label = pick_editable_target(
+        [
+            _field(tag="input", label="Nome do produto", selector="#name", placeholder="X"),
+            _field(tag="input", label="Outro", selector="#other"),
+        ],
+        {"label": "Nome do produto"},
+    )
+    assert by_label and by_label["strategy"] == "label"
+    print("FIELD_BY_LABEL=PASS")
+
+    by_placeholder = pick_editable_target(
+        [_field(tag="input", placeholder="Buscar produto", selector="#search")],
+        {"placeholder": "Buscar produto"},
+    )
+    assert by_placeholder and by_placeholder["strategy"] == "placeholder"
+    print("FIELD_BY_PLACEHOLDER=PASS")
+
+    by_near = pick_editable_target(
+        [_field(tag="textarea", near_text="Descreva a dor principal", selector="#dor")],
+        {"near_text": "dor principal"},
+    )
+    assert by_near and by_near["strategy"] == "near_text"
+    print("FIELD_BY_NEAR_TEXT=PASS")
+
+    by_any = pick_editable_target(
+        [_field(tag="div", contenteditable=True, selector="div[contenteditable]")],
+        {"target_mode": "editable_any"},
+    )
+    assert by_any and by_any["strategy"] == "editable_any"
+    print("FIELD_BY_EDITABLE_ANY=PASS")
+
+    js = resolve_editable_target_js({"label": "Nome", "target_mode": "editable_any"})
+    assert "tabpanel" in js and "editable_any" in js
+    print("EDITABLE_RESOLVER_JS=PASS")
+
+    assert "JSON.stringify" in editable_candidates_js()
+    assert "input[type=file]" in file_inputs_js()
+    print("INSPECT_EDITABLE_JS=PASS")
+
+    lines = build_fill_step_lines(0, {"op": "type", "label": "Nome", "value": "QA"})
+    blob = chr(10).join(lines)
+    assert "editable target missing" in blob
+    assert "fill_input" in blob or "textContent" in blob
+    print("FILL_STEP_LINES=PASS")
+
+    wait_lines = build_wait_enabled_lines(1, "Continuar", 4)
+    assert any("wait_enabled" in line for line in wait_lines)
+    print("WAIT_ENABLED_LINES=PASS")
+
+    worker = Path(__file__).with_name("worker.py").read_text()
+    assert "data-qa-file-target" in worker
+    assert "dynamic-chooser" in worker or "hidden-input" in worker
+    print("UPLOAD_HELPER_STRINGS=PASS")
+
 if __name__ == "__main__":
     test_allowlist_and_methods()
     test_redaction()
     test_guard_job_urls()
     test_click_target_policy()
+    test_editable_target_policy()
     print("QA_CONTRACT_UNIT=PASS")

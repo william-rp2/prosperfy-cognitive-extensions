@@ -115,5 +115,18 @@ elif phase=="vue_custom":
     print("CLICK_OS_DOIS=PASS")
     print("CLICK_ADICIONAR_DORES=PASS")
     print("NATIVE_BUTTON_REGRESSION=PASS")
+elif phase=="field_label":
+    url=os.environ.get("QA_FIELD_URL","https://homologacao.prospersend.com.br/app/facilitadores/produtos")
+    call({"operation":"act","url":url,"action":"type","placeholder":"Buscar produto ou serviço…","value":"QA label"})
+    info=call({"operation":"inspect","url":url}).get("inspect") or {}
+    vals=[x for x in info.get("editable_candidates") or info.get("inputs") or [] if "Buscar produto" in str(x.get("placeholder") or "")]
+    if not vals: raise SystemExit("FIELD_LABEL_FAIL")
+    print("FIELD_LABEL_TYPE=PASS")
+elif phase=="upload_doc":
+    url=os.environ.get("QA_UPLOAD_URL","https://homologacao.prospersend.com.br/app/facilitadores/produtos")
+    att=os.environ.get("QA_UPLOAD_ATTACHMENT","qa-upload-smoke.txt")
+    data=call({"operation":"upload","url":url,"attachment_name":att,"dropzone_text":os.environ.get("QA_UPLOAD_TEXT","Enviar")})
+    if not data.get("success"): raise SystemExit("UPLOAD_FAIL")
+    print("UPLOAD_DOC=PASS", data.get("strategy") or data.get("data",{}).get("strategy"))
 else:
     raise SystemExit("unknown")

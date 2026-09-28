@@ -68,6 +68,11 @@ class BrowserQaRequest(BaseModel):
     full: bool = False
     max_dim: int = Field(default=1600, ge=480, le=1800)
     attachment_name: str = ""
+    label: str = ""
+    placeholder: str = ""
+    near_text: str = ""
+    target_mode: str = ""
+    dropzone_text: str = ""
 
 
 def _unwrap_skill_result(result: Any) -> dict[str, Any]:
@@ -391,10 +396,14 @@ async def browser_qa(
                                 break
                         step["text"] = target
                 elif action in {"type", "select"}:
-                    if not body.selector:
-                        raise HTTPException(status_code=422, detail=f"{action} exige selector")
-                    step["selector"] = body.selector
-                    step["value"] = body.value if body.value != "" else (body.text or task_target)
+                    has_target = any(str(getattr(body, key, "") or "").strip() for key in ("selector", "label", "placeholder", "near_text", "target_mode"))
+                    if not has_target: raise HTTPException(status_code=422, detail=f"{action} exige selector, label, placeholder, near_text ou target_mode")
+                    if body.selector: step["selector"]=body.selector
+                    if body.label: step["label"]=body.label
+                    if body.placeholder: step["placeholder"]=body.placeholder
+                    if body.near_text: step["near_text"]=body.near_text
+                    if body.target_mode: step["target_mode"]=body.target_mode
+                    step["value"]=body.value if body.value!="" else (body.text or task_target)
                 elif action == "press":
                     key = body.key.strip() or body.text.strip() or task_target
                     if not key:
@@ -434,8 +443,9 @@ async def browser_qa(
                 "steps": body.steps,
             }
         elif op == "upload":
-            if not body.selector or not body.attachment_name:
-                raise HTTPException(status_code=422, detail="upload exige selector e attachment_name")
+            upload_target = bool(body.selector or body.text or body.dropzone_text)
+            if not body.attachment_name or not upload_target:
+                raise HTTPException(status_code=422, detail="upload exige attachment_name e selector, text ou dropzone_text")
             root = Path(
                 os.getenv(
                     "QA_ATTACHMENTS_ROOT",
@@ -459,6 +469,8 @@ async def browser_qa(
                 "action": "upload_file",
                 "url": body.url,
                 "selector": body.selector,
+                "text": body.text or body.dropzone_text,
+                "dropzone_text": body.dropzone_text,
                 "filename": candidate.name,
                 "content_b64": content_b64,
             }

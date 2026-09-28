@@ -52,6 +52,17 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+_WORKER_DIR = os.path.dirname(os.path.abspath(__file__))
+if _WORKER_DIR not in sys.path:
+    sys.path.insert(0, _WORKER_DIR)
+from field_resolver import (
+    build_fill_step_lines,
+    build_wait_enabled_lines,
+    editable_candidates_js,
+    file_inputs_js,
+    uses_field_resolver,
+)
+
 SECRETS_DIR = os.environ.get(
     "BROWSER_WORKER_SECRETS_DIR", os.path.expanduser("~/.hermes/secrets/browser")
 )
@@ -715,26 +726,27 @@ def action_interact(job: dict) -> dict:
             _state_js = "(function(){var out=[];var nodes=document.querySelectorAll('button');for(var i=0;i<nodes.length;i++){var b=nodes[i];if(String(b.className||'').indexOf('border-primary')<0)continue;out.push((b.innerText||'').replace(/\\s+/g,' ').trim().slice(0,60));}return out.join('|');})()"
             code_lines.append(f"print('===CLICKSTATE{idx}===', js({_state_js!r}) or '')")
         elif op == "type":
-            if not selector:
-                return {"success": False, "error": f"type_selector_required:{idx}"}
-            code_lines.append(f"fill_input({selector!r}, {value!r}, clear_first=True, timeout=8.0)")
-            code_lines.append(f"print('===STEP{idx}=== typed')")
+            step_payload = dict(raw)
+            step_payload.setdefault("op", "type")
+            if not uses_field_resolver(step_payload) and not selector:
+                return {"success": False, "error": f"type_target_required:{idx}"}
+            if not uses_field_resolver(step_payload):
+                step_payload["selector"] = selector
+            code_lines.extend(build_fill_step_lines(idx, step_payload))
         elif op == "select":
-            if not selector:
-                return {"success": False, "error": f"select_selector_required:{idx}"}
-            select_expr = (
-                "(function(){var e=document.querySelector(" + json.dumps(selector) + ");"
-                "if(!e)return 'missing';"
-                "var p=Object.getPrototypeOf(e);"
-                "var d=Object.getOwnPropertyDescriptor(p,'value');"
-                "if(d&&d.set){d.set.call(e," + json.dumps(value) + ");}else{e.value=" + json.dumps(value) + ";}"
-                "try{e.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:" + json.dumps(value) + "}));}"
-                "catch(_){e.dispatchEvent(new Event('input',{bubbles:true}));}"
-                "e.dispatchEvent(new Event('change',{bubbles:true}));"
-                "return e.value;})()"
-            )
-            code_lines.append(f"print('===STEP{idx}===', js({select_expr!r}))")
-            code_lines.append("wait(0.8)")
+            step_payload = dict(raw)
+            step_payload.setdefault("op", "select")
+            if not uses_field_resolver(step_payload) and not selector:
+                return {"success": False, "error": f"select_target_required:{idx}"}
+            if not uses_field_resolver(step_payload):
+                step_payload["selector"] = selector
+            code_lines.extend(build_fill_step_lines(idx, step_payload))
+        elif op == "wait_enabled":
+            label_text = str(raw.get("text") or raw.get("label") or raw.get("value") or "").strip()
+            if not label_text:
+                return {"success": False, "error": f"wait_enabled_text_required:{idx}"}
+            timeout = raw.get("timeout", raw.get("seconds", 8))
+            code_lines.extend(build_wait_enabled_lines(idx, label_text, timeout))
         elif op == "press":
             if not key:
                 return {"success": False, "error": f"press_key_required:{idx}"}
@@ -857,6 +869,10 @@ def action_inspect(job: dict) -> dict:
         + f"print(js({inputs_expr!r}) or '[]')\n"
         + "print('===BUTTONS===')\n"
         + f"print(js({buttons_expr!r}) or '[]')\n"
+        + "print('===EDITABLE===')\n"
+        + f"print(js({editable_candidates_js()!r}) or '[]')\n"
+        + "print('===FILEINPUTS===')\n"
+        + f"print(js({file_inputs_js()!r}) or '[]')\n"
         + "print('===CANDIDATES===')\n"
         + f"print(js({interactive_candidates_js()!r}) or '[]')\n"
         + "print('===FORMS===')\n"
@@ -881,7 +897,9 @@ def action_inspect(job: dict) -> dict:
     title = section("TITLE","URL")
     final_url = section("URL","INPUTS") or url
     raw_inputs = section("INPUTS","BUTTONS") or "[]"
-    raw_buttons = section("BUTTONS","CANDIDATES") or "[]"
+    raw_buttons = section("BUTTONS","EDITABLE") or "[]"
+    raw_editable = section("EDITABLE","FILEINPUTS") or "[]"
+    raw_file_inputs = section("FILEINPUTS","CANDIDATES") or "[]"
     raw_candidates = section("CANDIDATES","FORMS") or "[]"
     raw_forms = section("FORMS") or "[]"
     try:
@@ -892,6 +910,14 @@ def action_inspect(job: dict) -> dict:
         buttons = json.loads(raw_buttons)
     except Exception:
         buttons = []
+    try:
+        editable_candidates = json.loads(raw_editable)
+    except Exception:
+        editable_candidates = []
+    try:
+        file_inputs = json.loads(raw_file_inputs)
+    except Exception:
+        file_inputs = []
     try:
         candidates = json.loads(raw_candidates)
     except Exception:
@@ -907,20 +933,23 @@ def action_inspect(job: dict) -> dict:
             "url": final_url,
             "inputs": inputs[:80],
             "buttons": buttons[:120],
+            "editable_candidates": editable_candidates[:80] if isinstance(editable_candidates, list) else [],
+            "file_inputs": file_inputs[:40] if isinstance(file_inputs, list) else [],
             "interactive_candidates": candidates[:60] if isinstance(candidates, list) else [],
             "forms": forms[:20],
         },
     }
 
 def action_upload_file(job: dict) -> dict:
-    """Upload one QA attachment to a file input using CDP, preserving framework events."""
+    """Upload QA attachment via hidden or dynamic file inputs (CDP)."""
     job_id = str(job.get("job_id") or "job")
     selector = str(job.get("selector") or "").strip()
+    click_text = str(job.get("text") or job.get("dropzone_text") or "").strip()
     filename = os.path.basename(str(job.get("filename") or "qa-upload.bin"))
     content_b64 = str(job.get("content_b64") or "")
     url = str(job.get("url") or "").strip()
-    if not selector:
-        return {"success": False, "error": "upload_selector_required"}
+    if not selector and not click_text:
+        return {"success": False, "error": "upload_target_required"}
     if not content_b64:
         return {"success": False, "error": "upload_content_required"}
 
@@ -936,6 +965,7 @@ def action_upload_file(job: dict) -> dict:
     path = os.path.join(workdir, filename)
     with open(path, "wb") as fh:
         fh.write(raw)
+    os.chmod(path, 0o600)
 
     nav = (
         f"new_tab({url!r})\n"
@@ -948,31 +978,88 @@ def action_upload_file(job: dict) -> dict:
         if url
         else "ensure_real_tab()\nwait(0.5)\n"
     )
-    event_js = (
-        "(()=>{const e=document.querySelector(" + json.dumps(selector) + ");"
-        "if(!e)return;"
+
+    find_hidden_js = (
+        "(function(){var nodes=document.querySelectorAll('input[type=file]');"
+        "for(var i=0;i<nodes.length;i++){var el=nodes[i];"
+        "el.setAttribute('data-qa-file-target','1');"
+        "return {found:true,selector:el.id?'#'+CSS.escape(el.id):'input[type=file]:nth-of-type('+(i+1)+')'};}"
+        "return {found:false};})()"
+    )
+    event_js_tpl = (
+        "(()=>{const e=document.querySelector("
+        + "SEL"
+        + ");if(!e)return;"
         "try{e.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertReplacementText'}));}"
         "catch(_){e.dispatchEvent(new Event('input',{bubbles:true}));}"
         "e.dispatchEvent(new Event('change',{bubbles:true}));})()"
     )
-    code = (
-        nav
-        + "root=cdp('DOM.getDocument')['root']['nodeId']\n"
-        + f"node=cdp('DOM.querySelector', nodeId=root, selector={selector!r}).get('nodeId',0)\n"
-        + "if not node: raise RuntimeError('upload input not found')\n"
-        + f"cdp('DOM.setFileInputFiles', files={[path]!r}, nodeId=node)\n"
-        + f"js({event_js!r})\n"
-        + "try:\n"
-        + "    wait_for_network_idle(timeout=20.0, idle_ms=1200)\n"
-        + "except Exception:\n"
-        + "    pass\n"
-        + "wait(1.0)\n"
-        + "print('===URL===')\n"
-        + "print(js('location.href') or '')\n"
-        + "print('===TEXT===')\n"
-        + "print((js('document.body.innerText') or '')[:4000])\n"
-    )
-    proc = run_harness(code, job.get("timeout_seconds", DEFAULT_TIMEOUT))
+
+    strategy = "selector" if selector else "hidden-input"
+    code_lines = [
+        nav,
+        f"_upload_path={path!r}",
+        f"_upload_strategy={strategy!r}",
+        f"_upload_selector={selector!r}",
+        f"_upload_text={click_text!r}",
+        f"_hidden=js({find_hidden_js!r})",
+    ]
+    if selector:
+        code_lines.extend([
+            "if not _hidden or not _hidden.get('found'):",
+            "  _hidden={'found': True, 'selector': _upload_selector}",
+        ])
+    else:
+        code_lines.extend([
+            "if not _hidden or not _hidden.get('found'):",
+            "  if not _upload_text:",
+            "    raise RuntimeError('upload file input not found')",
+            "  _click_expr='PLACEHOLDER'",
+        ])
+        # inject click resolver per text at codegen time via harness loop below
+        code_lines.extend([
+            "  _click=None",
+            "  _click=js('CLICKJS')",
+            "  if not _click or _click.get('found') is False: raise RuntimeError('upload click target missing')",
+            "  click_at_xy(float(_click['x']), float(_click['y']))",
+            "  _found=False",
+            "  for _i in range(20):",
+            "    wait(0.2)",
+            f"    _hidden=js({find_hidden_js!r})",
+            "    if _hidden and _hidden.get('found'): _found=True; break",
+            "  if not _found: raise RuntimeError('upload file input not found')",
+            "  _upload_strategy='dynamic-chooser'",
+        ])
+
+    code_lines.extend([
+        "_sel=_hidden.get('selector') or (_upload_selector or 'input[type=file]')",
+        "root=cdp('DOM.getDocument')['root']['nodeId']",
+        "node=cdp('DOM.querySelector', nodeId=root, selector=_sel).get('nodeId',0)",
+        "if not node: raise RuntimeError('upload input not found')",
+        "cdp('DOM.setFileInputFiles', files=[_upload_path], nodeId=node)",
+        "_event_js='(()=>{const e=document.querySelector('+json.dumps(_sel)+');if(!e)return;try{e.dispatchEvent(new InputEvent(\"input\",{bubbles:true,inputType:\"insertReplacementText\"}));}catch(_){e.dispatchEvent(new Event(\"input\",{bubbles:true}));}e.dispatchEvent(new Event(\"change\",{bubbles:true}));})()' ",
+        "js(_event_js)",
+        "try:",
+        "    wait_for_network_idle(timeout=20.0, idle_ms=1200)",
+        "except Exception:",
+        "    pass",
+        "wait(1.0)",
+        "print('===URL===')",
+        "print(js('location.href') or '')",
+        "print('===TEXT===')",
+        "print((js('document.body.innerText') or '')[:4000])",
+        "print('===UPLOADSTRATEGY===')",
+        "print(_upload_strategy)",
+    ])
+
+    harness = "\n".join(code_lines) + "\n"
+    if not selector and click_text:
+        click_js = resolve_click_target_by_text(click_text)
+        harness = harness.replace("js('CLICKJS')", f"js({click_js!r})")
+    else:
+        harness = harness.replace("  _click_expr='PLACEHOLDER'\n  _click=None\n  _click=js('CLICKJS')\n", "")
+
+    proc = run_harness(harness, job.get("timeout_seconds", DEFAULT_TIMEOUT))
     if proc.returncode != 0:
         lines = [line.strip() for line in (proc.stderr or "").splitlines() if line.strip()]
         return {
@@ -982,16 +1069,25 @@ def action_upload_file(job: dict) -> dict:
     out = proc.stdout or ""
     final_url = ""
     page_excerpt = ""
+    upload_strategy = strategy
     if "===URL===" in out and "===TEXT===" in out:
-        final_url = out.split("===URL===",1)[1].split("===TEXT===",1)[0].strip()
-        page_excerpt = out.split("===TEXT===",1)[1].strip()[:2000]
+        final_url = out.split("===URL===", 1)[1].split("===TEXT===", 1)[0].strip()
+        tail = out.split("===TEXT===", 1)[1]
+        if "===UPLOADSTRATEGY===" in tail:
+            page_excerpt, strat_tail = tail.split("===UPLOADSTRATEGY===", 1)
+            page_excerpt = page_excerpt.strip()[:2000]
+            upload_strategy = strat_tail.strip().splitlines()[0] if strat_tail.strip() else strategy
+        else:
+            page_excerpt = tail.strip()[:2000]
     return {
         "success": True,
         "url": final_url,
         "filename": filename,
         "bytes": len(raw),
+        "strategy": upload_strategy,
         "page_excerpt": page_excerpt,
     }
+
 
 
 def action_screenshot(job: dict) -> dict:
