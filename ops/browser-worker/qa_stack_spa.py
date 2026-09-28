@@ -231,10 +231,11 @@ elif phase == "spa":
     print("POST_ACTION_SCREENSHOT=PASS")
 
 elif phase == "vue_custom":
-    url = os.environ.get(
-        "QA_VUE_PRODUCT_URL",
-        "https://homologacao.prospersend.com.br/app/facilitadores/produtos/cdacd3a3-9211-41c9-8e28-945771fdbadd",
-    )
+    ensure_session()
+    url = os.environ.get("QA_VUE_PRODUCT_URL", "").strip()
+    if not url:
+        url = create_qa_product(f"QA Vue Custom {int(time.time())}")
+        register_cleanup(url)
     data = call(
         {
             "operation": "interact",
