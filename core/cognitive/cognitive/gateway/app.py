@@ -32,7 +32,7 @@ from ..registry.registry import InMemoryCapabilityRegistry
 from ..registry.grant_resolver import RegistryGrantResolver
 from ..telemetry.recorder import InMemoryTelemetryRecorder
 from ..tenancy.identity_resolver import IdentityResolver
-from .routes import capabilities, health, resources, status, trello_webhook
+from .routes import capabilities, health, resources, status, trello_webhook, browser_qa
 from .metadata import api_version, deployment_environment
 
 logger = logging.getLogger(__name__)
@@ -313,6 +313,7 @@ def _build_services(app: FastAPI) -> None:
     app.state.registry = registry
     app.state.orchestrator = orchestrator
     app.state.browser_adapter = browser_adapter
+    app.state.skills_adapter = skills_adapter
     app.state.grant_resolver = grant_resolver
     app.state.audit_writer = audit_writer
     app.state.telemetry_recorder = telemetry_recorder
@@ -464,6 +465,7 @@ def create_app() -> FastAPI:
     app.include_router(capabilities.router)
     app.include_router(resources.router)
     app.include_router(trello_webhook.router)
+    app.include_router(browser_qa.router)
 
     logger.info(
         "Prosperfy Cognitive API v%s env=%s capabilities=%d mode=%s",
