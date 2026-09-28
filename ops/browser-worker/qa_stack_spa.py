@@ -49,17 +49,23 @@ def call(args, *, require_ok: bool = True):
 
 
 def ensure_session():
-    call(
-        {
-            "operation": "act",
-            "url": LOGIN,
-            "fields": {
-                "input[type=email]": "teste@empresab.com",
-                "input[type=password]": "secret_ref:prospersend-qa-tenant1-password",
-            },
-            "submit": True,
-        }
-    )
+    ins = call({"operation": "inspect"}, require_ok=True)
+    current = str((ins.get("inspect") or {}).get("url") or "")
+    if not current.startswith("https://homologacao.prospersend.com.br/app/"):
+        data = call(
+            {
+                "operation": "act",
+                "url": LOGIN,
+                "fields": {
+                    "#email": "teste@empresab.com",
+                    "#password": "secret_ref:prospersend-qa-tenant1-password",
+                },
+                "submit": True,
+            }
+        )
+        url = str(data.get("url") or "")
+        if not url.startswith("https://homologacao.prospersend.com.br/app/"):
+            raise SystemExit("LOGIN_NOT_AUTHENTICATED")
     call(
         {
             "operation": "interact",
