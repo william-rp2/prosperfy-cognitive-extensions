@@ -278,7 +278,7 @@ def _harness_js_fill(idx: int, value: str, mode: str) -> str:
     i = str(idx)
     if mode == "select":
         body = (
-            "print('===STEP" + i + "===', js('(function(){var e=document.querySelector('+json.dumps(_s_
+            "print('===STEP" + i + "===', js('(function(){var e=document.querySelector('+json.dumps(_s_"
             + i
             + ")+');if(!e)return \"missing\";var p=Object.getPrototypeOf(e);"
             "var d=Object.getOwnPropertyDescriptor(p,\\\"value\\\");"
@@ -290,7 +290,7 @@ def _harness_js_fill(idx: int, value: str, mode: str) -> str:
         )
         return body
     body = (
-        "  print('===STEP" + i + "===', js('(function(){var e=document.querySelector('+json.dumps(_s_
+        "  print('===STEP" + i + "===', js('(function(){var e=document.querySelector('+json.dumps(_s_"
         + i
         + ")+');if(!e)return \"missing\";var v=" + val + ";e.focus();e.textContent=v;"
         "try{e.dispatchEvent(new InputEvent(\\\"input\\\",{bubbles:true,inputType:\\\"insertText\\\",data:v}));}"
