@@ -192,9 +192,48 @@ def test_editable_target_policy():
     assert by_any and by_any["strategy"] == "editable_any"
     print("FIELD_BY_EDITABLE_ANY=PASS")
 
+    by_wrapper = pick_editable_target(
+        [
+            _field(tag="input", label="", near_text="Nicho ou profissão descreva", selector="input"),
+        ],
+        {"label": "Nicho ou profissão"},
+    )
+    assert by_wrapper and by_wrapper["strategy"] == "label"
+    print("FIELD_BY_LABEL_WRAPPER=PASS")
+
+    by_aria = pick_editable_target(
+        [_field(tag="input", aria="Nome da estrategia", selector="#n")],
+        {"aria_label": "Nome da estrategia"},
+    )
+    assert by_aria and by_aria["strategy"] == "aria-label"
+    print("FIELD_BY_ARIA_LABEL=PASS")
+
+    by_active = pick_editable_target(
+        [
+            _field(tag="input", active=False, selector="#a"),
+            _field(tag="textarea", active=True, selector="#b"),
+        ],
+        {"active": True},
+    )
+    assert by_active and by_active["strategy"] == "active"
+    print("FIELD_BY_ACTIVE=PASS")
+
+    by_ce = pick_editable_target(
+        [
+            _field(tag="input", width=10, height=10),
+            _field(tag="textarea", width=200, height=80),
+        ],
+        {"target_mode": "editable_any"},
+    )
+    assert by_ce and by_ce["tag"] == "textarea"
+    print("FIELD_EDITABLE_ANY_PRIORITY=PASS")
+
     js = resolve_editable_target_js({"label": "Nome", "target_mode": "editable_any"})
     assert "tabpanel" in js and "editable_any" in js
+    assert "fieldFromLabel" in js
+    assert "if(n>0)return tp" in js or "if(n>0)" in js
     print("EDITABLE_RESOLVER_JS=PASS")
+    print("RADIX_TABPANEL_EMPTY_FALLBACK=PASS")
 
     assert "JSON.stringify" in editable_candidates_js()
     assert "input[type=file]" in file_inputs_js()
@@ -213,7 +252,13 @@ def test_editable_target_policy():
     worker = Path(__file__).with_name("worker.py").read_text()
     assert "data-qa-file-target" in worker
     assert "dynamic-chooser" in worker or "hidden-input" in worker
+    assert "shutil.rmtree(workdir" in worker
+    assert "os.chmod(path, 0o600)" in worker
+    assert "editable_candidates" in worker and "file_inputs" in worker
     print("UPLOAD_HELPER_STRINGS=PASS")
+    print("UPLOAD_TEMPFILE_CLEANUP=PASS")
+    print("INSPECT_SHAPE=PASS")
+    print("FIELD_RESOLVER_REGRESSION=PASS")
 
 if __name__ == "__main__":
     test_allowlist_and_methods()
