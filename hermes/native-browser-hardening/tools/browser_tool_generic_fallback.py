@@ -42,6 +42,39 @@ def _extra_upload_roots() -> List[Path]:
     return roots
 
 
+def _collect_authorized_upload_roots(home: Path) -> List[Path]:
+    """Explicit attachment/task-scoped directories only (never entire Hermes home or /tmp)."""
+    roots: List[Path] = []
+    seen: set[str] = set()
+
+    def add(root: Path) -> None:
+        try:
+            resolved = root.resolve()
+        except OSError:
+            return
+        key = str(resolved)
+        if key not in seen:
+            seen.add(key)
+            roots.append(resolved)
+
+    for root in _extra_upload_roots():
+        add(root)
+    for name in _DEFAULT_UPLOAD_ROOT_NAMES:
+        direct = home / name
+        if direct.is_dir():
+            add(direct)
+    profiles = home / "profiles"
+    if profiles.is_dir():
+        for profile_dir in profiles.iterdir():
+            if not profile_dir.is_dir():
+                continue
+            for name in _DEFAULT_UPLOAD_ROOT_NAMES:
+                sub = profile_dir / name
+                if sub.is_dir():
+                    add(sub)
+    return roots
+
+
 def resolve_authorized_upload_path(file_path: str) -> Tuple[Optional[Path], Optional[str]]:
     """Return (resolved_path, error). Denies traversal, dirs, missing files."""
     if not file_path or not str(file_path).strip():
@@ -57,23 +90,12 @@ def resolve_authorized_upload_path(file_path: str) -> Tuple[Optional[Path], Opti
     if not resolved.is_file():
         return None, "file does not exist or is not a regular file"
     home = _hermes_home()
-    allowed_roots = [home] + _extra_upload_roots()
-    tmp = Path(os.environ.get("TMPDIR", "/tmp")).resolve()
-    allowed_roots.append(tmp)
-    for root in allowed_roots:
+    for root in _collect_authorized_upload_roots(home):
         try:
             resolved.relative_to(root)
             return resolved, None
         except ValueError:
             continue
-    for name in _DEFAULT_UPLOAD_ROOT_NAMES:
-        for candidate in home.rglob(name):
-            if candidate.is_dir():
-                try:
-                    resolved.relative_to(candidate.resolve())
-                    return resolved, None
-                except ValueError:
-                    pass
     return None, "upload path not under an authorized directory"
 
 
@@ -258,6 +280,41 @@ def select_plausible_dropzone(
     return best_i, None
 
 
+def select_interactive_click_target(
+    candidates: List[Dict[str, Any]],
+    target_hint: Optional[str],
+) -> Tuple[Optional[int], Optional[str]]:
+    """Pick one discovery-click target. Fail closed on ambiguity or weak match."""
+    if not candidates:
+        return None, "NO_INTERACTIVE_CANDIDATE"
+    hint_n = _norm_text(target_hint)
+    if not hint_n:
+        return None, "TARGET_HINT_REQUIRED"
+
+    def score(c: Dict[str, Any]) -> int:
+        s = 0
+        txt = _norm_text(c.get("text"))
+        aria = _norm_text(c.get("ariaLabel"))
+        title = _norm_text(c.get("title"))
+        if txt == hint_n or aria == hint_n:
+            s += 40
+        elif hint_n in txt or hint_n in aria or hint_n in title:
+            s += 25
+        if _norm_text(c.get("tag")) == "button":
+            s += 2
+        return s
+
+    scored = [(i, score(c)) for i, c in enumerate(candidates)]
+    scored.sort(key=lambda x: (-x[1], x[0]))
+    best_i, best_s = scored[0]
+    if best_s < 15:
+        return None, "NO_INTERACTIVE_MATCH"
+    tied = [i for i, sc in scored if sc >= best_s - 1 and sc >= 15]
+    if len(tied) > 1:
+        return None, "AMBIGUOUS_INTERACTIVE"
+    return best_i, None
+
+
 # --- JS helpers (generic) ----------------------------------------------------
 
 _DISCOVER_FILE_INPUT_JS = r"""
@@ -364,13 +421,14 @@ _CLICK_SELECTOR_JS = r"""
 (function(sel){
   try {
     const el = document.querySelector(sel);
-    if (!el) return {ok:false, error:'dropzone selector not found'};
+    if (!el) return {ok:false, error:'selector not found'};
     const r = el.getBoundingClientRect();
     const x = r.x + r.width/2, y = r.y + r.height/2;
-    el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window, clientX:x, clientY:y}));
-    el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window, clientX:x, clientY:y}));
-    el.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window, clientX:x, clientY:y}));
-    if (typeof el.click === 'function') el.click();
+    if (typeof el.click === 'function') {
+      el.click();
+    } else {
+      el.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window, clientX:x, clientY:y}));
+    }
     return {ok:true, x, y, tag: el.tagName};
   } catch (e) {
     return {ok:false, error: String(e)};
@@ -378,10 +436,9 @@ _CLICK_SELECTOR_JS = r"""
 })(%s)
 """
 
-_DISCOVER_INTERACTIVE_CLICK_JS = r"""
-(function(hint){
-  const norm = (s) => (s||'').replace(/\s+/g,' ').trim().toLowerCase();
-  const hintN = hint ? norm(hint) : '';
+_LIST_INTERACTIVE_CLICK_CANDIDATES_JS = r"""
+(function(){
+  const norm = (s) => (s||'').replace(/\s+/g,' ').trim();
   const visible = (el) => {
     if (!el || el.nodeType !== 1) return false;
     const st = window.getComputedStyle(el);
@@ -398,29 +455,40 @@ _DISCOVER_INTERACTIVE_CLICK_JS = r"""
     if (window.getComputedStyle(el).cursor === 'pointer') return true;
     return false;
   };
-  const score = (el) => {
-    let s = 0;
-    const txt = norm(el.innerText || el.textContent || '');
-    const aria = norm(el.getAttribute('aria-label')||'');
-    const title = norm(el.getAttribute('title')||'');
-    if (hintN) {
-      if (txt === hintN || aria === hintN) s += 40;
-      else if (txt.includes(hintN) || aria.includes(hintN) || title.includes(hintN)) s += 25;
+  function cssPath(el){
+    if (!el || el.nodeType !== 1) return '';
+    if (el.id) return '#'+CSS.escape(el.id);
+    const parts = [];
+    while (el && el.nodeType === 1 && el.tagName !== 'HTML'){
+      let sel = el.tagName.toLowerCase();
+      const parent = el.parentElement;
+      if (parent){
+        const sibs = [...parent.children].filter(c => c.tagName === el.tagName);
+        if (sibs.length > 1) sel += ':nth-of-type('+(sibs.indexOf(el)+1)+')';
+      }
+      parts.unshift(sel);
+      el = parent;
     }
-    if ((el.tagName||'').toLowerCase() === 'button') s += 2;
-    return s;
-  };
-  const nodes = [...document.querySelectorAll('button, a, [role=button], [role=link], [role=menuitem], [onclick]')]
+    return parts.join('>');
+  }
+  const out = [];
+  const seen = new Set();
+  [...document.querySelectorAll('button, a, [role=button], [role=link], [role=menuitem], [onclick]')]
     .filter(visible)
-    .filter(interactive);
-  nodes.sort((a,b)=>score(b)-score(a));
-  const best = nodes[0];
-  if (!best) return {ok:false, error:'no interactive candidate'};
-  if (hintN && score(best) < 15) return {ok:false, error:'no interactive match for hint'};
-  const r = best.getBoundingClientRect();
-  best.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view: window}));
-  return {ok:true, tag: best.tagName, x: r.x + r.width/2, y: r.y + r.height/2, score: score(best)};
-})(%s)
+    .filter(interactive)
+    .forEach(el => {
+      if (seen.has(el)) return;
+      seen.add(el);
+      out.push({
+        selector: cssPath(el),
+        tag: el.tagName || '',
+        text: norm(el.innerText || el.textContent || '').slice(0, 200),
+        ariaLabel: norm(el.getAttribute('aria-label') || ''),
+        title: norm(el.getAttribute('title') || '')
+      });
+    });
+  return {ok: true, candidates: out.slice(0, 80)};
+})()
 """
 
 _CLICK_ANCESTOR_JS = r"""
@@ -809,8 +877,26 @@ def try_click_discovery(task_id: str, target_hint: str) -> Dict[str, Any]:
     hint = (target_hint or "").strip()
     if not hint:
         return {"success": False, "error": "target_hint required for discovery click", "fallback": "click"}
-    expr = _DISCOVER_INTERACTIVE_CLICK_JS % _js_string(hint)
-    val, eval_err = _eval_json(task_id, expr)
+    listed, list_err = _eval_json(task_id, _LIST_INTERACTIVE_CLICK_CANDIDATES_JS)
+    if list_err:
+        return {"success": False, "error": list_err, "fallback": "click", "trigger": "discovery"}
+    candidates: List[Dict[str, Any]] = []
+    if isinstance(listed, dict):
+        candidates = list(listed.get("candidates") or [])
+    idx, pick_err = select_interactive_click_target(candidates, hint)
+    if pick_err or idx is None:
+        return {
+            "success": False,
+            "error": pick_err or "NO_INTERACTIVE_CANDIDATE",
+            "fallback": "click",
+            "trigger": "discovery",
+        }
+    chosen = candidates[idx]
+    selector = chosen.get("selector")
+    if not selector or not isinstance(selector, str):
+        return {"success": False, "error": "interactive candidate missing selector", "fallback": "click", "trigger": "discovery"}
+    click_expr = _CLICK_SELECTOR_JS % _js_string(selector)
+    val, eval_err = _eval_json(task_id, click_expr)
     if eval_err:
         return {"success": False, "error": eval_err, "fallback": "click", "trigger": "discovery"}
     if isinstance(val, dict) and val.get("ok"):
@@ -818,6 +904,7 @@ def try_click_discovery(task_id: str, target_hint: str) -> Dict[str, Any]:
             "success": True,
             "method": "js-discover-interactive-click",
             "target_hint": hint,
+            "selector": selector,
             "detail": val,
         }
     err = (val or {}).get("error") if isinstance(val, dict) else "discovery click failed"

@@ -20,6 +20,7 @@ from browser_tool_generic_fallback import (  # noqa: E402
     is_unknown_ref_error,
     resolve_authorized_upload_path,
     select_editable_in_dialog,
+    select_interactive_click_target,
     select_plausible_dropzone,
     try_dropzone_reveal_file_input,
 )
@@ -54,7 +55,7 @@ class TestUploadPathAuth(unittest.TestCase):
         self.assertIsNone(p)
         self.assertIn("exist", err or "")
 
-    def test_allows_file_under_home(self):
+    def test_allows_file_under_attachments_root(self):
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
             f = home / "attachments" / "doc.pdf"
@@ -64,6 +65,42 @@ class TestUploadPathAuth(unittest.TestCase):
                 p, err = resolve_authorized_upload_path(str(f))
             self.assertIsNone(err)
             self.assertEqual(p, f.resolve())
+
+    def test_allows_profile_scoped_attachments(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            f = home / "profiles" / "qa" / "attachments" / "doc.pdf"
+            f.parent.mkdir(parents=True)
+            f.write_bytes(b"ok")
+            with patch("browser_tool_generic_fallback._hermes_home", return_value=home):
+                p, err = resolve_authorized_upload_path(str(f))
+            self.assertIsNone(err)
+            self.assertEqual(p, f.resolve())
+
+    def test_denies_hermes_env_under_home(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            secret = home / ".env"
+            secret.write_text("TOKEN=secret\n", encoding="utf-8")
+            with patch("browser_tool_generic_fallback._hermes_home", return_value=home):
+                p, err = resolve_authorized_upload_path(str(secret))
+            self.assertIsNone(p)
+            self.assertIn("authorized", err or "")
+
+    def test_denies_arbitrary_tmp_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "hermes_home"
+            home.mkdir()
+            tmp_file = Path(tempfile.gettempdir()) / f"hermes_upload_tmp_{os.getpid()}.bin"
+            tmp_file.write_bytes(b"x")
+            try:
+                with patch("browser_tool_generic_fallback._hermes_home", return_value=home):
+                    with patch.dict(os.environ, {"TMPDIR": tempfile.gettempdir()}, clear=False):
+                        p, err = resolve_authorized_upload_path(str(tmp_file))
+                self.assertIsNone(p)
+                self.assertIn("authorized", err or "")
+            finally:
+                tmp_file.unlink(missing_ok=True)
 
 
 class TestClickFailureHeuristics(unittest.TestCase):
@@ -88,6 +125,35 @@ class TestClickFailureHeuristics(unittest.TestCase):
         self.assertTrue(is_discovery_click_ref("@?", "Delete"))
         self.assertFalse(is_discovery_click_ref("@e5", "Delete"))
         self.assertFalse(is_discovery_click_ref("@?", ""))
+
+
+class TestInteractiveClickSelection(unittest.TestCase):
+    def _btn(self, **kw):
+        base = {
+            "selector": "button:nth-of-type(1)",
+            "tag": "BUTTON",
+            "text": "Delete",
+            "ariaLabel": "",
+            "title": "",
+        }
+        base.update(kw)
+        return base
+
+    def test_ambiguous_two_equivalent_delete_buttons(self):
+        idx, err = select_interactive_click_target(
+            [self._btn(text="Delete"), self._btn(text="Delete", selector="button:nth-of-type(2)")],
+            "Delete",
+        )
+        self.assertIsNone(idx)
+        self.assertEqual(err, "AMBIGUOUS_INTERACTIVE")
+
+    def test_unique_match(self):
+        idx, err = select_interactive_click_target(
+            [self._btn(text="Cancel"), self._btn(text="Produto/Serviço")],
+            "Produto/Serviço",
+        )
+        self.assertIsNone(err)
+        self.assertEqual(idx, 1)
 
 
 class TestLazyDropzoneSelection(unittest.TestCase):

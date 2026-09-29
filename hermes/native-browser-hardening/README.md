@@ -29,9 +29,20 @@ export BROWSER_CDP_URL=http://127.0.0.1:9223
 python -m unittest discover -s hermes/native-browser-hardening/tests -p "test_*.py" -v
 ```
 
-## E2E (obrigatório pós-deploy)
+Patch de integração: **`scripts/apply_runtime_patch.py`** é a única fonte de verdade para `browser_tool.py` (não há patch `.patch` paralelo).
 
-Turnos reais `hermes -p qaprospersend chat` conforme seções 14–18 do prompt (upload, click, modal, segunda app, regressão). **Não fechados nesta sessão** até o overlay estar no runtime.
+## E2E (homolog `qaprospersend`, browser nativo)
+
+| Resultado | Status |
+|-----------|--------|
+| `GAP1_UPLOAD_NATIVE_E2E` | PASS |
+| `GAP2_SPA_DYNAMIC_E2E` | PASS |
+| `QA_CTS_UPLOAD_UNBLOCKED` | YES |
+| `QA_CTS_DYNAMIC_LIST_UNBLOCKED` | YES |
+
+Observação (não blocker): `LAZY_DROPZONE_STRICT_E2E=NOT_EXERCISED` — na aba Documentos medida, `INITIAL_FILE_INPUT_COUNT=1`; ramo `lazy-dropzone-then-upload` coberto por testes unitários.
+
+Pós-deploy: revalidar turnos reais `hermes -p qaprospersend chat` quando o overlay mudar; conferir `SOURCE_RUNTIME_MATCH` (fallback + contratos em `browser_tool.py` via `verify_patched_browser_tool`).
 
 ## Rollback runtime
 
