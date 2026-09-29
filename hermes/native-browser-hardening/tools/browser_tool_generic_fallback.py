@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -200,6 +201,63 @@ def select_editable_in_dialog(
     return None, "AMBIGUOUS_EDITABLE"
 
 
+_DROPZONE_CLASS_RE = re.compile(r"drop|upload|attach|file|drag", re.I)
+
+
+def select_plausible_dropzone(
+    candidates: List[Dict[str, Any]],
+    target_hint: Optional[str],
+) -> Tuple[Optional[int], Optional[str]]:
+    """
+    Pick one lazy-render dropzone candidate. Returns (index, error_code).
+    Fail closed without a semantic hint or when no candidate scores high enough.
+    """
+    if not candidates:
+        return None, "NO_PLAUSIBLE_DROPZONE"
+    hint_n = _norm_text(target_hint)
+    if not hint_n:
+        return None, "TARGET_HINT_REQUIRED"
+
+    def score(c: Dict[str, Any]) -> int:
+        s = 0
+        txt = _norm_text(c.get("text"))
+        aria = _norm_text(c.get("ariaLabel"))
+        title = _norm_text(c.get("title"))
+        cls = c.get("className") or ""
+        if hint_n:
+            if txt == hint_n or aria == hint_n:
+                s += 45
+            elif hint_n in txt or hint_n in aria or hint_n in title:
+                s += 28
+        if c.get("hasOnDrop"):
+            s += 22
+        if _DROPZONE_CLASS_RE.search(str(cls)):
+            s += 18
+        if c.get("containsFileInputPlaceholder"):
+            s += 12
+        role = _norm_text(c.get("role"))
+        tag = _norm_text(c.get("tag"))
+        if role == "button" or tag == "button" or tag == "label":
+            s += 6
+        try:
+            area = float(c.get("area") or 0)
+        except (TypeError, ValueError):
+            area = 0
+        if area >= 4000:
+            s += 4
+        return s
+
+    scored = [(i, score(c)) for i, c in enumerate(candidates)]
+    scored.sort(key=lambda x: (-x[1], x[0]))
+    best_i, best_s = scored[0]
+    if best_s < 20:
+        return None, "NO_PLAUSIBLE_DROPZONE"
+    tied = [i for i, sc in scored if sc >= best_s - 1 and sc >= 20]
+    if len(tied) > 1:
+        return None, "AMBIGUOUS_DROPZONE"
+    return best_i, None
+
+
 # --- JS helpers (generic) ----------------------------------------------------
 
 _DISCOVER_FILE_INPUT_JS = r"""
@@ -236,6 +294,87 @@ _DISCOVER_FILE_INPUT_JS = r"""
   if (!inputs.length) return null;
   inputs.sort((a,b)=>score(b)-score(a));
   return cssPath(inputs[0]);
+})(%s)
+"""
+
+_COUNT_FILE_INPUTS_JS = r"""
+(function(){ return document.querySelectorAll('input[type=file]').length; })()
+"""
+
+_LIST_DROPZONE_CANDIDATES_JS = r"""
+(function(){
+  const norm = (s) => (s||'').replace(/\s+/g,' ').trim();
+  const visible = (el) => {
+    if (!el || el.nodeType !== 1) return false;
+    const st = window.getComputedStyle(el);
+    if (st.visibility === 'hidden' || st.display === 'none') return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 8 && r.height > 8;
+  };
+  function cssPath(el){
+    if (!el || el.nodeType !== 1) return '';
+    if (el.id) return '#'+CSS.escape(el.id);
+    const parts = [];
+    while (el && el.nodeType === 1 && el.tagName !== 'HTML'){
+      let sel = el.tagName.toLowerCase();
+      const parent = el.parentElement;
+      if (parent){
+        const sibs = [...parent.children].filter(c => c.tagName === el.tagName);
+        if (sibs.length > 1) sel += ':nth-of-type('+(sibs.indexOf(el)+1)+')';
+      }
+      parts.unshift(sel);
+      el = parent;
+    }
+    return parts.join('>');
+  }
+  const seen = new Set();
+  const out = [];
+  const push = (el) => {
+    if (!visible(el) || seen.has(el)) return;
+    seen.add(el);
+    const r = el.getBoundingClientRect();
+    const cls = typeof el.className === 'string' ? el.className : '';
+    out.push({
+      selector: cssPath(el),
+      tag: el.tagName || '',
+      role: el.getAttribute('role') || '',
+      className: cls.slice(0, 240),
+      text: norm(el.innerText || el.textContent || '').slice(0, 200),
+      ariaLabel: norm(el.getAttribute('aria-label') || ''),
+      title: norm(el.getAttribute('title') || ''),
+      hasOnDrop: !!(el.ondrop || el.getAttribute('ondrop') !== null),
+      containsFileInputPlaceholder: !!el.querySelector('input[type=file]'),
+      area: r.width * r.height
+    });
+  };
+  document.querySelectorAll('[ondrop],[ondragover],[data-dropzone]').forEach(push);
+  document.querySelectorAll('label, [role=button], button').forEach(el => {
+    const cls = (typeof el.className === 'string' ? el.className : '').toLowerCase();
+    if (/drop|upload|attach|file|drag/.test(cls)) push(el);
+  });
+  document.querySelectorAll('div,section,span').forEach(el => {
+    const cls = (typeof el.className === 'string' ? el.className : '').toLowerCase();
+    if (/dropzone|upload|file-drop|drag-drop/.test(cls)) push(el);
+  });
+  return {ok: true, candidates: out.slice(0, 40)};
+})()
+"""
+
+_CLICK_SELECTOR_JS = r"""
+(function(sel){
+  try {
+    const el = document.querySelector(sel);
+    if (!el) return {ok:false, error:'dropzone selector not found'};
+    const r = el.getBoundingClientRect();
+    const x = r.x + r.width/2, y = r.y + r.height/2;
+    el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window, clientX:x, clientY:y}));
+    el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window, clientX:x, clientY:y}));
+    el.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window, clientX:x, clientY:y}));
+    if (typeof el.click === 'function') el.click();
+    return {ok:true, x, y, tag: el.tagName};
+  } catch (e) {
+    return {ok:false, error: String(e)};
+  }
 })(%s)
 """
 
@@ -476,6 +615,102 @@ def cdp_set_file_input(task_id: str, selector: str, local_path: str) -> Dict[str
     return {"ok": True, "selector": selector, "path": local_path}
 
 
+def _count_file_inputs(task_id: str) -> Tuple[int, Optional[str]]:
+    val, err = _eval_json(task_id, _COUNT_FILE_INPUTS_JS)
+    if err:
+        return 0, err
+    try:
+        return int(val or 0), None
+    except (TypeError, ValueError):
+        return 0, "invalid file input count"
+
+
+def try_dropzone_reveal_file_input(
+    task_id: str,
+    target_hint: str,
+    *,
+    poll_attempts: int = 12,
+    poll_interval_s: float = 0.25,
+) -> Dict[str, Any]:
+    """Interact with a plausible dropzone when no input[type=file] exists yet."""
+    hint = (target_hint or "").strip()
+    if not hint:
+        return {"success": False, "error": "TARGET_HINT_REQUIRED", "fallback": "upload-lazy"}
+
+    initial, err = _count_file_inputs(task_id)
+    if err:
+        return {"success": False, "error": err, "fallback": "upload-lazy"}
+    if initial > 0:
+        return {
+            "success": True,
+            "skipped": True,
+            "initial_file_input_count": initial,
+            "reason": "file inputs already present",
+        }
+
+    raw, list_err = _eval_json(task_id, _LIST_DROPZONE_CANDIDATES_JS)
+    if list_err:
+        return {"success": False, "error": list_err, "fallback": "upload-lazy"}
+    candidates: List[Dict[str, Any]] = []
+    if isinstance(raw, dict):
+        candidates = list(raw.get("candidates") or [])
+    idx, pick_err = select_plausible_dropzone(candidates, hint)
+    if pick_err or idx is None:
+        return {
+            "success": False,
+            "error": pick_err or "NO_PLAUSIBLE_DROPZONE",
+            "fallback": "upload-lazy",
+            "initial_file_input_count": 0,
+            "dropzone_discovered_generically": bool(candidates),
+        }
+
+    chosen = candidates[idx]
+    selector = chosen.get("selector")
+    if not selector or not isinstance(selector, str):
+        return {"success": False, "error": "dropzone missing selector", "fallback": "upload-lazy"}
+
+    click_expr = _CLICK_SELECTOR_JS % _js_string(selector)
+    click_val, click_err = _eval_json(task_id, click_expr)
+    if click_err or not (isinstance(click_val, dict) and click_val.get("ok")):
+        return {
+            "success": False,
+            "error": (click_val or {}).get("error") if isinstance(click_val, dict) else click_err or "dropzone click failed",
+            "fallback": "upload-lazy",
+            "dropzone_selector": selector,
+        }
+
+    after = 0
+    for _ in range(max(1, poll_attempts)):
+        time.sleep(poll_interval_s)
+        after, count_err = _count_file_inputs(task_id)
+        if count_err:
+            return {"success": False, "error": count_err, "fallback": "upload-lazy"}
+        if after > 0:
+            break
+
+    if after <= 0:
+        return {
+            "success": False,
+            "error": "FILE_INPUT_NOT_RENDERED_AFTER_INTERACTION",
+            "fallback": "upload-lazy",
+            "initial_file_input_count": 0,
+            "dropzone_interaction_performed": True,
+            "dropzone_selector": selector,
+            "file_input_after_interaction": after,
+        }
+
+    return {
+        "success": True,
+        "initial_file_input_count": 0,
+        "dropzone_discovered_generically": True,
+        "dropzone_interaction_performed": True,
+        "file_input_rendered_after_interaction": True,
+        "file_input_after_interaction": after,
+        "dropzone_selector": selector,
+        "target_hint": hint,
+    }
+
+
 def try_upload_fallback(
     task_id: str,
     file_path: str,
@@ -493,25 +728,79 @@ def try_upload_fallback(
         result = _run(task_id, "upload", [ref_sel, path_str])
         if result.get("success"):
             return {"success": True, "method": "agent-browser-upload-ref", "path": path_str}
+
+    initial_count, count_err = _count_file_inputs(task_id)
+    if count_err:
+        return {"success": False, "error": count_err, "fallback": "upload"}
+    lazy_meta: Dict[str, Any] = {"initial_file_input_count": initial_count}
+
     expr = _DISCOVER_FILE_INPUT_JS % _js_string(target_hint or "")
     selector, eval_err = _eval_json(task_id, expr)
     if eval_err:
-        return {"success": False, "error": eval_err, "fallback": "upload"}
+        return {"success": False, "error": eval_err, "fallback": "upload", **lazy_meta}
+
+    if (not selector or not isinstance(selector, str)) and initial_count == 0:
+        reveal = try_dropzone_reveal_file_input(task_id, target_hint or "")
+        lazy_meta.update({k: reveal.get(k) for k in reveal if k not in ("success", "error", "fallback")})
+        if not reveal.get("success"):
+            if reveal.get("skipped"):
+                pass
+            else:
+                return {
+                    "success": False,
+                    "error": reveal.get("error") or "lazy dropzone reveal failed",
+                    "fallback": "upload",
+                    **lazy_meta,
+                }
+        else:
+            selector, eval_err = _eval_json(task_id, expr)
+            if eval_err:
+                return {"success": False, "error": eval_err, "fallback": "upload", **lazy_meta}
+
     if not selector or not isinstance(selector, str):
+        if initial_count == 0 and not (target_hint or "").strip():
+            return {
+                "success": False,
+                "error": "TARGET_HINT_REQUIRED",
+                "fallback": "upload",
+                **lazy_meta,
+            }
         cdp_only = cdp_set_file_input(task_id, 'input[type="file"]', path_str)
         if cdp_only.get("ok"):
-            return {"success": True, "method": "cdp-setFileInputFiles-generic", "path": path_str}
-        return {"success": False, "error": "no file input discovered", "fallback": "upload"}
+            return {
+                "success": True,
+                "method": "cdp-setFileInputFiles-generic",
+                "path": path_str,
+                **lazy_meta,
+            }
+        return {"success": False, "error": "no file input discovered", "fallback": "upload", **lazy_meta}
+    upload_method = "agent-browser-upload-discovered"
+    if lazy_meta.get("dropzone_interaction_performed"):
+        upload_method = "lazy-dropzone-then-upload"
+
     result = _run(task_id, "upload", [selector, path_str])
     if result.get("success"):
-        return {"success": True, "method": "agent-browser-upload-discovered", "selector": selector, "path": path_str}
+        return {
+            "success": True,
+            "method": upload_method,
+            "selector": selector,
+            "path": path_str,
+            **lazy_meta,
+        }
     cdp = cdp_set_file_input(task_id, selector, path_str)
     if cdp.get("ok"):
-        return {"success": True, "method": "cdp-setFileInputFiles", "selector": selector, "path": path_str}
+        return {
+            "success": True,
+            "method": "cdp-setFileInputFiles" if upload_method == "agent-browser-upload-discovered" else "lazy-dropzone-then-cdp-upload",
+            "selector": selector,
+            "path": path_str,
+            **lazy_meta,
+        }
     return {
         "success": False,
         "error": result.get("error") or cdp.get("error") or "upload failed",
         "fallback": "upload",
+        **lazy_meta,
     }
 
 

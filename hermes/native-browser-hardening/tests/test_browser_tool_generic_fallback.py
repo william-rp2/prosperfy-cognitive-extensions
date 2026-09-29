@@ -20,6 +20,8 @@ from browser_tool_generic_fallback import (  # noqa: E402
     is_unknown_ref_error,
     resolve_authorized_upload_path,
     select_editable_in_dialog,
+    select_plausible_dropzone,
+    try_dropzone_reveal_file_input,
 )
 
 
@@ -86,6 +88,84 @@ class TestClickFailureHeuristics(unittest.TestCase):
         self.assertTrue(is_discovery_click_ref("@?", "Delete"))
         self.assertFalse(is_discovery_click_ref("@e5", "Delete"))
         self.assertFalse(is_discovery_click_ref("@?", ""))
+
+
+class TestLazyDropzoneSelection(unittest.TestCase):
+    def _zone(self, **kw):
+        base = {
+            "tag": "DIV",
+            "role": "",
+            "className": "upload-panel dropzone",
+            "text": "Arraste arquivos ou clique para enviar",
+            "ariaLabel": "",
+            "title": "",
+            "hasOnDrop": True,
+            "containsFileInputPlaceholder": False,
+            "area": 12000,
+            "selector": "div.upload-panel",
+        }
+        base.update(kw)
+        return base
+
+    def test_requires_target_hint(self):
+        idx, err = select_plausible_dropzone([self._zone()], None)
+        self.assertIsNone(idx)
+        self.assertEqual(err, "TARGET_HINT_REQUIRED")
+
+    def test_picks_hint_matching_dropzone(self):
+        zones = [
+            self._zone(text="Outra área", className="panel"),
+            self._zone(text="Anexar documento de QA", className="file-drop"),
+        ]
+        idx, err = select_plausible_dropzone(zones, "Anexar documento")
+        self.assertIsNone(err)
+        self.assertEqual(idx, 1)
+
+    def test_fail_closed_without_plausible_match(self):
+        idx, err = select_plausible_dropzone(
+            [self._zone(text="Salvar", className="btn-primary", hasOnDrop=False, area=900)],
+            "Anexar",
+        )
+        self.assertIsNone(idx)
+        self.assertEqual(err, "NO_PLAUSIBLE_DROPZONE")
+
+    def test_ambiguous_two_equal_matches(self):
+        z = self._zone(text="Enviar arquivo QA", className="upload-zone")
+        idx, err = select_plausible_dropzone([z, dict(z)], "Enviar arquivo QA")
+        self.assertIsNone(idx)
+        self.assertEqual(err, "AMBIGUOUS_DROPZONE")
+
+    @patch("browser_tool_generic_fallback._eval_json")
+    @patch("browser_tool_generic_fallback.time.sleep", return_value=None)
+    def test_reveal_polls_until_file_input_appears(self, _sleep, eval_json):
+        zone_list = {
+            "ok": True,
+            "candidates": [
+                {
+                    "selector": "div.drop",
+                    "tag": "DIV",
+                    "role": "",
+                    "className": "dropzone upload",
+                    "text": "Anexar arquivo de teste",
+                    "ariaLabel": "",
+                    "title": "",
+                    "hasOnDrop": True,
+                    "containsFileInputPlaceholder": False,
+                    "area": 8000,
+                }
+            ],
+        }
+        eval_json.side_effect = [
+            (0, None),  # initial count
+            (zone_list, None),  # list candidates
+            ({"ok": True, "tag": "DIV"}, None),  # click
+            (0, None),  # poll 1
+            (1, None),  # poll 2
+        ]
+        out = try_dropzone_reveal_file_input("t1", "Anexar arquivo")
+        self.assertTrue(out.get("success"))
+        self.assertEqual(out.get("file_input_after_interaction"), 1)
+        self.assertTrue(out.get("dropzone_interaction_performed"))
 
 
 class TestModalEditableSelection(unittest.TestCase):
