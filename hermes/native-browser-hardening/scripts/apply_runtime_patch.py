@@ -183,6 +183,14 @@ def _patch_tool_schemas(text: str) -> str:
         text = text.replace(click_old, click_new, 1)
     if type_old in text:
         text = text.replace(type_old, type_new, 1)
+    click_row_old = '    ("browser_click", "👆", None, {"ref": ""}),'
+    click_row_new = '    ("browser_click", "👆", None, {"ref": "", "target_hint": None}),'
+    type_row_old = '    ("browser_type", "⌨️", None, {"ref": "", "text": ""}),'
+    type_row_new = '    ("browser_type", "⌨️", None, {"ref": "", "text": "", "field_hint": None}),'
+    if click_row_old in text:
+        text = text.replace(click_row_old, click_row_new, 1)
+    if type_row_old in text:
+        text = text.replace(type_row_old, type_row_new, 1)
     return text
 
 
@@ -273,13 +281,27 @@ def browser_upload(file_path: str, ref: Optional[str] = None, target_hint: Optio
         print("browser_scroll anchor missing", file=sys.stderr)
         return 1
     text = text.replace(anchor, upload_fn + "\n\n" + anchor, 1)
-    table_line = '    ("browser_type", "⌨️", None, {"ref": "", "text": ""}),'
-    if table_line not in text:
+    click_row = '    ("browser_click", "👆", None, {"ref": ""}),'
+    type_row = '    ("browser_type", "⌨️", None, {"ref": "", "text": ""}),'
+    if click_row in text:
+        text = text.replace(
+            click_row,
+            '    ("browser_click", "👆", None, {"ref": "", "target_hint": None}),',
+            1,
+        )
+    if type_row in text:
+        text = text.replace(
+            type_row,
+            '    ("browser_type", "⌨️", None, {"ref": "", "text": "", "field_hint": None}),',
+            1,
+        )
+    upload_after = '    ("browser_type", "⌨️", None, {"ref": "", "text": "", "field_hint": None}),'
+    if upload_after not in text:
         print("tool table line missing", file=sys.stderr)
         return 1
     text = text.replace(
-        table_line,
-        table_line + '\n    ("browser_upload", "📎", None, {"file_path": "", "ref": None, "target_hint": None}),',
+        upload_after,
+        upload_after + '\n    ("browser_upload", "📎", None, {"file_path": "", "ref": None, "target_hint": None}),',
         1,
     )
     text = _patch_tool_schemas(text)
