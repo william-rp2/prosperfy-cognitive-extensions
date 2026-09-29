@@ -156,18 +156,16 @@ def _patch_tool_schemas(text: str) -> str:
         }
     },'''
     type_old = '''                "text": {
-                    "type": "string",
-                    "description": "The text to type into the field"
+                    "type": "string", "description": "The text to type into the field"
                 }
             },
             "required": ["ref", "text"]
         }
     },
     {
-        "name": "browser_press",'''
+        "name": "browser_scroll",'''
     type_new = '''                "text": {
-                    "type": "string",
-                    "description": "The text to type into the field"
+                    "type": "string", "description": "The text to type into the field"
                 },
                 "field_hint": {
                     "type": "string",
@@ -178,7 +176,7 @@ def _patch_tool_schemas(text: str) -> str:
         }
     },
     {
-        "name": "browser_press",'''
+        "name": "browser_scroll",'''
     if click_old in text:
         text = text.replace(click_old, click_new, 1)
     if type_old in text:
