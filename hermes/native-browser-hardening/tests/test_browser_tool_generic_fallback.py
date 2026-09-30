@@ -102,6 +102,56 @@ class TestUploadPathAuth(unittest.TestCase):
             finally:
                 tmp_file.unlink(missing_ok=True)
 
+    def test_allows_browser_uploads_root(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            f = home / "browser_uploads" / "pic.png"
+            f.parent.mkdir(parents=True)
+            f.write_bytes(b"\x89PNG")
+            with patch("browser_tool_generic_fallback._hermes_home", return_value=home):
+                p, err = resolve_authorized_upload_path(str(f))
+            self.assertIsNone(err)
+            self.assertEqual(p, f.resolve())
+
+    def test_denies_profile_cache_without_explicit_config(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            f = home / "profiles" / "qa" / "cache" / "screenshot.png"
+            f.parent.mkdir(parents=True)
+            f.write_bytes(b"x")
+            with patch("browser_tool_generic_fallback._hermes_home", return_value=home):
+                with patch.dict(os.environ, {}, clear=True):
+                    p, err = resolve_authorized_upload_path(str(f))
+            self.assertIsNone(p)
+            self.assertIn("authorized", err or "")
+
+    def test_denies_profile_files_without_explicit_config(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            f = home / "profiles" / "qa" / "files" / "arquivo.txt"
+            f.parent.mkdir(parents=True)
+            f.write_text("data", encoding="utf-8")
+            with patch("browser_tool_generic_fallback._hermes_home", return_value=home):
+                with patch.dict(os.environ, {}, clear=True):
+                    p, err = resolve_authorized_upload_path(str(f))
+            self.assertIsNone(p)
+            self.assertIn("authorized", err or "")
+
+    def test_allows_explicit_hermes_browser_upload_allowed_dirs(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "hermes_home"
+            home.mkdir()
+            custom = Path(td) / "legacy_uploads"
+            custom.mkdir()
+            f = custom / "allowed.bin"
+            f.write_bytes(b"ok")
+            env_key = "HERMES_BROWSER_UPLOAD_ALLOWED_DIRS"
+            with patch("browser_tool_generic_fallback._hermes_home", return_value=home):
+                with patch.dict(os.environ, {env_key: str(custom)}, clear=True):
+                    p, err = resolve_authorized_upload_path(str(f))
+            self.assertIsNone(err)
+            self.assertEqual(p, f.resolve())
+
 
 class TestClickFailureHeuristics(unittest.TestCase):
     def test_could_not_locate_triggers_locate_failure(self):

@@ -15,12 +15,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # --- Authorized file paths (upload) -----------------------------------------
 
+# Default allowlist: only directories clearly used for user/task-authorized attachments.
+# Extra roots (e.g. legacy "uploads") require HERMES_BROWSER_UPLOAD_ALLOWED_DIRS.
 _DEFAULT_UPLOAD_ROOT_NAMES = (
     "attachments",
-    "cache",
-    "uploads",
     "browser_uploads",
-    "files",
 )
 
 DISCOVERY_CLICK_REFS = frozenset({"?", "*", "discover", "interactive"})
